@@ -26,7 +26,7 @@ so every view converges on the durable session state—even across tabs and reco
 
 For example, a coding-agent session might record:
 
-![An ordered EDA session history. Blue events belong to the EDA framework; orange events belong to the application.](./docs/assets/event-sequence.svg)
+![An ordered EDA session history where framework and application events share one sequence.](./docs/assets/event-sequence.svg)
 
 Framework events and product events are not separate channels. They form the same history and
 transition the same application state.
@@ -134,55 +134,77 @@ with equivalent semantics.
 
 ## Core concepts
 
-![EDA architecture. Commands and application events enter a session runtime and durable event log, which feed reducers, reconnecting clients, durable sinks, recovery, replay, tests, and model context.](./docs/assets/architecture.svg)
+![A numbered guide to EDA architecture: 1, commands enter the session runtime; 2, durable transitions form an ordered event log; 3, clients follow the live event stream; 4, pure reducers derive state; 5, state captures agent and product lifecycles; 6, pure UI and LLM context projections shape state for different consumers; 7, durable sinks deliver events to external systems.](./docs/assets/architecture.svg)
 
-Effect owns the execution around this state machine: structured concurrency, streams, interruption,
-scoped resources, typed failures, retries, services, and tracing. The event history owns durable
-truth.
+### 1. Session runtime: one state machine for the entire application
 
-### Durable and ephemeral events
+User commands and application events enter one centralized session runtime. It manages the entire
+application state machine: agent lifecycles such as runs, inference, and tool calls coexist with
+product lifecycles such as sandboxes, approvals, and external delivery.
 
-EDA's ordered event stream carries two types of events:
+Every transition therefore has one owner and one place to be recorded, rather than leaving session
+state scattered across callbacks, workers, and unrelated stores.
 
-- **Durable events** are persisted facts with a monotonically increasing per-session `seq`. They
-  drive reducers, recovery, reconnect, tests, and durable sinks
-- **Ephemeral events** carry live-only details such as text deltas, reasoning deltas, and speculative
-  tool parameters. They are positioned against the current durable head but are not durable truth
+### 2. Ordered event log: the definitive history of the state machine
 
-A durable event is published live only after storage commits it.
+When the state machine transitions, EDA records an event durably and assigns it the next sequence
+number for that session. Read in order, those events definitively describe how the application
+evolved.
 
-### Pure reducers
+The event log—not an in-memory object or cached snapshot—is the source of truth. Current state,
+client updates, recovery, tests, and external delivery are all derived from that ordered history.
 
-Reducers turn durable events into current state. EDA's framework reducer derives commands, runs,
-turns, messages, inference, and tool state. Applications register their own reducers for product
-state such as sandboxes, approvals, billing, or external delivery.
+### 3. Live event stream: reconnect without losing the session
 
-Framework and application reducers fold the same ordered history. Their checkpoints accelerate
-startup and snapshots; the event log remains the source of truth.
+Live clients subscribe to the event stream over a reconnect-safe WebSocket protocol. Each client
+tracks the last durable sequence it has applied.
 
-### Live event stream
+When a slow or disconnected client returns, it provides that sequence, receives every committed
+event after it, and then continues live. Multiple tabs and surfaces reliably converge on the same
+session state instead of guessing which updates they missed.
 
-Clients begin with a reducer snapshot through sequence `N`, replay durable events after `N`, and
-then follow new durable and ephemeral events live. Sequence-based catch-up lets every connected
-view converge without coupling a slow client to agent execution.
+### 4. Pure reducers: events become state
 
-### Durable sinks
+Framework and application reducers fold the ordered event history to produce current state.
+Framework events update agent lifecycles; application events update product lifecycles; both
+contribute to the same state model.
 
-Durable sinks process committed events outside the main agent loop. Each sink preserves event
-ordering, tracks an independent durable cursor, and advances only after successful processing.
-Failures retry with backoff, so external systems converge eventually without blocking the agent.
+Reducers are pure: given the same starting state and event, they produce the same next state. That
+makes every state transition explicit, replayable, and testable.
 
-### Session runtime
+### 5. State: a cached view of durable history
 
-One session has at most one active run and turn. The runtime:
+The reducers produce a complete snapshot of framework and application state through a known
+sequence number. EDA caches that snapshot in Durable Object SQLite so reads and restarts do not
+need to replay the entire history from the beginning.
 
-1. Durably admits a command
-2. Starts and traces the run, turn, and inference
-3. Commits message and tool lifecycle facts
-4. Folds framework and application reducers
-5. Publishes positioned events to live clients
-6. Drains durable sinks
-7. Recovers from the durable history after a restart
+The cache is an optimization, not a second source of truth. If it is missing or incompatible, EDA
+can rebuild it from the event log; the application is ultimately defined by its ordered events.
+
+### 6. Pure projections: UI state is not model context
+
+State is not the final representation consumed by either people or models. The UI is a pure
+projection of state, and the LLM context is a separate pure projection of that same state.
+
+The UI can preserve tool progress, approvals, sandbox status, and rich product history while the
+LLM context selects and compacts only what the model should see. Applications can model each
+consumer honestly instead of collapsing both into one constrained representation. See the
+[UI projection guide](./docs/ui-projection.md) for the projection contract.
+
+### 7. Durable sinks: callbacks that survive failure
+
+Framework and application events often need to trigger side effects in external systems: post to
+Slack, write to a database, or notify another service. Handling them in ordinary callbacks makes
+delivery depend on the health of the current process.
+
+EDA handles this with durable sinks, which behave like durable callbacks over committed session
+history. EDA delivers events to each sink in sequence order, persists its progress, retries
+failures, and resumes after application restarts. Sinks run independently of the application loop,
+so external delivery does not block application progress. Durable retries let external systems
+converge on committed session history with eventual-consistency guarantees.
+
+Delivery is at-least-once, so external operations must be idempotent. Each durable event carries a
+stable event ID that, together with its session ID, provides the operation's idempotency key.
 
 ## Get started
 

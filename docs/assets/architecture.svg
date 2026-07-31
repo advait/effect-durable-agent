@@ -1,38 +1,49 @@
 <svg
   xmlns="http://www.w3.org/2000/svg"
   width="1200"
-  height="680"
-  viewBox="0 0 1200 680"
+  height="865"
+  viewBox="0 0 1200 865"
   role="img"
   aria-labelledby="title description"
 >
-  <title id="title">Effect Durable Agent architecture</title>
+  <title id="title">Effect Durable Agent framework components</title>
   <desc id="description">
-    Commands and application events enter an EDA session runtime and ordered durable event log.
-    Reducers derive agent and product state, a live stream updates reconnecting clients, and durable
-    sinks deliver ordered side effects. The same history supports recovery, replay, tests, and model
-    context. One Cloudflare Durable Object hosts each session.
+    Commands and application events enter the EDA session runtime and are recorded in an ordered
+    durable event log. The log feeds three balanced lanes: a live event stream for reconnecting
+    clients, pure reducers that produce framework and application state, and durable sinks for
+    external systems. State feeds separate pure UI and language-model context projections.
   </desc>
 
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#68737d" />
+    <marker
+      id="arrow"
+      viewBox="0 0 10 10"
+      refX="8"
+      refY="5"
+      markerWidth="7"
+      markerHeight="7"
+      orient="auto"
+    >
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f5d75" />
+    </marker>
+    <marker
+      id="arrow-accent"
+      viewBox="0 0 10 10"
+      refX="8"
+      refY="5"
+      markerWidth="7"
+      markerHeight="7"
+      orient="auto"
+    >
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9a674f" />
     </marker>
     <style>
-      .title {
-        fill: #263238;
-        font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      }
-      .subtitle {
-        fill: #56616b;
-        font: 400 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      }
       .card-title {
-        fill: #263238;
-        font: 700 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        fill: #2d3142;
+        font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       .card-copy {
-        fill: #56616b;
+        fill: #4f5d75;
         font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       .inverse-title {
@@ -40,67 +51,166 @@
         font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       .inverse-copy {
-        fill: #dfe4e8;
+        fill: #e5e7eb;
         font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .node-input {
+        fill: #eceeef;
+        stroke: #bfc0c0;
+      }
+      .node-runtime {
+        fill: #2d3142;
+        stroke: #2d3142;
+      }
+      .node-focal {
+        fill: #f2ebe7;
+        stroke: #9a674f;
+        stroke-width: 1.5;
+      }
+      .node-primary {
+        fill: #ffffff;
+        stroke: #2d3142;
+      }
+      .node-secondary {
+        fill: #ffffff;
+        stroke: #bfc0c0;
+      }
+      .node-external {
+        fill: #f0f0f0;
+        stroke: #bfc0c0;
+      }
+      .step-number {
+        fill: #c8cacf;
+        font: 500 40px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
       .arrow {
         fill: none;
-        stroke: #68737d;
+        stroke: #4f5d75;
         stroke-width: 2.5;
         marker-end: url(#arrow);
+      }
+      .arrow-accent {
+        fill: none;
+        stroke: #9a674f;
+        stroke-width: 2.5;
+        marker-end: url(#arrow-accent);
       }
     </style>
   </defs>
 
-  <rect width="1200" height="680" rx="18" fill="#f7f7f5" />
-  <text class="title" x="40" y="44">One durable history powers the whole application</text>
-  <text class="subtitle" x="40" y="70">State, live clients, recovery, and side effects share the same source of truth.</text>
+  <rect width="1200" height="865" rx="18" fill="#f5f5f5" />
 
-  <rect x="365" y="98" width="470" height="68" rx="12" fill="#fff9cc" stroke="#b59f00" />
-  <text class="card-title" x="600" y="126" text-anchor="middle">Commands + application events</text>
-  <text class="card-copy" x="600" y="149" text-anchor="middle">User intent and product facts enter together</text>
+  <rect class="node-input" x="360" y="20" width="480" height="65" rx="12" />
+  <text class="card-title" x="600" y="48" text-anchor="middle">
+    Commands + application events
+  </text>
+  <text class="card-copy" x="600" y="70" text-anchor="middle">User intent + product facts</text>
 
-  <path class="arrow" d="M 600 166 V 200" />
+  <path class="arrow" d="M 600 85 V 113" />
 
-  <rect x="365" y="202" width="470" height="78" rx="12" fill="#2b2d42" />
-  <text class="inverse-title" x="600" y="234" text-anchor="middle">EDA session runtime</text>
-  <text class="inverse-copy" x="600" y="258" text-anchor="middle">Effect workflows inside one Durable Object</text>
+  <rect class="node-runtime" x="360" y="115" width="480" height="70" rx="12" />
+  <text class="step-number" x="344" y="164" text-anchor="end">1</text>
+  <text class="inverse-title" x="600" y="145" text-anchor="middle">EDA session runtime</text>
+  <text class="inverse-copy" x="600" y="168" text-anchor="middle">
+    Effect workflows inside one Durable Object
+  </text>
 
-  <path class="arrow" d="M 600 280 V 314" />
+  <path class="arrow-accent" d="M 600 185 V 213" />
 
-  <rect x="365" y="316" width="470" height="78" rx="12" fill="#0072b2" />
-  <text class="inverse-title" x="600" y="348" text-anchor="middle">Ordered durable event log</text>
-  <text class="inverse-copy" x="600" y="372" text-anchor="middle">The session's authoritative history</text>
+  <rect class="node-focal" x="360" y="215" width="480" height="75" rx="12" />
+  <text class="step-number" x="344" y="268" text-anchor="end">2</text>
+  <text class="card-title" x="600" y="246" text-anchor="middle">
+    Ordered durable event log
+  </text>
+  <text class="card-copy" x="600" y="269" text-anchor="middle">
+    Framework + application events · Durable Object SQLite
+  </text>
 
-  <path class="arrow" d="M 520 394 V 428 H 204 V 458" />
-  <path class="arrow" d="M 600 394 V 458" />
-  <path class="arrow" d="M 680 394 V 428 H 996 V 458" />
+  <path class="arrow" d="M 480 290 V 317 Q 480 325 472 325 H 208 Q 200 325 200 333 V 348" />
+  <path class="arrow-accent" d="M 600 290 V 348" />
+  <path class="arrow" d="M 720 290 V 317 Q 720 325 728 325 H 992 Q 1000 325 1000 333 V 348" />
 
-  <rect x="44" y="460" width="320" height="92" rx="12" fill="#e3f6ef" stroke="#009e73" />
-  <text class="card-title" x="204" y="493" text-anchor="middle">Pure reducers</text>
-  <text class="card-copy" x="204" y="517" text-anchor="middle">Derive agent + product state</text>
-  <text class="card-copy" x="204" y="537" text-anchor="middle">Replayable at any sequence</text>
+  <rect class="node-secondary" x="60" y="350" width="280" height="100" rx="12" />
+  <text class="step-number" x="44" y="416" text-anchor="end">3</text>
+  <text class="card-title" x="200" y="389" text-anchor="middle">Live event stream</text>
+  <text class="card-copy" x="200" y="415" text-anchor="middle">
+    Committed events over WebSockets
+  </text>
+  <text class="card-copy" x="200" y="436" text-anchor="middle">
+    Ordered by event sequence
+  </text>
 
-  <rect x="440" y="460" width="320" height="92" rx="12" fill="#e6f4fa" stroke="#56b4e9" />
-  <text class="card-title" x="600" y="493" text-anchor="middle">Live event stream</text>
-  <text class="card-copy" x="600" y="517" text-anchor="middle">Snapshot + ordered catch-up</text>
-  <text class="card-copy" x="600" y="537" text-anchor="middle">Reconnect every client</text>
+  <rect class="node-primary" x="450" y="350" width="300" height="100" rx="12" />
+  <text class="step-number" x="434" y="416" text-anchor="end">4</text>
+  <text class="card-title" x="600" y="389" text-anchor="middle">Pure reducers</text>
+  <text class="card-copy" x="600" y="415" text-anchor="middle">
+    Framework reducers + application reducers
+  </text>
+  <text class="card-copy" x="600" y="436" text-anchor="middle">
+    Deterministic at every sequence
+  </text>
 
-  <rect x="836" y="460" width="320" height="92" rx="12" fill="#fff0e5" stroke="#d55e00" />
-  <text class="card-title" x="996" y="493" text-anchor="middle">Durable sinks</text>
-  <text class="card-copy" x="996" y="517" text-anchor="middle">Ordered, non-blocking delivery</text>
-  <text class="card-copy" x="996" y="537" text-anchor="middle">Slack · database · APIs</text>
+  <rect class="node-secondary" x="860" y="350" width="280" height="100" rx="12" />
+  <text class="step-number" x="844" y="416" text-anchor="end">7</text>
+  <text class="card-title" x="1000" y="389" text-anchor="middle">Durable sinks</text>
+  <text class="card-copy" x="1000" y="415" text-anchor="middle">
+    Committed events · persisted cursors
+  </text>
+  <text class="card-copy" x="1000" y="436" text-anchor="middle">
+    At-least-once delivery · retry
+  </text>
 
-  <path class="arrow" d="M 204 552 V 586" />
-  <path class="arrow" d="M 600 552 V 586" />
-  <path class="arrow" d="M 996 552 V 586" />
+  <path class="arrow" d="M 200 450 V 508" />
+  <path class="arrow-accent" d="M 600 450 V 508" />
+  <path class="arrow" d="M 1000 450 V 508" />
 
-  <rect x="44" y="588" width="320" height="58" rx="12" fill="#ffffff" stroke="#a7b0b7" />
-  <text class="card-title" x="204" y="623" text-anchor="middle">Recovery · replay · tests</text>
+  <rect class="node-external" x="60" y="510" width="280" height="70" rx="12" />
+  <text class="card-title" x="200" y="539" text-anchor="middle">Reconnecting clients</text>
+  <text class="card-copy" x="200" y="562" text-anchor="middle">
+    Catch up, then continue live
+  </text>
 
-  <rect x="440" y="588" width="320" height="58" rx="12" fill="#ffffff" stroke="#a7b0b7" />
-  <text class="card-title" x="600" y="623" text-anchor="middle">Reconnecting clients</text>
+  <rect class="node-focal" x="450" y="510" width="300" height="100" rx="12" />
+  <text class="step-number" x="434" y="576" text-anchor="end">5</text>
+  <text class="card-title" x="600" y="549" text-anchor="middle">State</text>
+  <text class="card-copy" x="600" y="575" text-anchor="middle">
+    Framework state + application state
+  </text>
+  <text class="card-copy" x="600" y="596" text-anchor="middle">
+    Snapshot through sequence N
+  </text>
 
-  <rect x="836" y="588" width="320" height="58" rx="12" fill="#ffffff" stroke="#a7b0b7" />
-  <text class="card-title" x="996" y="623" text-anchor="middle">Eventually consistent systems</text>
+  <rect class="node-external" x="860" y="510" width="280" height="55" rx="12" />
+  <text class="card-title" x="1000" y="544" text-anchor="middle">External systems</text>
+
+  <path class="arrow" d="M 550 610 V 627 Q 550 635 542 635 H 473 Q 465 635 465 643 V 658" />
+  <path class="arrow" d="M 650 610 V 627 Q 650 635 658 635 H 727 Q 735 635 735 643 V 658" />
+
+  <rect class="node-primary" x="340" y="660" width="250" height="110" rx="12" />
+  <text class="step-number" x="324" y="732" text-anchor="end">6</text>
+  <text class="card-title" x="465" y="698" text-anchor="middle">Pure UI projection</text>
+  <text class="card-copy" x="465" y="723" text-anchor="middle">
+    Renderable state for humans
+  </text>
+  <text class="card-copy" x="465" y="746" text-anchor="middle">
+    Full history · tools · product state
+  </text>
+
+  <rect class="node-primary" x="610" y="660" width="250" height="110" rx="12" />
+  <text class="card-title" x="735" y="698" text-anchor="middle">LLM context projection</text>
+  <text class="card-copy" x="735" y="723" text-anchor="middle">
+    Purpose-built state for the model
+  </text>
+  <text class="card-copy" x="735" y="746" text-anchor="middle">
+    Selected · compacted · model-ready
+  </text>
+
+  <path class="arrow" d="M 465 770 V 798" />
+  <path class="arrow" d="M 735 770 V 798" />
+
+  <rect class="node-external" x="340" y="800" width="250" height="45" rx="12" />
+  <text class="card-title" x="465" y="829" text-anchor="middle">User interfaces</text>
+
+  <rect class="node-external" x="610" y="800" width="250" height="45" rx="12" />
+  <text class="card-title" x="735" y="829" text-anchor="middle">Language model</text>
 </svg>
