@@ -131,7 +131,7 @@ export type EDAWebSocketAttachment = typeof EDAWebSocketAttachment.Type;
 export const encodeEDAWebSocketServerFrame = (
   frame: EDAWebSocketServerFrame,
   protocol?: EDAWebSocketServerFrameEncoder,
-): string => (protocol ?? edaFrameworkWebSocketWireProtocol).encodeServerFrame(frame);
+): string => (protocol ?? edaFrameworkWebSocketWireProtocol.host).encodeServerFrame(frame);
 
 /** Decode an unknown attachment value from Cloudflare WebSocket hibernation storage. */
 export const decodeEDAWebSocketAttachment = (
