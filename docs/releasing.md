@@ -26,11 +26,11 @@ pnpm run release:check
 npm publish
 ```
 
-The package metadata makes the scoped package public and publishes it under the `latest` tag. This
-command requires an npm account with publishing rights for the `@advait` scope and its configured
-two-factor authentication.
+The package metadata makes the scoped package public and publishes this prerelease under the
+`alpha` tag. This command requires an npm account with publishing rights for the `@advait` scope
+and its configured two-factor authentication.
 
-After `0.0.1` exists, configure its npm trusted publisher:
+After `0.1.0-alpha.1` exists, configure its npm trusted publisher:
 
 - Provider: GitHub Actions
 - Organization or user: `advait`
@@ -42,6 +42,9 @@ After `0.0.1` exists, configure its npm trusted publisher:
 The workflow runs on a GitHub-hosted runner with the OIDC permissions and Node/npm versions required
 by npm trusted publishing. No npm token should be added to the repository. Trusted publishing
 automatically adds provenance when both the package and repository are public.
+
+Keep prereleases on an explicit dist-tag such as `alpha` or `beta`. Change `publishConfig.tag` to
+`latest` only when publishing a stable release.
 
 ## Subsequent releases
 
