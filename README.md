@@ -1,5 +1,8 @@
 # effect-durable-agent
 
+[![npm version](https://img.shields.io/npm/v/effect-durable-agent)](https://www.npmjs.com/package/effect-durable-agent)
+[![CI](https://github.com/advait/effect-durable-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/advait/effect-durable-agent/actions/workflows/ci.yml)
+
 > EDA is a Redux-inspired durable state-management layer for agentic applications, hosted on
 [Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/).
 
@@ -183,7 +186,8 @@ One session has at most one active run and turn. The runtime:
 
 ## Get started
 
-Install EDA from npm:
+Install the public alpha from npm. Using the `alpha` tag keeps prerelease consumers on the current
+alpha channel:
 
 ```bash
 pnpm add effect-durable-agent@alpha
@@ -297,6 +301,7 @@ client catch-up, restart recovery, production-derived UI fixtures, and durable s
 - [Message steering](./docs/message-steering.md)
 - [UI projection proposal](./docs/ui-projection.md)
 - [Subagents proposal](./docs/subagents.md)
+- [Maintainer release guide](./docs/releasing.md)
 
 ## Contributing and license
 
