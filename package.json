@@ -1,5 +1,5 @@
 {
-  "name": "@advait/effect-durable-agent",
+  "name": "effect-durable-agent",
   "version": "0.1.0-alpha.1",
   "description": "A Redux-inspired state-management and durable execution layer for agentic applications on Cloudflare Durable Objects.",
   "keywords": [
