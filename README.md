@@ -1,7 +1,7 @@
-# Effect Durable Agent
+# effect-durable-agent
 
-**EDA is a Redux-inspired durable state-management layer for agentic applications, hosted on
-[Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/).**
+> EDA is a Redux-inspired durable state-management layer for agentic applications, hosted on
+[Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/).
 
 ## Why?
 
