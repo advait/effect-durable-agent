@@ -9,14 +9,14 @@ const CounterIncrementedEvent = Schema.Struct({
   namespace: Schema.Literal("example-counter"),
   type: Schema.Literal("CounterIncremented"),
   schemaVersion: Schema.Literal(1),
-  payload: Schema.Struct({ amount: Schema.Number }),
+  payload: Schema.Struct({ amount: Schema.NumberFromString }),
 });
 
 const protocol = makeEDAWebSocketWireProtocol({
   appEvents: CounterIncrementedEvent,
 });
 
-const customEventFrame = {
+const customEventWireFrame = {
   _tag: "events",
   durableThroughSeq: 1,
   events: [
@@ -26,7 +26,7 @@ const customEventFrame = {
         durability: "durable",
         eventId: "018f6bd5-2f2a-7b1e-8f1d-1f2e3d4c5b6a",
         namespace: "example-counter",
-        payload: { amount: 2 },
+        payload: { amount: "2" },
         schemaVersion: 1,
         sessionId: "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
         trace: {
@@ -46,13 +46,19 @@ const customEventFrame = {
   frameId: 1,
 } as const;
 
+const customEventFrame = Schema.decodeUnknownSync(protocol.domain.eventsFrame)(
+  customEventWireFrame,
+);
+
 describe("makeEDAWebSocketWireProtocol", () => {
   it("rejects unregistered app events from the framework-only protocol", () => {
-    expect(() => edaFrameworkWebSocketWireProtocol.encodeServerFrame(customEventFrame)).toThrow();
+    expect(() =>
+      edaFrameworkWebSocketWireProtocol.host.encodeServerFrame(customEventFrame),
+    ).toThrow();
   });
 
   it("includes framework events without app-side union plumbing", () => {
-    const event = Schema.decodeUnknownSync(protocol.event)({
+    const event = Schema.decodeUnknownSync(protocol.wire.event)({
       createdAtMs: 1_715_000_000_001,
       durability: "ephemeral",
       eventId: "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a",
@@ -79,25 +85,36 @@ describe("makeEDAWebSocketWireProtocol", () => {
     expect(event.payload.delta).toBe("hello");
   });
 
-  it("preserves an app event's payload discrimination for wire consumers", () => {
-    const frame = Schema.decodeUnknownSync(protocol.serverFrame)(customEventFrame);
-    expect(frame._tag).toBe("events");
-    if (frame._tag !== "events") {
+  it("round-trips transformed event payloads through the JSON wire representation", () => {
+    const encoded = protocol.encodeServerFrame(customEventFrame);
+    const wireFrame = Schema.decodeUnknownSync(Schema.fromJsonString(protocol.wire.serverFrame))(
+      encoded,
+    );
+    const domainFrame = Schema.decodeUnknownSync(
+      Schema.fromJsonString(protocol.domain.serverFrame),
+    )(encoded);
+
+    expect(wireFrame).toEqual(customEventWireFrame);
+    expect(domainFrame).toEqual(customEventFrame);
+
+    if (wireFrame._tag !== "events" || domainFrame._tag !== "events") {
+      return;
+    }
+    const wireEvent = wireFrame.events[0].event;
+    const domainEvent = domainFrame.events[0].event;
+    if (wireEvent.type !== "CounterIncremented" || domainEvent.type !== "CounterIncremented") {
       return;
     }
 
-    const event = frame.events[0].event;
-    if (event.type !== "CounterIncremented") {
-      return;
-    }
-
-    expectTypeOf(event.payload.amount).toEqualTypeOf<number>();
-    expect(event.payload.amount).toBe(2);
+    expectTypeOf(wireEvent.payload.amount).toEqualTypeOf<string>();
+    expectTypeOf(domainEvent.payload.amount).toEqualTypeOf<number>();
+    expect(wireEvent.payload.amount).toBe("2");
+    expect(domainEvent.payload.amount).toBe(2);
   });
 
   it("validates app event payloads while encoding server frames", () => {
     expect(() =>
-      protocol.encodeServerFrame({
+      protocol.host.encodeServerFrame({
         ...customEventFrame,
         events: [
           {
