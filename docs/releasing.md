@@ -1,6 +1,6 @@
 # Releasing Effect Durable Agent
 
-Releases publish the public `@advait/effect-durable-agent` package from the standalone
+Releases publish the public `effect-durable-agent` package from the standalone
 `advait/effect-durable-agent` repository.
 
 ## One-time release setup
@@ -27,8 +27,8 @@ npm publish
 ```
 
 The package metadata makes the scoped package public and publishes this prerelease under the
-`alpha` tag. This command requires an npm account with publishing rights for the `@advait` scope
-and its configured two-factor authentication.
+`alpha` tag. This command requires an authenticated npm account with publishing rights and its
+configured two-factor authentication.
 
 After `0.1.0-alpha.1` exists, configure its npm trusted publisher:
 

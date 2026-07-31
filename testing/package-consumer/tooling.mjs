@@ -1,4 +1,4 @@
-import plugin from "@advait/effect-durable-agent/tooling/oxlint";
+import plugin from "effect-durable-agent/tooling/oxlint";
 
 const expectedRules = ["effect-span-from-catalog", "span-catalog-format"];
 for (const rule of expectedRules) {
