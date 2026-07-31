@@ -186,7 +186,7 @@ One session has at most one active run and turn. The runtime:
 Install EDA from npm:
 
 ```bash
-pnpm add @advait/effect-durable-agent
+pnpm add @advait/effect-durable-agent@alpha
 ```
 
 The smallest host is a concrete Durable Object subclass:

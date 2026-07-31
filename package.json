@@ -1,6 +1,6 @@
 {
   "name": "@advait/effect-durable-agent",
-  "version": "0.0.1",
+  "version": "0.1.0-alpha.1",
   "description": "A Redux-inspired state-management and durable execution layer for agentic applications on Cloudflare Durable Objects.",
   "keywords": [
     "agents",
@@ -159,7 +159,7 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/",
-    "tag": "latest"
+    "tag": "alpha"
   },
   "peerDependencies": {
     "@effect/ai-openai": "4.0.0-beta.102",
