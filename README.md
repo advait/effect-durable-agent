@@ -1,9 +1,9 @@
 # effect-durable-agent
 
+![EDA is a redux-inspired durable state management layer for agentic applications](./docs/assets/hero.svg)
+
 [![npm version](https://img.shields.io/npm/v/effect-durable-agent)](https://www.npmjs.com/package/effect-durable-agent)
 [![CI](https://github.com/advait/effect-durable-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/advait/effect-durable-agent/actions/workflows/ci.yml)
-
-![EDA is a Redux-inspired durable state-management layer for agentic applications, hosted on Cloudflare Durable Objects.](./docs/assets/hero.svg)
 
 ## Why?
 
