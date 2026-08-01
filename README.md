@@ -3,8 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/effect-durable-agent)](https://www.npmjs.com/package/effect-durable-agent)
 [![CI](https://github.com/advait/effect-durable-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/advait/effect-durable-agent/actions/workflows/ci.yml)
 
-> EDA is a Redux-inspired durable state-management layer for agentic applications, hosted on
-[Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/).
+![EDA is a Redux-inspired durable state-management layer for agentic applications, hosted on Cloudflare Durable Objects.](./docs/assets/hero.svg)
 
 ## Why?
 
@@ -17,14 +16,10 @@ Tool execution constantly changes what that application needs to represent: `San
 event that transitions the application's state machine**. Product state and agent state coexist in
 the same event sequence.
 
-Your application describes how events like `SandboxStarted` and `ApprovalRequested` change its
-state. EDA records them in one durable history, giving agent state and product state a shared source
-of truth. It streams those same events to clients. Each client uses them to update its local state,
-so every view converges on the durable session state—even across tabs and reconnects.
+## How EDA works
 
-## One state machine for the whole application
-
-For example, a coding-agent session might record:
+EDA models the agent and the surrounding product as one application state machine. For example, a
+coding-agent session might record:
 
 ![An ordered EDA session history where framework and application events share one sequence.](./docs/assets/event-sequence.svg)
 
@@ -41,98 +36,7 @@ EDA supplies the framework events and reducers for commands, runs, turns, messag
 tool calls. Applications add their own typed events and reducers for sandboxes, approvals, billing,
 external conversations, delivery state, or anything else the product needs to represent.
 
-## What this unlocks
-
-### Live state on every client
-
-EDA exposes serialized reducer snapshots and streams the ordered session history over a
-reconnect-safe WebSocket protocol. In a server-side rendering (SSR) flow, the server renders state
-through sequence `N`; the browser hydrates from that snapshot, follows events after `N`, and applies
-its application projection as they arrive.
-
-```text
-server snapshot through N
-          +
-streamed events after N
-          =
-current client state
-```
-
-Every tab, embedded surface, or admin view follows the same durable session. Slow and disconnected
-clients catch up from their last acknowledged sequence instead of guessing which updates they
-missed.
-
-### Durable side effects
-
-EDA makes side effects durable.
-
-If `AssistantMessageCommitted` should post a result to Slack and Slack is temporarily unavailable,
-EDA retains the event and retries the delivery instead of losing it inside a failed callback.
-Durable sinks run independently of the main agent loop, preserve event order, and converge
-eventually. Each sink tracks its own persisted cursor, advances only after successful processing,
-and retries failures with backoff.
-
-Delivery is at-least-once, so external operations still need stable idempotency keys. The important
-guarantee is that a transient process or network failure does not silently erase the work.
-
-See the [Slack bridge example](./examples/002-slack-bridge) for idempotent ingress, a custom reducer,
-and durable outbound delivery.
-
-**Durable state. Durable side effects.**
-
-### Agents survive deploys and failures
-
-Deploys and failures restart the application—not the session.
-
-EDA rebuilds framework and product state from durable history, repairs incomplete lifecycle
-boundaries, and transparently continues eligible in-progress work in a replacement run. Completed
-tool calls are not blindly repeated, queued commands remain durable, and reconnecting clients see
-the recovery transitions before new live activity.
-
-### Production sessions become UI fixtures
-
-Because application state is a pure projection of durable events, a production event sequence can
-become a test fixture.
-
-Replay it one event at a time through the same reducers, stop at any sequence, and assert exactly
-what the UI should show: the running tool card, the active sandbox, the pending approval, the
-completed delivery, or the recovered run. A difficult production session becomes a reproducible UI
-test instead of a story in a bug report.
-
-The package includes pure reducer tests, generated state-machine properties, canned-model journeys,
-crash-prefix simulations, and an [offline trace harness](./testing/offline-trace) that writes
-durable and live event artifacts.
-
-### Tracing for every agent run
-
-See what happened, in what order, and where the time went.
-
-EDA uses Effect spans across meaningful runtime boundaries, including command admission, runs,
-turns, model inference, tools, event streaming, durable sinks, and recovery. Trace context survives
-the durable boundaries that separate ingress, execution, and side effects, and Effect telemetry can
-be exported through OpenTelemetry to Google Cloud Trace or another existing backend.
-
-![Google Cloud Trace view of an EDA session, showing agent turns, model inference, tool calls, sandbox execution, and an external integration in one timeline.](./docs/assets/gcp-trace.png)
-
-### Built for Cloudflare Durable Objects
-
-EDA's first host maps one session to one
-[Cloudflare Durable Object](https://developers.cloudflare.com/durable-objects/). The object is the
-durable coordinator for that session's state, execution, SQLite event log, live WebSockets, alarms,
-and sink cursors.
-
-This is an unusually natural fit:
-
-- Deterministic routing sends every request for a session to the same logical object
-- Per-object SQLite stores the ordered history beside the runtime that owns it
-- WebSockets terminate at the same boundary that owns the state
-- Alarms wake evicted sessions for recovery, keep-alive, and sink draining
-
-Durable Objects are the first host, not the whole architecture. EDA's runtime depends on small
-storage, scheduling, identity, and live-delivery boundaries that another platform can implement
-with equivalent semantics.
-
-## Core concepts
+Those events flow through the rest of the system as follows:
 
 ![A numbered guide to EDA architecture: 1, commands enter the session runtime; 2, durable transitions form an ordered event log; 3, clients follow the live event stream; 4, pure reducers derive state; 5, state captures agent and product lifecycles; 6, pure UI and LLM context projections shape state for different consumers; 7, durable sinks deliver events to external systems.](./docs/assets/architecture.svg)
 
@@ -160,8 +64,7 @@ Live clients subscribe to the event stream over a reconnect-safe WebSocket proto
 tracks the last durable sequence it has applied.
 
 When a slow or disconnected client returns, it provides that sequence, receives every committed
-event after it, and then continues live. Multiple tabs and surfaces reliably converge on the same
-session state instead of guessing which updates they missed.
+event after it, and then continues live.
 
 ### 4. Pure reducers: events become state
 
@@ -206,6 +109,78 @@ converge on committed session history with eventual-consistency guarantees.
 Delivery is at-least-once, so external operations must be idempotent. Each durable event carries a
 stable event ID that, together with its session ID, provides the operation's idempotency key.
 
+## What this unlocks
+
+### Live state on every client
+
+Every tab, embedded surface, and admin view follows the same durable session. If one client loses
+its connection or falls behind, it returns to the current state instead of resetting the session or
+guessing which updates it missed.
+
+Server-side rendering does not require a second state model. The server can render a durable
+snapshot, and the browser can continue from that exact point as new events arrive.
+
+### Durable side effects
+
+If `AssistantMessageCommitted` should post a result to Slack and Slack is unavailable, the agent
+keeps moving. When Slack recovers, it receives the committed events and converges with the session
+history. External availability stays off the application's critical path without sacrificing
+reliable delivery.
+
+See the [Slack bridge example](./examples/002-slack-bridge) for idempotent ingress, a custom reducer,
+and durable outbound delivery.
+
+**Durable state. Durable side effects.**
+
+### Agents survive deploys and failures
+
+Deploys and failures restart the application—not the session.
+
+EDA rebuilds framework and product state from durable history, repairs incomplete lifecycle
+boundaries, and transparently continues eligible in-progress work in a replacement run. Completed
+tool calls are not blindly repeated, queued commands remain durable, and reconnecting clients see
+the recovery transitions before new live activity.
+
+### Production sessions become UI fixtures
+
+A production event sequence can become a test fixture. Replay it one event at a time, stop at any
+sequence, and assert exactly what the UI should show: the running tool card, the active sandbox, the
+pending approval, the completed delivery, or the recovered run.
+
+A difficult production session becomes a reproducible UI test instead of a story in a bug report.
+The package includes pure reducer tests, generated state-machine properties, canned-model journeys,
+crash-prefix simulations, and an [offline trace harness](./testing/offline-trace) that writes durable
+and live event artifacts.
+
+### Tracing for every agent run
+
+See what happened, in what order, and where the time went.
+
+EDA uses Effect spans across meaningful runtime boundaries, including command admission, runs,
+turns, model inference, tools, event streaming, durable sinks, and recovery. Trace context survives
+the durable boundaries that separate ingress, execution, and side effects, and Effect telemetry can
+be exported through OpenTelemetry to Google Cloud Trace or another existing backend.
+
+![Google Cloud Trace view of an EDA session, showing agent turns, model inference, tool calls, sandbox execution, and an external integration in one timeline.](./docs/assets/gcp-trace.png)
+
+## Built for Cloudflare Durable Objects
+
+EDA's first host maps one session to one
+[Cloudflare Durable Object](https://developers.cloudflare.com/durable-objects/). The object is the
+durable coordinator for that session's state, execution, SQLite event log, live WebSockets, alarms,
+and sink cursors.
+
+This is an unusually natural fit:
+
+- Deterministic routing sends every request for a session to the same logical object
+- Per-object SQLite stores the ordered history beside the runtime that owns it
+- WebSockets terminate at the same boundary that owns the state
+- Alarms wake evicted sessions for recovery, keep-alive, and sink draining
+
+Durable Objects are the first host, not the whole architecture. EDA's runtime depends on small
+storage, scheduling, identity, and live-delivery boundaries that another platform can implement
+with equivalent semantics.
+
 ## Get started
 
 Install the public alpha from npm. Using the `alpha` tag keeps prerelease consumers on the current
@@ -237,16 +212,6 @@ Start with the executable examples:
 | [`001-no-tools`](./examples/001-no-tools) | Minimal Durable Object session and durable command admission. |
 | [`002-slack-bridge`](./examples/002-slack-bridge) | Idempotent ingress, application events and reducers, and a retrying durable sink. |
 | [`003-sandbox-lifecycle`](./examples/003-sandbox-lifecycle) | Tool and product events reduced into one UI model, including snapshot-to-stream handoff. |
-
-## Why Effect?
-
-Agent sessions combine long-running model streams, concurrent tools, interruption, cleanup, retries,
-external services, and observability. EDA uses [Effect](https://effect.website/) so those concerns
-share one structured execution model rather than a collection of detached promises and callbacks.
-
-Effect is the implementation foundation, not the product pitch. The reason to use EDA is the
-durable application model; Effect is what lets the runtime execute that model with scoped resources,
-typed boundaries, structured concurrency, and first-class tracing.
 
 ## Why EDA instead of another agent SDK or framework?
 
@@ -314,6 +279,16 @@ client catch-up, restart recovery, production-derived UI fixtures, and durable s
 - Tool calls run as scoped Effect programs for interruption-safe cancellation and resource cleanup
 - Trace propagation and Effect span instrumentation across runtime boundaries
 - Queue, steer, interrupt, stop, and idempotent command admission
+
+## Why Effect?
+
+Agent sessions combine long-running model streams, concurrent tools, interruption, cleanup, retries,
+external services, and observability. EDA uses [Effect](https://effect.website/) so those concerns
+share one structured execution model rather than a collection of detached promises and callbacks.
+
+Effect is the implementation foundation, not the product pitch. The reason to use EDA is the
+durable application model; Effect is what lets the runtime execute that model with scoped resources,
+typed boundaries, structured concurrency, and first-class tracing.
 
 ## Documentation
 
