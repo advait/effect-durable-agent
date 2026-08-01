@@ -8,9 +8,9 @@
 >
   <title id="title">An illustrative EDA event sequence</title>
   <desc id="description">
-    Ten events ordered from top to bottom. Neutral cards are EDA framework events and muted rust
-    cards are application events. Sandbox, file, and approval events appear between agent tool and
-    message events.
+    Ten numbered events ordered from top to bottom. Neutral cards are EDA framework events and
+    muted rust cards are application events. Sandbox, file, and approval events appear between
+    agent tool and message events.
   </desc>
 
   <defs>
@@ -19,9 +19,9 @@
         fill: #2d3142;
         font: 600 16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
-      .sequence {
-        fill: #4f5d75;
-        font: 500 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      .step-number {
+        fill: #c8cacf;
+        font: 500 40px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
       .badge-text {
         fill: #ffffff;
@@ -47,103 +47,82 @@
       .app-badge {
         fill: #9a674f;
       }
-      .timeline {
-        stroke: #bfc0c0;
-        stroke-width: 2.5;
-      }
-      .framework-dot {
-        fill: #4f5d75;
-      }
-      .app-dot {
-        fill: #9a674f;
-      }
     </style>
   </defs>
 
   <rect width="1000" height="650" rx="18" fill="#f5f5f5" />
 
-  <g transform="translate(-50 -65)">
-  <line class="timeline" x1="82" y1="118" x2="82" y2="634" />
+  <g transform="translate(-40 -65)">
 
   <g transform="translate(40 100)">
-    <circle class="framework-dot" cx="42" cy="25" r="7" />
     <rect class="framework-card" x="74" width="886" height="50" rx="12" />
-    <text class="sequence" x="102" y="31" text-anchor="middle">1</text>
-    <rect class="framework-badge" x="128" y="13" width="52" height="24" rx="12" />
-    <text class="badge-text" x="154" y="29" text-anchor="middle">EDA</text>
-    <text class="event-name" x="202" y="31">CommandAdmitted</text>
+    <text class="step-number" x="58" y="39" text-anchor="end">1</text>
+    <rect class="framework-badge" x="96" y="13" width="52" height="24" rx="12" />
+    <text class="badge-text" x="122" y="29" text-anchor="middle">EDA</text>
+    <text class="event-name" x="170" y="31">CommandAdmitted</text>
   </g>
   <g transform="translate(40 158)">
-    <circle class="framework-dot" cx="42" cy="25" r="7" />
     <rect class="framework-card" x="74" width="886" height="50" rx="12" />
-    <text class="sequence" x="102" y="31" text-anchor="middle">2</text>
-    <rect class="framework-badge" x="128" y="13" width="52" height="24" rx="12" />
-    <text class="badge-text" x="154" y="29" text-anchor="middle">EDA</text>
-    <text class="event-name" x="202" y="31">RunStarted</text>
+    <text class="step-number" x="58" y="39" text-anchor="end">2</text>
+    <rect class="framework-badge" x="96" y="13" width="52" height="24" rx="12" />
+    <text class="badge-text" x="122" y="29" text-anchor="middle">EDA</text>
+    <text class="event-name" x="170" y="31">RunStarted</text>
   </g>
   <g transform="translate(40 216)">
-    <circle class="framework-dot" cx="42" cy="25" r="7" />
     <rect class="framework-card" x="74" width="886" height="50" rx="12" />
-    <text class="sequence" x="102" y="31" text-anchor="middle">3</text>
-    <rect class="framework-badge" x="128" y="13" width="52" height="24" rx="12" />
-    <text class="badge-text" x="154" y="29" text-anchor="middle">EDA</text>
-    <text class="event-name" x="202" y="31">ToolCallStarted</text>
+    <text class="step-number" x="58" y="39" text-anchor="end">3</text>
+    <rect class="framework-badge" x="96" y="13" width="52" height="24" rx="12" />
+    <text class="badge-text" x="122" y="29" text-anchor="middle">EDA</text>
+    <text class="event-name" x="170" y="31">ToolCallStarted</text>
   </g>
   <g transform="translate(40 274)">
-    <circle class="app-dot" cx="42" cy="25" r="7" />
     <rect class="app-card" x="74" width="886" height="50" rx="12" />
-    <text class="sequence" x="102" y="31" text-anchor="middle">4</text>
-    <rect class="app-badge" x="128" y="13" width="52" height="24" rx="12" />
-    <text class="badge-text" x="154" y="29" text-anchor="middle">APP</text>
-    <text class="event-name" x="202" y="31">SandboxStarted</text>
+    <text class="step-number" x="58" y="39" text-anchor="end">4</text>
+    <rect class="app-badge" x="96" y="13" width="52" height="24" rx="12" />
+    <text class="badge-text" x="122" y="29" text-anchor="middle">APP</text>
+    <text class="event-name" x="170" y="31">SandboxStarted</text>
   </g>
   <g transform="translate(40 332)">
-    <circle class="app-dot" cx="42" cy="25" r="7" />
     <rect class="app-card" x="74" width="886" height="50" rx="12" />
-    <text class="sequence" x="102" y="31" text-anchor="middle">5</text>
-    <rect class="app-badge" x="128" y="13" width="52" height="24" rx="12" />
-    <text class="badge-text" x="154" y="29" text-anchor="middle">APP</text>
-    <text class="event-name" x="202" y="31">FileRead</text>
+    <text class="step-number" x="58" y="39" text-anchor="end">5</text>
+    <rect class="app-badge" x="96" y="13" width="52" height="24" rx="12" />
+    <text class="badge-text" x="122" y="29" text-anchor="middle">APP</text>
+    <text class="event-name" x="170" y="31">FileRead</text>
   </g>
   <g transform="translate(40 390)">
-    <circle class="app-dot" cx="42" cy="25" r="7" />
     <rect class="app-card" x="74" width="886" height="50" rx="12" />
-    <text class="sequence" x="102" y="31" text-anchor="middle">6</text>
-    <rect class="app-badge" x="128" y="13" width="52" height="24" rx="12" />
-    <text class="badge-text" x="154" y="29" text-anchor="middle">APP</text>
-    <text class="event-name" x="202" y="31">ApprovalRequested</text>
+    <text class="step-number" x="58" y="39" text-anchor="end">6</text>
+    <rect class="app-badge" x="96" y="13" width="52" height="24" rx="12" />
+    <text class="badge-text" x="122" y="29" text-anchor="middle">APP</text>
+    <text class="event-name" x="170" y="31">ApprovalRequested</text>
   </g>
   <g transform="translate(40 448)">
-    <circle class="app-dot" cx="42" cy="25" r="7" />
     <rect class="app-card" x="74" width="886" height="50" rx="12" />
-    <text class="sequence" x="102" y="31" text-anchor="middle">7</text>
-    <rect class="app-badge" x="128" y="13" width="52" height="24" rx="12" />
-    <text class="badge-text" x="154" y="29" text-anchor="middle">APP</text>
-    <text class="event-name" x="202" y="31">ApprovalGranted</text>
+    <text class="step-number" x="58" y="39" text-anchor="end">7</text>
+    <rect class="app-badge" x="96" y="13" width="52" height="24" rx="12" />
+    <text class="badge-text" x="122" y="29" text-anchor="middle">APP</text>
+    <text class="event-name" x="170" y="31">ApprovalGranted</text>
   </g>
   <g transform="translate(40 506)">
-    <circle class="framework-dot" cx="42" cy="25" r="7" />
     <rect class="framework-card" x="74" width="886" height="50" rx="12" />
-    <text class="sequence" x="102" y="31" text-anchor="middle">8</text>
-    <rect class="framework-badge" x="128" y="13" width="52" height="24" rx="12" />
-    <text class="badge-text" x="154" y="29" text-anchor="middle">EDA</text>
-    <text class="event-name" x="202" y="31">ToolCallCompleted</text>
+    <text class="step-number" x="58" y="39" text-anchor="end">8</text>
+    <rect class="framework-badge" x="96" y="13" width="52" height="24" rx="12" />
+    <text class="badge-text" x="122" y="29" text-anchor="middle">EDA</text>
+    <text class="event-name" x="170" y="31">ToolCallCompleted</text>
   </g>
   <g transform="translate(40 564)">
-    <circle class="framework-dot" cx="42" cy="25" r="7" />
     <rect class="framework-card" x="74" width="886" height="50" rx="12" />
-    <text class="sequence" x="102" y="31" text-anchor="middle">9</text>
-    <rect class="framework-badge" x="128" y="13" width="52" height="24" rx="12" />
-    <text class="badge-text" x="154" y="29" text-anchor="middle">EDA</text>
-    <text class="event-name" x="202" y="31">AssistantMessageCommitted</text>
+    <text class="step-number" x="58" y="39" text-anchor="end">9</text>
+    <rect class="framework-badge" x="96" y="13" width="52" height="24" rx="12" />
+    <text class="badge-text" x="122" y="29" text-anchor="middle">EDA</text>
+    <text class="event-name" x="170" y="31">AssistantMessageCommitted</text>
   </g>
   <g transform="translate(40 622)">
-    <circle class="framework-dot" cx="42" cy="25" r="7" />
     <rect class="framework-card" x="74" width="886" height="50" rx="12" />
-    <text class="sequence" x="102" y="31" text-anchor="middle">10</text>
-    <rect class="framework-badge" x="128" y="13" width="52" height="24" rx="12" />
-    <text class="badge-text" x="154" y="29" text-anchor="middle">EDA</text>
-    <text class="event-name" x="202" y="31">RunCompleted</text>
+    <text class="step-number" x="58" y="39" text-anchor="end">10</text>
+    <rect class="framework-badge" x="96" y="13" width="52" height="24" rx="12" />
+    <text class="badge-text" x="122" y="29" text-anchor="middle">EDA</text>
+    <text class="event-name" x="170" y="31">RunCompleted</text>
   </g>
   </g>
 
