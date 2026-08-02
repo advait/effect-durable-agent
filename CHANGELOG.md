@@ -2,6 +2,11 @@
 
 All notable changes to Effect Durable Agent will be documented in this file.
 
+## Unreleased
+
+- Let applications project instruction and data messages from current reducer state into each model prompt
+- Expose the active command and run identity to application prompt projectors
+
 ## 0.0.1
 
 - Prepare the first public package as `@advait/effect-durable-agent`
