@@ -1208,6 +1208,8 @@ const makeLiveSessionState = Effect.gen(function* () {
             ? {}
             : { maxToolCallsPerRun: input.maxToolCallsPerRun }),
           promptInput: {
+            commandId,
+            runId,
             sessionId: sessionContext.sessionId,
             state: promptState.reduced,
             reducerStates: promptState.reducerStates,
@@ -1267,6 +1269,8 @@ const makeLiveSessionState = Effect.gen(function* () {
             ? {}
             : { maxToolCallsPerRun: input.maxToolCallsPerRun }),
           promptInput: {
+            commandId: command.commandId,
+            runId,
             sessionId: sessionContext.sessionId,
             state: current.reduced,
             reducerStates: current.reducerStates,
@@ -1644,6 +1648,8 @@ const makeLiveSessionState = Effect.gen(function* () {
         ? {}
         : { maxToolCallsPerRun: input.maxToolCallsPerRun }),
       promptInput: {
+        commandId: continuation.command.commandId,
+        runId: continuation.runId,
         sessionId: sessionContext.sessionId,
         state: promptState.reduced,
         reducerStates: promptState.reducerStates,
@@ -1948,6 +1954,8 @@ const makeLiveSessionState = Effect.gen(function* () {
                 ? {}
                 : { maxToolCallsPerRun: active.maxToolCallsPerRun }),
               promptInput: {
+                commandId: active.commandId,
+                runId: active.runId,
                 sessionId: sessionContext.sessionId,
                 state: current,
                 reducerStates: (yield* currentData()).reducerStates,
@@ -1971,6 +1979,8 @@ const makeLiveSessionState = Effect.gen(function* () {
                 ? {}
                 : { maxToolCallsPerRun: active.maxToolCallsPerRun }),
               promptInput: {
+                commandId: active.commandId,
+                runId: active.runId,
                 sessionId: sessionContext.sessionId,
                 state: current,
                 reducerStates: (yield* currentData()).reducerStates,

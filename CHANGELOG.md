@@ -4,6 +4,8 @@ All notable changes to Effect Durable Agent will be documented in this file.
 
 ## Unreleased
 
+- Let applications project instruction and data messages from current reducer state into each model prompt
+- Expose the active command and run identity to application prompt projectors
 - Separate WebSocket protocol schemas into explicit domain and wire surfaces
 - Add a typed domain-frame encoder, a host adapter for app-event narrowing, and transformation
   round-trip coverage
