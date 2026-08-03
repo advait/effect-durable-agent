@@ -12,6 +12,7 @@ import {
   frameworkReducedStateReducerName,
   frameworkReducedStateReducerSchemaVersion,
   pendingCommands,
+  type ReducedState,
 } from "../domain/reduced-state";
 import { StopTurnCommand, SubmitMessageCommand } from "../types/commands";
 import { CommandId, EventId, RunId, SequenceNumber, SessionId, TurnId } from "../types/core";
@@ -31,6 +32,7 @@ import {
 } from "../types/events";
 import { EDASessionStore, EDASessionStoreError, type EDASessionStoreShape } from "./session-store";
 import { LiveEventBus } from "./live-event-bus";
+import { EDAPromptProjector } from "./prompt-projector";
 import { SessionState } from "./session-state";
 import { makeEdaExportingTracer, type EDAExportedSpan } from "./tracing";
 import { makeEdaTestLayer } from "../testkit/layers";
@@ -173,11 +175,20 @@ const waitForFrameworkCheckpoint = (store: EDASessionStoreShape, throughSeq: Seq
 describe("SessionState", () => {
   it("starts a legacy admitted submit without migrating persisted session state", async () => {
     const prompts: Array<Prompt.RawInput> = [];
+    const projectedStates: Array<ReducedState> = [];
     const LegacySessionLayer = makeEdaTestLayer({
       sessionId: SessionId.make(SESSION_ID),
       seedEvents: [legacySubmitAdmittedEvent],
       parts: finishedStream,
       onStreamText: ({ prompt }) => prompts.push(prompt),
+      promptProjectorLayer: Layer.succeed(EDAPromptProjector, {
+        projectContext: (input) =>
+          Effect.sync(() => {
+            projectedStates.push(input.state);
+            return { instructions: [], messages: [] };
+          }),
+        projectState: (input) => Effect.succeed(input.state),
+      }),
     });
     const program = Effect.scoped(
       Effect.gen(function* () {
@@ -199,6 +210,17 @@ describe("SessionState", () => {
     expect(turnStarted).toMatchObject({
       event: { payload: { inputMessageIds: [userMessage?.event.payload.messageId] } },
     });
+    expect(projectedStates[0]?.commandQueues.active).toMatchObject({
+      commandId: submitCommand.commandId,
+      runId: turnStarted?.event.payload.runId,
+    });
+    expect(Array.from(projectedStates[0]?.messages.values() ?? [])).toMatchObject([
+      {
+        _tag: "User",
+        consumedTurnId: turnStarted?.event.payload.turnId,
+        messageId: userMessage?.event.payload.messageId,
+      },
+    ]);
   });
 
   it("folds durable appends into the authoritative snapshot before returning", async () => {
