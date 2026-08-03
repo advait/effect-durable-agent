@@ -5,7 +5,7 @@ All notable changes to Effect Durable Agent will be documented in this file.
 ## Unreleased
 
 - Let applications project instruction and data messages from current reducer state into each model prompt
-- Expose the active command and run identity to application prompt projectors
+- Build prompts only after turn input selection is committed into durable reducer state
 
 ## 0.0.1
 
