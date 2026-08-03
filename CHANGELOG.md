@@ -4,6 +4,11 @@ All notable changes to Effect Durable Agent will be documented in this file.
 
 ## Unreleased
 
+## 0.1.0-alpha.3
+
+- Publish the state-projected prompt context and WebSocket schema changes from the unpublished `0.1.0-alpha.2` package
+- Pin prerelease publication to the npm `alpha` dist-tag
+
 ## 0.1.0-alpha.2
 
 - Let applications project instruction and data messages from current reducer state into each model prompt
