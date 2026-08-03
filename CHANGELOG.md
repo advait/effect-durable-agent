@@ -4,6 +4,10 @@ All notable changes to Effect Durable Agent will be documented in this file.
 
 ## Unreleased
 
+## 0.1.0-alpha.2
+
+- Let applications project instruction and data messages from current reducer state into each model prompt
+- Build prompts only after turn input selection is committed into durable reducer state
 - Separate WebSocket protocol schemas into explicit domain and wire surfaces
 - Add a typed domain-frame encoder, a host adapter for app-event narrowing, and transformation
   round-trip coverage

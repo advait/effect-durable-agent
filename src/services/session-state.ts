@@ -44,7 +44,6 @@ import {
   ResumePendingMessagesCommand,
   StopTurnCommand,
   SubmitMessageCommand,
-  UserMessageContent,
   type EDACommand,
 } from "../types/commands";
 import {
@@ -84,11 +83,7 @@ import { EventFactory } from "./event-factory";
 import { IdGenerator } from "./id-generator";
 import { EDAKeepAlive } from "./keep-alive";
 import { LiveEventBus } from "./live-event-bus";
-import {
-  buildEDAPrompt,
-  EDAPromptProjector,
-  type EDAPromptProjectionInput,
-} from "./prompt-projector";
+import { buildEDAPrompt, EDAPromptProjector } from "./prompt-projector";
 import {
   decodeReducerState,
   encodeReducerState,
@@ -154,10 +149,10 @@ export interface SessionStateSnapshotData {
 interface StartTurnInput {
   readonly commandId: CommandId;
   readonly commandStarted: CommittedDurableEvent;
+  readonly inputMessageIds: ReadonlyArray<MessageId>;
   readonly runId: RunId;
   readonly modelSelection: ModelSelectionPayload;
   readonly maxToolCallsPerRun?: NonNegativeInt;
-  readonly promptInput: EDAPromptProjectionInput;
   readonly runScope: Scope.Closeable;
   readonly runSpan: Tracer.Span;
 }
@@ -1080,12 +1075,22 @@ const makeLiveSessionState = Effect.gen(function* () {
     );
 
   const startTurn = Effect.fn(function* (input: StartTurnInput) {
-    const inputMessageIds = input.promptInput.selectedUserMessages.map(
-      (message) => message.messageId,
-    );
-    const prompt = yield* buildEDAPrompt(promptProjector, input.promptInput);
     const turnId = yield* ids.makeTurnId();
-    const current = yield* currentReduced();
+    const started = yield* appendDurable(
+      yield* events.turnStarted({
+        runId: input.runId,
+        turnId,
+        ...(input.inputMessageIds.length === 0 ? {} : { inputMessageIds: input.inputMessageIds }),
+      }),
+    );
+    const promptState = yield* currentData();
+    const prompt = yield* buildEDAPrompt(promptProjector, {
+      sessionId: sessionContext.sessionId,
+      state: promptState.reduced,
+      reducerStates: promptState.reducerStates,
+      context: yield* contextProjectionFor(promptState.reduced),
+    });
+    const current = promptState.reduced;
     const remainingToolCalls = remainingToolCallsForRun(
       current,
       input.runId,
@@ -1100,15 +1105,8 @@ const makeLiveSessionState = Effect.gen(function* () {
       "eda.command.id": input.commandId,
       "eda.run.id": input.runId,
       "eda.turn.id": turnId,
-      "eda.message.input_count": inputMessageIds.length,
+      "eda.message.input_count": input.inputMessageIds.length,
     });
-    const started = yield* appendDurable(
-      yield* events.turnStarted({
-        runId: input.runId,
-        turnId,
-        ...(inputMessageIds.length === 0 ? {} : { inputMessageIds }),
-      }),
-    );
     const turnScope = yield* Scope.fork(input.runScope, "sequential");
     const fiber = yield* keepAlive
       .withActiveWork(
@@ -1194,26 +1192,15 @@ const makeLiveSessionState = Effect.gen(function* () {
           ...(userMessage === undefined ? [] : [userMessage]),
           runStarted,
         ]);
-        const selectedUserContent =
-          submittedMessage === undefined
-            ? submit.content
-            : Schema.decodeUnknownSync(UserMessageContent)(submittedMessage.content);
-        const promptState = yield* currentData();
         return yield* startTurn({
           commandId,
           commandStarted: startedEvents[0]!,
+          inputMessageIds: [messageId],
           runId,
           modelSelection: input.modelSelection,
           ...(input.maxToolCallsPerRun === undefined
             ? {}
             : { maxToolCallsPerRun: input.maxToolCallsPerRun }),
-          promptInput: {
-            sessionId: sessionContext.sessionId,
-            state: promptState.reduced,
-            reducerStates: promptState.reducerStates,
-            context: yield* contextProjectionFor(promptState.reduced),
-            selectedUserMessages: [{ commandId, content: selectedUserContent, messageId }],
-          },
           runScope: activeRunTrace.runScope,
           runSpan: activeRunTrace.runSpan,
         });
@@ -1261,22 +1248,12 @@ const makeLiveSessionState = Effect.gen(function* () {
         return yield* startTurn({
           commandId: command.commandId,
           commandStarted: started[0]!,
+          inputMessageIds: pending.map((message) => message.messageId),
           runId,
           modelSelection: input.modelSelection,
           ...(input.maxToolCallsPerRun === undefined
             ? {}
             : { maxToolCallsPerRun: input.maxToolCallsPerRun }),
-          promptInput: {
-            sessionId: sessionContext.sessionId,
-            state: current.reduced,
-            reducerStates: current.reducerStates,
-            context: yield* contextProjectionFor(current.reduced),
-            selectedUserMessages: pending.map((message) => ({
-              commandId: message.commandId,
-              content: message.content,
-              messageId: message.messageId,
-            })),
-          },
           runScope: activeRunTrace.runScope,
           runSpan: activeRunTrace.runSpan,
         });
@@ -1638,22 +1615,12 @@ const makeLiveSessionState = Effect.gen(function* () {
     yield* startTurn({
       commandId: continuation.command.commandId,
       commandStarted,
+      inputMessageIds: pendingInputs.map((message) => message.messageId),
       runId: continuation.runId,
       modelSelection: input.modelSelection,
       ...(input.maxToolCallsPerRun === undefined
         ? {}
         : { maxToolCallsPerRun: input.maxToolCallsPerRun }),
-      promptInput: {
-        sessionId: sessionContext.sessionId,
-        state: promptState.reduced,
-        reducerStates: promptState.reducerStates,
-        context: yield* contextProjectionFor(promptState.reduced),
-        selectedUserMessages: pendingInputs.map((message) => ({
-          commandId: message.commandId,
-          content: message.content,
-          messageId: message.messageId,
-        })),
-      },
       runScope: continuation.runScope,
       runSpan: continuation.runSpan,
     });
@@ -1942,22 +1909,12 @@ const makeLiveSessionState = Effect.gen(function* () {
             return yield* startTurn({
               commandId: active.commandId,
               commandStarted: active.commandStarted,
+              inputMessageIds: continuation.steerings.map((steering) => steering.messageId),
               runId: active.runId,
               modelSelection: active.modelSelection,
               ...(active.maxToolCallsPerRun === undefined
                 ? {}
                 : { maxToolCallsPerRun: active.maxToolCallsPerRun }),
-              promptInput: {
-                sessionId: sessionContext.sessionId,
-                state: current,
-                reducerStates: (yield* currentData()).reducerStates,
-                context: yield* contextProjectionFor(current),
-                selectedUserMessages: continuation.steerings.map((steering) => ({
-                  commandId: steering.commandId,
-                  content: steering.content,
-                  messageId: steering.messageId,
-                })),
-              },
               runScope: active.runScope,
               runSpan: active.runSpan,
             });
@@ -1965,18 +1922,12 @@ const makeLiveSessionState = Effect.gen(function* () {
             return yield* startTurn({
               commandId: active.commandId,
               commandStarted: active.commandStarted,
+              inputMessageIds: [],
               runId: active.runId,
               modelSelection: active.modelSelection,
               ...(active.maxToolCallsPerRun === undefined
                 ? {}
                 : { maxToolCallsPerRun: active.maxToolCallsPerRun }),
-              promptInput: {
-                sessionId: sessionContext.sessionId,
-                state: current,
-                reducerStates: (yield* currentData()).reducerStates,
-                context: yield* contextProjectionFor(current),
-                selectedUserMessages: [],
-              },
               runScope: active.runScope,
               runSpan: active.runSpan,
             });

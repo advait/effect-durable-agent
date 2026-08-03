@@ -1,6 +1,6 @@
 {
   "name": "effect-durable-agent",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "A Redux-inspired state-management and durable execution layer for agentic applications on Cloudflare Durable Objects.",
   "keywords": [
     "agents",
