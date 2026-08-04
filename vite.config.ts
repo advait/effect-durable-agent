@@ -64,7 +64,28 @@ export default defineConfig({
   lint: {
     ignorePatterns: authoredFileIgnorePatterns,
     jsPlugins: ["./tooling/oxlint/index.mjs"],
+    options: {
+      typeAware: true,
+    },
+    // @ts-expect-error @effect/tsgo patches in this plugin, which Oxlint's generated plugin-name union omits: https://github.com/Effect-TS/tsgo/blob/main/docs/README.md
+    plugins: ["effecttsgo"],
+    rules: {
+      // Plugin activation promotes this upstream-disabled diagnostic to a warning.
+      "effecttsgo/any-unknown-in-error-context": "off",
+    },
     overrides: [
+      {
+        // These generic test adapters intentionally erase channels at their test-layer boundary.
+        files: [
+          "src/services/session-state-control-recovery-partial.test.ts",
+          "src/services/session-store.test.ts",
+          "src/services/tool-executor.test.ts",
+        ],
+        rules: {
+          "effecttsgo/missing-effect-context": "off",
+          "effecttsgo/missing-effect-error": "off",
+        },
+      },
       {
         files: ["src/**/*.ts", "examples/**/*.ts", "testing/**/*.ts"],
         rules: {
