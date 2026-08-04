@@ -126,7 +126,7 @@ export const runWebSocketSubscriber = (
               ? Effect.void
               : Effect.gen(function* () {
                   const seq = yield* Ref.get(lastAckedSeq);
-                  yield* new SubscriberLagged({
+                  return yield* new SubscriberLagged({
                     subscriberId: input.subscriberId,
                     lastAckedSeq: seq,
                     reason: "buffer-overflow",
@@ -211,7 +211,7 @@ const sendLoop = (input: {
       });
       const encodedBytes = encodedFrameBytes(frame);
       if (encodedBytes > input.input.policy.maxFrameBytes) {
-        yield* new SubscriberProtocolError({
+        return yield* new SubscriberProtocolError({
           subscriberId: input.input.subscriberId,
           message: `Encoded WebSocket frame exceeded maxFrameBytes (${encodedBytes} > ${input.input.policy.maxFrameBytes})`,
         });
@@ -274,9 +274,15 @@ const receiveAcks = (input: {
     Effect.gen(function* () {
       const frame = yield* Queue.take(input.input.transport.incoming);
       if (frame._tag !== "ack") {
-        yield* new SubscriberProtocolError({
+        return yield* new SubscriberProtocolError({
           subscriberId: input.input.subscriberId,
-          message: `Unsupported client frame ${(frame as { readonly _tag?: string })._tag ?? "unknown"}`,
+          message: `Unsupported client frame ${
+            (
+              frame as {
+                readonly _tag?: string;
+              }
+            )._tag ?? "unknown"
+          }`,
         });
       }
       yield* applyAck(input, frame as EDAWebSocketAckFrame);
@@ -294,7 +300,7 @@ const applyAck = (
 
     if (ack.frameId <= lastAckedFrame) {
       if (ack.durableThroughSeq > currentSeq) {
-        yield* new SubscriberProtocolError({
+        return yield* new SubscriberProtocolError({
           subscriberId: input.input.subscriberId,
           message: "Duplicate ACK attempted to advance durable seq",
         });
@@ -303,14 +309,14 @@ const applyAck = (
     }
 
     if (ack.frameId > lastSentFrame) {
-      yield* new SubscriberProtocolError({
+      return yield* new SubscriberProtocolError({
         subscriberId: input.input.subscriberId,
         message: "ACK referenced an unsent frame",
       });
     }
 
     if (ack.durableThroughSeq < currentSeq) {
-      yield* new SubscriberProtocolError({
+      return yield* new SubscriberProtocolError({
         subscriberId: input.input.subscriberId,
         message: "ACK durable seq moved backwards",
       });
@@ -319,7 +325,7 @@ const applyAck = (
     const frames = yield* Ref.get(input.inFlight);
     const acknowledged = frames.filter((frame) => frame.frameId <= ack.frameId);
     if (acknowledged.length === 0) {
-      yield* new SubscriberProtocolError({
+      return yield* new SubscriberProtocolError({
         subscriberId: input.input.subscriberId,
         message: "ACK referenced no in-flight frames",
       });
@@ -331,7 +337,7 @@ const applyAck = (
       ),
     );
     if (ack.durableThroughSeq > allowedDurableSeq) {
-      yield* new SubscriberProtocolError({
+      return yield* new SubscriberProtocolError({
         subscriberId: input.input.subscriberId,
         message: "ACK durable seq exceeded sent frame boundary",
       });
