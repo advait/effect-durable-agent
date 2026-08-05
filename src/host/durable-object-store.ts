@@ -10,6 +10,7 @@ import { CompactionSummaryArtifact } from "../domain/context-projection";
 import {
   DurableEventEnvelope,
   assistantMessageCommittedEventType,
+  assistantMessageImportedEventType,
   assistantPartialCommittedEventType,
   commandAdmittedEventType,
   commandCancelledEventType,
@@ -675,6 +676,7 @@ const eventLogFactPayload = (namespace: string, type: string, payload: unknown):
     case steeringMessageQueuedEventType:
       return pick(record, ["commandId", "messageId", "runId"]);
     case assistantMessageCommittedEventType:
+    case assistantMessageImportedEventType:
       return pick(record, ["messageId", "runId", "turnId", "inferenceId"]);
     case assistantPartialCommittedEventType:
       return pick(record, ["messageId", "runId", "turnId", "inferenceId", "reason"]);
@@ -920,6 +922,7 @@ const contextMessageEventTypes = new Set<string>([
   userMessageCommittedEventType,
   steeringMessageQueuedEventType,
   assistantMessageCommittedEventType,
+  assistantMessageImportedEventType,
   assistantPartialCommittedEventType,
 ]);
 

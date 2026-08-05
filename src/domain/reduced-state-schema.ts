@@ -313,6 +313,7 @@ const messageRecordSchema = <UserContent extends Schema.Top, AssistantPart exten
       ...MessageIdentityFields,
       _tag: Schema.Literal("Assistant"),
       content: AssistantMessageContent,
+      imported: Schema.optionalKey(Schema.Literal(true)),
       inferenceId: InferenceId,
       promptParts: Schema.optionalKey(Schema.Array(assistantPart)),
       runId: RunId,

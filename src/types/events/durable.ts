@@ -104,6 +104,7 @@ export const userMessageCancelledEventType = makeEventType("UserMessageCancelled
 export const messageQueuePausedEventType = makeEventType("MessageQueuePaused");
 export const pendingMessagesPausedEventType = makeEventType("PendingMessagesPaused");
 export const assistantMessageCommittedEventType = makeEventType("AssistantMessageCommitted");
+export const assistantMessageImportedEventType = makeEventType("AssistantMessageImported");
 export const assistantPartialCommittedEventType = makeEventType("AssistantPartialCommitted");
 
 /** Semantic assistant content derived from canonical prompt parts for query convenience. */
@@ -285,6 +286,21 @@ export const AssistantMessageCommittedEvent = durableEventSchema(
 );
 export type AssistantMessageCommittedEvent = typeof AssistantMessageCommittedEvent.Type;
 
+/** Payload recorded when pre-existing assistant context is imported from an external transport. */
+export const AssistantMessageImportedPayload = Schema.Struct({
+  messageId: MessageId,
+  runId: RunId,
+  turnId: TurnId,
+  inferenceId: InferenceId,
+  promptParts: AssistantPromptParts,
+});
+export type AssistantMessageImportedPayload = typeof AssistantMessageImportedPayload.Type;
+export const AssistantMessageImportedEvent = durableEventSchema(
+  assistantMessageImportedEventType,
+  AssistantMessageImportedPayload,
+);
+export type AssistantMessageImportedEvent = typeof AssistantMessageImportedEvent.Type;
+
 /** Payload recorded when a partial assistant message is preserved durably. */
 export const AssistantPartialCommittedPayload = Schema.Struct({
   messageId: MessageId,
@@ -313,6 +329,7 @@ export const MessageEvent = Schema.Union([
   MessageQueuePausedEvent,
   PendingMessagesPausedEvent,
   AssistantMessageCommittedEvent,
+  AssistantMessageImportedEvent,
   AssistantPartialCommittedEvent,
 ]);
 export type MessageEvent = typeof MessageEvent.Type;
