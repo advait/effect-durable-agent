@@ -8,10 +8,9 @@ their published manifests.
 
 ## Current public baseline
 
-The current lockstep baseline is `0.1.0-alpha.4`. The `alpha` npm dist-tag resolves to that version
-for core, Cloudflare, and celld. Core's `latest` remains on `0.1.0-alpha.1`; npm assigned `latest`
-to `0.1.0-alpha.4` when each new host package was first created. Consumers should therefore name
-the exact lockstep version rather than relying on an unqualified install or a dist-tag.
+The current lockstep baseline is `0.1.0-alpha.4`. Both the `alpha` and `latest` npm dist-tags resolve
+to that version for core, Cloudflare, and celld. Consumers should still name the exact lockstep
+version so dependency updates remain deliberate.
 
 Do not reuse a published version or create a GitHub release for an older tag: publishing that
 release would run the npm workflow against an immutable registry version. The Git tag alone does
