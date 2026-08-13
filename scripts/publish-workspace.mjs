@@ -1,8 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -17,12 +25,61 @@ const run = (command, args, options = {}) =>
     stdio: options.stdio ?? ["ignore", "pipe", "inherit"],
   });
 
-const sha512 = (path) => createHash("sha512").update(readFileSync(path)).digest("base64");
+const canonicalizeJson = (value) => {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeJson);
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalizeJson(value[key])]),
+    );
+  }
+  return value;
+};
 
-const registryIntegrity = (name, version) => {
+const packageTreeIntegrity = (root) => {
+  const hash = createHash("sha512");
+  const visit = (directory, prefix) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    )) {
+      const relativePath = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+      const path = join(directory, entry.name);
+      const stat = lstatSync(path);
+      if (entry.isDirectory()) {
+        visit(path, relativePath);
+      } else if (entry.isSymbolicLink()) {
+        hash.update(`link\0${relativePath}\0${stat.mode & 0o777}\0${readlinkSync(path)}\0`);
+      } else if (entry.isFile()) {
+        const content =
+          relativePath === "package/package.json"
+            ? Buffer.from(JSON.stringify(canonicalizeJson(JSON.parse(readFileSync(path, "utf8")))))
+            : readFileSync(path);
+        hash.update(`file\0${relativePath}\0${stat.mode & 0o777}\0${content.length}\0`);
+        hash.update(content);
+      }
+    }
+  };
+  visit(root, "");
+  return hash.digest("base64");
+};
+
+const unpack = (archive, destination) => {
+  mkdirSync(destination, { recursive: true });
+  run("tar", ["-xzf", archive, "-C", destination]);
+};
+
+const packedFilename = (packResult, destination) => {
+  const packed = Array.isArray(packResult) ? packResult[0] : packResult;
+  return isAbsolute(packed.filename) ? packed.filename : join(destination, packed.filename);
+};
+
+const registryVersion = (name, version) => {
   try {
     return JSON.parse(
-      run("npm", ["view", `${name}@${version}`, "dist.integrity", "--json"], {
+      run("npm", ["view", `${name}@${version}`, "version", "--json"], {
         stdio: ["ignore", "pipe", "pipe"],
       }),
     );
@@ -41,21 +98,43 @@ try {
   for (const packageRoot of packageRoots) {
     const cwd = join(repositoryRoot, packageRoot);
     const manifest = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
-    const packResult = JSON.parse(
+    const localPackResult = JSON.parse(
       run(
         "pnpm",
         ["--config.ignore-scripts=true", "pack", "--json", "--pack-destination", temporaryRoot],
         { cwd },
       ),
     );
-    const packed = Array.isArray(packResult) ? packResult[0] : packResult;
-    const localIntegrity = `sha512-${sha512(packed.filename)}`;
-    const publishedIntegrity = registryIntegrity(manifest.name, manifest.version);
+    const localArchive = packedFilename(localPackResult, temporaryRoot);
+    const publishedVersion = registryVersion(manifest.name, manifest.version);
 
-    if (publishedIntegrity !== undefined) {
-      if (publishedIntegrity !== localIntegrity) {
+    if (publishedVersion !== undefined) {
+      const packageDirectory = manifest.name.replaceAll("/", "-");
+      const registryPackDirectory = join(temporaryRoot, `${packageDirectory}-registry`);
+      mkdirSync(registryPackDirectory, { recursive: true });
+      const registryPackResult = JSON.parse(
+        run(
+          "npm",
+          [
+            "pack",
+            `${manifest.name}@${manifest.version}`,
+            "--ignore-scripts",
+            "--json",
+            "--pack-destination",
+            registryPackDirectory,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+      const registryArchive = packedFilename(registryPackResult, registryPackDirectory);
+      const localExtracted = join(temporaryRoot, `${packageDirectory}-local-extracted`);
+      const registryExtracted = join(temporaryRoot, `${packageDirectory}-registry-extracted`);
+      unpack(localArchive, localExtracted);
+      unpack(registryArchive, registryExtracted);
+
+      if (packageTreeIntegrity(localExtracted) !== packageTreeIntegrity(registryExtracted)) {
         throw new Error(
-          `${manifest.name}@${manifest.version} already exists with different bytes; increment every workspace package version`,
+          `${manifest.name}@${manifest.version} already exists with different contents; increment every workspace package version`,
         );
       }
       process.stdout.write(`Verified existing ${manifest.name}@${manifest.version}; continuing.\n`);
@@ -64,7 +143,7 @@ try {
 
     const args = [
       "publish",
-      packed.filename,
+      localArchive,
       "--access",
       "public",
       "--tag",
