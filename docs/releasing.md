@@ -8,9 +8,10 @@ their published manifests.
 
 ## Current public baseline
 
-The current core baseline is `0.1.0-alpha.3`. The `alpha` npm dist-tag resolves to that version;
-`latest` remains on `0.1.0-alpha.1`. The Cloudflare and celld packages are introduced by the next
-lockstep release.
+The current lockstep baseline is `0.1.0-alpha.4`. The `alpha` npm dist-tag resolves to that version
+for core, Cloudflare, and celld. Core's `latest` remains on `0.1.0-alpha.1`; npm assigned `latest`
+to `0.1.0-alpha.4` when each new host package was first created. Consumers should therefore name
+the exact lockstep version rather than relying on an unqualified install or a dist-tag.
 
 Do not reuse a published version or create a GitHub release for an older tag: publishing that
 release would run the npm workflow against an immutable registry version. The Git tag alone does
@@ -32,7 +33,7 @@ For the first three-package release only, an authenticated maintainer must run `
 then `pnpm run publish:workspace`. Publish all three manifests at the same version, and configure
 the trusted publisher on both new packages immediately after that bootstrap. The publish script is
 idempotent: it verifies and skips an identical artifact already in the registry, but refuses an
-existing version with different bytes. All subsequent versions use the release workflow. Do not
+existing version with different contents. All subsequent versions use the release workflow. Do not
 add a long-lived npm publishing token to the repository.
 
 The workflow uses a GitHub-hosted runner, grants `id-token: write`, and runs a recent Node/npm pair.
@@ -48,8 +49,10 @@ registry requirements.
 
 While the API is in alpha, every package's `publishConfig.tag` remains `alpha`. The workflow also
 passes `--tag alpha` explicitly for prerelease versions, because package-manager support for the
-manifest default is not consistent. Consumers should install the same version of core and host; an
-alpha-tagged publish advances only `alpha` and does not automatically move `latest`.
+manifest default is not consistent. Consumers should install the same version of core and host. For
+an existing package, an alpha-tagged publish advances only `alpha` and does not move `latest`. npm
+may initialize `latest` when a package name is published for the first time, even when that first
+publish uses another tag; verify both tags after bootstrapping a new package name.
 
 If an alpha has been verified and should also become the default for unqualified installs, an
 authenticated maintainer can move `latest` explicitly:
