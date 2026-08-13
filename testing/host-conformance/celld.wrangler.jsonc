@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "eda-celld-conformance",
+  "main": "celld-worker.ts",
+  "compatibility_date": "2026-07-29",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "EDA_SESSION",
+        "class_name": "EDAConformanceSession",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["EDAConformanceSession"],
+    },
+  ],
+}

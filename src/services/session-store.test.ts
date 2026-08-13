@@ -50,12 +50,7 @@ import {
   UnixEpochMillis,
   userMessageCommittedEventType,
 } from "../types/events";
-import {
-  CommittedDurableEvent,
-  EDASessionStore,
-  durableObjectSerializedJsonHardCapBytes,
-  type EDASessionStoreShape,
-} from "./session-store";
+import { CommittedDurableEvent, EDASessionStore, type EDASessionStoreShape } from "./session-store";
 import {
   CompactionExecutorId,
   CompactionPolicyId,
@@ -70,13 +65,16 @@ import {
   initialReducedState,
   reducedStateCheckpointEventSeqs,
 } from "../domain/reduced-state";
-import { DurableObjectSessionStore } from "../host/durable-object-store";
+import {
+  durableObjectSerializedJsonHardCapBytes,
+  DurableObjectSessionStore,
+} from "../../packages/cloudflare/src/durable-object-store";
 import { sequentialUuidV7 } from "./id-generator";
 import type {
   DurableObjectSessionStorage,
   DurableObjectSqlCursor,
   DurableObjectSqlStorage,
-} from "../host/durable-object-storage";
+} from "../../packages/cloudflare/src/durable-object-storage";
 
 const SESSION_ID = "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a";
 const OTHER_SESSION_ID = "018f6bd5-2f2a-7b1e-9f1a-1f2e3d4c5b6a";

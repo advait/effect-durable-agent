@@ -804,7 +804,7 @@ Primary framework areas:
 - `src/domain/dispatch-policy.ts`
 - `src/domain/run-continuation-policy.ts`
 - `src/services/session-state.ts`
-- `src/host/durable-object-store.ts`
+- `packages/cloudflare/src/durable-object-store.ts`
 
 Primary Gia areas:
 

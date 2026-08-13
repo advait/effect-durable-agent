@@ -1,11 +1,9 @@
 {
   "name": "effect-durable-agent",
-  "version": "0.1.0-alpha.3",
-  "description": "A Redux-inspired state-management and durable execution layer for agentic applications on Cloudflare Durable Objects.",
+  "version": "0.1.0-alpha.4",
+  "description": "A host-independent, event-sourced durable state-management and execution layer for agentic applications.",
   "keywords": [
     "agents",
-    "cloudflare",
-    "durable-objects",
     "effect",
     "event-sourcing",
     "state-machine"
@@ -31,7 +29,6 @@
     "SECURITY.md",
     "dist",
     "docs",
-    "examples",
     "testing/offline-trace/README.md",
     "tooling/oxlint/index.mjs",
     "tooling/oxlint/rules/*.mjs"
@@ -57,21 +54,17 @@
       "types": "./dist/domain/reduced-state-schema.d.ts",
       "import": "./dist/domain/reduced-state-schema.js"
     },
-    "./host/durable-object": {
-      "types": "./dist/host/durable-object.d.ts",
-      "import": "./dist/host/durable-object.js"
-    },
-    "./host/durable-object-runtime": {
-      "types": "./dist/host/durable-object-runtime.d.ts",
-      "import": "./dist/host/durable-object-runtime.js"
-    },
-    "./host/durable-object-storage": {
-      "types": "./dist/host/durable-object-storage.d.ts",
-      "import": "./dist/host/durable-object-storage.js"
-    },
     "./host/websocket-wire": {
       "types": "./dist/host/websocket-wire.d.ts",
       "import": "./dist/host/websocket-wire.js"
+    },
+    "./host/websocket-protocol": {
+      "types": "./dist/host/websocket-protocol.d.ts",
+      "import": "./dist/host/websocket-protocol.js"
+    },
+    "./services/keep-alive": {
+      "types": "./dist/services/keep-alive.d.ts",
+      "import": "./dist/services/keep-alive.js"
     },
     "./services/compaction": {
       "types": "./dist/services/compaction.d.ts",
@@ -93,6 +86,10 @@
       "types": "./dist/services/runtime.d.ts",
       "import": "./dist/services/runtime.js"
     },
+    "./services/runtime-layer": {
+      "types": "./dist/services/runtime-layer.d.ts",
+      "import": "./dist/services/runtime-layer.js"
+    },
     "./services/session-query": {
       "types": "./dist/services/session-query.d.ts",
       "import": "./dist/services/session-query.js"
@@ -100,6 +97,14 @@
     "./services/session-store": {
       "types": "./dist/services/session-store.d.ts",
       "import": "./dist/services/session-store.js"
+    },
+    "./services/session-state": {
+      "types": "./dist/services/session-state.d.ts",
+      "import": "./dist/services/session-state.js"
+    },
+    "./services/sink-checkpoint-store": {
+      "types": "./dist/services/sink-checkpoint-store.d.ts",
+      "import": "./dist/services/sink-checkpoint-store.js"
     },
     "./services/sink-registry": {
       "types": "./dist/services/sink-registry.d.ts",
@@ -116,6 +121,14 @@
     "./services/tracing": {
       "types": "./dist/services/tracing.d.ts",
       "import": "./dist/services/tracing.js"
+    },
+    "./services/websocket-subscriber": {
+      "types": "./dist/services/websocket-subscriber.d.ts",
+      "import": "./dist/services/websocket-subscriber.js"
+    },
+    "./domain/context-projection": {
+      "types": "./dist/domain/context-projection.d.ts",
+      "import": "./dist/domain/context-projection.js"
     },
     "./testkit/layers": {
       "types": "./dist/testkit/layers.d.ts",
@@ -145,15 +158,21 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "vp pack",
-    "check": "pnpm run lint && pnpm run typecheck",
-    "ci": "pnpm run check && pnpm run test",
+    "build": "pnpm run build:core && pnpm --filter effect-durable-agent-cloudflare run build && pnpm --filter effect-durable-agent-celld run build",
+    "build:core": "vp pack",
+    "check": "pnpm run lint && pnpm run typecheck && pnpm --filter effect-durable-agent-cloudflare run check && pnpm --filter effect-durable-agent-celld run check",
+    "ci": "pnpm run check && pnpm run test && pnpm run release:versions && pnpm run package:check",
     "lint": "vp fmt --check && vp lint --deny-warnings",
     "lint:fix": "vp fmt && vp lint --fix",
     "package:check": "node scripts/check-package.mjs",
-    "prepack": "pnpm run build",
-    "release:check": "pnpm run ci && pnpm run build && pnpm run package:check",
-    "test": "vp test run --passWithNoTests",
+    "prepack": "vp pack --no-publint",
+    "publish:workspace": "node scripts/publish-workspace.mjs",
+    "publish:workspace:dry-run": "node scripts/publish-workspace.mjs --dry-run",
+    "release:versions": "node scripts/check-workspace-versions.mjs",
+    "release:check": "pnpm run ci",
+    "test": "pnpm run test:core && pnpm --filter effect-durable-agent-cloudflare run test && pnpm --filter effect-durable-agent-celld run test && pnpm run test:integration",
+    "test:core": "vp test run --passWithNoTests src testing/offline-trace",
+    "test:integration": "pnpm run build && vp test run testing/host-conformance/hosts.integration.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "pnpm": {
@@ -168,15 +187,15 @@
     "tag": "alpha"
   },
   "peerDependencies": {
-    "@effect/ai-openai": "4.0.0-beta.102",
     "effect": "4.0.0-beta.102"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260727.1",
+    "@cloudflare/workers-types": "5.20260813.1",
     "@effect/ai-openai": "4.0.0-beta.102",
     "@effect/tsgo": "0.31.0",
     "@types/node": "^25.7.0",
     "effect": "4.0.0-beta.102",
+    "esbuild": "^0.28.1",
     "fast-check": "^4.8.0",
     "oxlint": "1.77.0",
     "oxlint-tsgolint": "7.0.2001",
@@ -184,6 +203,7 @@
     "tsx": "4.21.0",
     "typescript": "^6.0.3",
     "vite-plus": "^0.1.21",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.8",
+    "wrangler": "^4.114.0"
   }
 }

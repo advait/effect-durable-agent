@@ -51,7 +51,7 @@ Important version facts:
 - Services use `Context.Service<Self, Shape>()("key")`, not newer `ServiceMap.Service` examples.
 - Effect AI is imported from `effect/unstable/ai`; there is no separate local `@effect/ai` package.
 - EDA exposes model tools through upstream `Tool` / `Toolkit` values and calls `LanguageModel.streamText(..., { disableToolCallResolution: true })` so the harness owns tool lifecycle.
-- UUIDv7 schemas use `Schema.String.check(Schema.isUUID(7, ...))` in this beta.
+- Newly minted lifecycle ids are UUIDv7; session ids also accept UUIDv4 for migrated callers.
 
 ---
 
@@ -61,7 +61,7 @@ Important version facts:
 Host route / RPC / WebSocket
         |
         v
-EDASessionDurableObjectHost
+Host adapter (`effect-durable-agent-cloudflare` or `effect-durable-agent-celld`)
         |
         v
 ManagedRuntime<Effect services> for one session
@@ -83,17 +83,17 @@ ManagedRuntime<Effect services> for one session
 
 | Area | Files |
 | --- | --- |
-| Public runtime | `services/runtime.ts`, `host/durable-object.ts` |
-| Durable store port + implementations | `services/session-store.ts`, `host/durable-object-storage.ts`, `host/durable-object-store.ts` |
+| Public runtime | `src/services/runtime.ts`, `src/services/runtime-layer.ts` |
+| Durable store port + Cloudflare/celld implementation | `src/services/session-store.ts`, `packages/cloudflare/src/durable-object-storage.ts`, `packages/cloudflare/src/durable-object-store.ts` |
 | Session authority | `services/session-state.ts` |
 | Query/read APIs | `services/session-query.ts` |
-| Live stream/WebSocket | `services/live-event-bus.ts`, `services/websocket-subscriber.ts`, `host/websocket-wire.ts`, `host/websocket-protocol.ts` |
+| Live stream/WebSocket | `src/services/live-event-bus.ts`, `src/services/websocket-subscriber.ts`, `src/host/websocket-wire.ts`, `src/host/websocket-protocol.ts` |
 | Pure reducers/policies | `domain/reduced-state.ts`, `domain/command-queues.ts`, `domain/dispatch-policy.ts`, `domain/run-continuation-policy.ts`, `domain/inference-state.ts` |
 | Model/turn/tool execution | `services/turn-runner.ts`, `services/inference-runner.ts`, `services/tool-executor.ts`, `services/tool-registry.ts` |
 | Extension points | `services/reducer-registry.ts`, `services/sink-registry.ts` |
 | Compaction | `services/compaction.ts`, `domain/context-projection.ts` |
-| Cloudflare host | `host/durable-object-runtime.ts`, `host/durable-object-keepalive.ts`, `host/durable-object-sink-checkpoints.ts` |
-| Examples | `examples/` |
+| Cloudflare/celld host adapters | `packages/cloudflare/src/durable-object-runtime.ts`, `packages/cloudflare/src/durable-object-keepalive.ts`, `packages/cloudflare/src/durable-object-sink-checkpoints.ts` |
+| Examples | `packages/cloudflare/examples/` |
 
 ---
 
@@ -530,8 +530,8 @@ snapshot union.
 
 The current examples show the intended shape:
 
-- `examples/002-slack-bridge` — idempotent Slack ingress, reducer correlation across framework/app events, and durable sink delivery.
-- `examples/003-sandbox-lifecycle` — framework tool events + app sandbox events reduced into one UI model, including SSR handoff math.
+- `packages/cloudflare/examples/002-slack-bridge` — idempotent Slack ingress, reducer correlation across framework/app events, and durable sink delivery.
+- `packages/cloudflare/examples/003-sandbox-lifecycle` — framework tool events + app sandbox events reduced into one UI model, including SSR handoff math.
 
 ### Sinks
 
@@ -695,7 +695,7 @@ Current production host:
 
 The Cloudflare host imports Cloudflare APIs. Core domain/runtime code depends on services such as `EDASessionStore`, `SessionContext`, `IdGenerator`, `EDAKeepAlive`, model/tool layers, and live subscriber abstractions.
 
-The host boundary is intentionally small enough for future non-Cloudflare hosts. Another host must provide the same semantics: one ordered durable session log, atomic append, per-session coordination, resumable live delivery, durable sink checkpoints, clock/id services, and wakeup/keep-alive hooks.
+The host boundary supports multiple deployments. The Cloudflare and celld packages provide the same semantics: one ordered durable session log, atomic append, per-session coordination, resumable live delivery, durable sink checkpoints, clock/id services, and wakeup/keep-alive hooks.
 
 ---
 
@@ -764,7 +764,7 @@ EDA currently does **not** provide:
 - provider-executed tool projection/replay;
 - durable stdout/stderr chunks or file-change artifacts for sandbox tools;
 - app-side physical payload sidecars/chunking;
-- a non-Cloudflare production host.
+- additional production hosts beyond the Cloudflare-compatible contract.
 
 ---
 

@@ -78,8 +78,8 @@ makes every state transition explicit, replayable, and testable.
 ### 5. State: a cached view of durable history
 
 The reducers produce a complete snapshot of framework and application state through a known
-sequence number. EDA caches that snapshot in Durable Object SQLite so reads and restarts do not
-need to replay the entire history from the beginning.
+sequence number. EDA caches that snapshot in host-provided durable storage so reads and restarts do
+not need to replay the entire history from the beginning.
 
 The cache is an optimization, not a second source of truth. If it is missing or incompatible, EDA
 can rebuild it from the event log; the application is ultimately defined by its ordered events.
@@ -127,8 +127,8 @@ keeps moving. When Slack recovers, it receives the committed events and converge
 history. External availability stays off the application's critical path without sacrificing
 reliable delivery.
 
-See the [Slack bridge example](./examples/002-slack-bridge) for idempotent ingress, a custom reducer,
-and durable outbound delivery.
+See the [Slack bridge example](./packages/cloudflare/examples/002-slack-bridge) for idempotent
+ingress, a custom reducer, and durable outbound delivery.
 
 **Durable state. Durable side effects.**
 
@@ -163,37 +163,38 @@ be exported through OpenTelemetry to Google Cloud Trace or another existing back
 
 ![Google Cloud Trace view of an EDA session, showing agent turns, model inference, tool calls, sandbox execution, and an external integration in one timeline.](./docs/assets/gcp-trace.png)
 
-## Built for Cloudflare Durable Objects
+## Host-neutral core, pluggable deployment
 
-EDA's first host maps one session to one
-[Cloudflare Durable Object](https://developers.cloudflare.com/durable-objects/). The object is the
-durable coordinator for that session's state, execution, SQLite event log, live WebSockets, alarms,
-and sink cursors.
+EDA separates its state machine and Effect service graph from the platform that provides durable
+storage, scheduling, identity, and live WebSockets. Applications select one host package:
 
-This is an unusually natural fit:
+| Package | Responsibility |
+| --- | --- |
+| `effect-durable-agent` | Host-independent commands, events, reducers, runtime, and adapter contracts. |
+| `effect-durable-agent-cloudflare` | Cloudflare Durable Objects, SQLite, alarms, RPC, and hibernatable WebSockets. |
+| `effect-durable-agent-celld` | [celld](https://celld.dev/) deployment of the Durable Objects contract on your infrastructure. |
 
-- Deterministic routing sends every request for a session to the same logical object
-- Per-object SQLite stores the ordered history beside the runtime that owns it
-- WebSockets terminate at the same boundary that owns the state
-- Alarms wake evicted sessions for recovery, keep-alive, and sink draining
-
-Durable Objects are the first host, not the whole architecture. EDA's runtime depends on small
-storage, scheduling, identity, and live-delivery boundaries that another platform can implement
-with equivalent semantics.
+All three packages are released together with the same version. A host and core from different
+versions are not a supported combination; keep the versions identical when upgrading.
 
 ## Get started
 
-Install the public alpha from npm. Using the `alpha` tag keeps prerelease consumers on the current
-alpha channel:
+Install the core and one host from the public alpha channel:
 
 ```bash
-pnpm add effect-durable-agent@alpha
+pnpm add effect-durable-agent@alpha effect-durable-agent-cloudflare@alpha
 ```
 
-The smallest host is a concrete Durable Object subclass:
+For celld, select its host package at the same version instead:
+
+```bash
+pnpm add effect-durable-agent@alpha effect-durable-agent-celld@alpha
+```
+
+The smallest Cloudflare host is a concrete Durable Object subclass:
 
 ```ts
-import { EDASessionDurableObject } from "effect-durable-agent/host/durable-object"
+import { EDASessionDurableObject } from "effect-durable-agent-cloudflare"
 
 export class MyAgentSession extends EDASessionDurableObject<MyEnv> {
   constructor(ctx: DurableObjectState, env: MyEnv) {
@@ -209,9 +210,9 @@ Start with the executable examples:
 
 | Example | What it demonstrates |
 | --- | --- |
-| [`001-no-tools`](./examples/001-no-tools) | Minimal Durable Object session and durable command admission. |
-| [`002-slack-bridge`](./examples/002-slack-bridge) | Idempotent ingress, application events and reducers, and a retrying durable sink. |
-| [`003-sandbox-lifecycle`](./examples/003-sandbox-lifecycle) | Tool and product events reduced into one UI model, including snapshot-to-stream handoff. |
+| [`001-no-tools`](./packages/cloudflare/examples/001-no-tools) | Minimal Durable Object session and durable command admission. |
+| [`002-slack-bridge`](./packages/cloudflare/examples/002-slack-bridge) | Idempotent ingress, application events and reducers, and a retrying durable sink. |
+| [`003-sandbox-lifecycle`](./packages/cloudflare/examples/003-sandbox-lifecycle) | Tool and product events reduced into one UI model, including snapshot-to-stream handoff. |
 
 ## Why EDA instead of another agent SDK or framework?
 
@@ -267,7 +268,7 @@ client catch-up, restart recovery, production-derived UI fixtures, and durable s
 ## Capabilities
 
 - Effect-native agent runtime with command, run, turn, inference, message, and tool lifecycles
-- Cloudflare Durable Object host with one session per object and SQLite event storage
+- Pluggable Cloudflare Durable Objects and celld hosts with one session per object and SQLite event storage
 - Typed custom durable application events and pure application reducers
 - Reducer checkpoints and serialized snapshots
 - Reconnect-safe event streaming with sequence resume and WebSocket ACK flow control

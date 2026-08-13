@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 const UuidString = Schema.String.check(Schema.isUUID(undefined, { identifier: "Uuid" }));
 const UuidV7String = Schema.String.check(Schema.isUUID(7));
 
-/** Durable conversation identity; one Durable Object stores one session.
+/** Durable conversation identity; one host isolation unit stores one session.
  *
  * New EDA sessions are minted as UUIDv7. Migrated sessions may retain UUIDv4
  * identities, so runtime identity accepts any RFC UUID without changing app

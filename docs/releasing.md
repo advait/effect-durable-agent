@@ -1,23 +1,24 @@
 # Releasing Effect Durable Agent
 
-Releases publish [`effect-durable-agent`](https://www.npmjs.com/package/effect-durable-agent) from
-the public [`advait/effect-durable-agent`](https://github.com/advait/effect-durable-agent)
-repository.
+Releases publish `effect-durable-agent`, `effect-durable-agent-cloudflare`, and
+`effect-durable-agent-celld` together from the public
+[`advait/effect-durable-agent`](https://github.com/advait/effect-durable-agent) repository. The
+three packages always use the same version, and host packages depend on that exact core version in
+their published manifests.
 
 ## Current public baseline
 
-`0.1.0-alpha.1` was published interactively as the package bootstrap and is marked by the annotated
-Git tag `v0.1.0-alpha.1`. Both the `alpha` and `latest` npm dist-tags currently resolve to that
-version.
+The current core baseline is `0.1.0-alpha.3`. The `alpha` npm dist-tag resolves to that version;
+`latest` remains on `0.1.0-alpha.1`. The Cloudflare and celld packages are introduced by the next
+lockstep release.
 
-The bootstrap is complete and must not be repeated. In particular, do not create a GitHub release
-for `v0.1.0-alpha.1`: publishing that release would run the npm workflow against a version that
-already exists. The Git tag alone does not trigger the workflow.
+Do not reuse a published version or create a GitHub release for an older tag: publishing that
+release would run the npm workflow against an immutable registry version. The Git tag alone does
+not trigger the workflow.
 
 ## One-time trusted-publisher setup
 
-Before publishing the next version, configure the package's trusted publisher in the npm package
-settings:
+Configure the same trusted publisher for each package in its npm package settings:
 
 - Provider: GitHub Actions
 - Organization or user: `advait`
@@ -26,9 +27,17 @@ settings:
 - Allowed action: `npm publish`
 - Environment: leave blank unless `.github/workflows/publish.yml` is updated to use one
 
+The two new package names must exist on npm before their trusted-publisher settings are available.
+For the first three-package release only, an authenticated maintainer must run `release:check` and
+then `pnpm run publish:workspace`. Publish all three manifests at the same version, and configure
+the trusted publisher on both new packages immediately after that bootstrap. The publish script is
+idempotent: it verifies and skips an identical artifact already in the registry, but refuses an
+existing version with different bytes. All subsequent versions use the release workflow. Do not
+add a long-lived npm publishing token to the repository.
+
 The workflow uses a GitHub-hosted runner, grants `id-token: write`, and runs a recent Node/npm pair.
-Do not add an npm publishing token to the repository. npm uses the workflow's short-lived OIDC
-identity and automatically attaches provenance because both the repository and package are public.
+npm uses the workflow's short-lived OIDC identity and automatically attaches provenance because
+both the repository and packages are public.
 
 After one automated release succeeds, configure npm publishing access to require two-factor
 authentication and disallow tokens, then revoke any automation tokens that are no longer needed.
@@ -37,15 +46,18 @@ registry requirements.
 
 ## Release channels
 
-While the API is in alpha, `publishConfig.tag` remains `alpha` and consumers should install
-`effect-durable-agent@alpha`. It is acceptable for `latest` to point to an alpha release, but an
-alpha-tagged publish advances only `alpha`; it does not automatically move `latest`.
+While the API is in alpha, every package's `publishConfig.tag` remains `alpha`. The workflow also
+passes `--tag alpha` explicitly for prerelease versions, because package-manager support for the
+manifest default is not consistent. Consumers should install the same version of core and host; an
+alpha-tagged publish advances only `alpha` and does not automatically move `latest`.
 
 If an alpha has been verified and should also become the default for unqualified installs, an
 authenticated maintainer can move `latest` explicitly:
 
 ```bash
-npm dist-tag add effect-durable-agent@0.1.0-alpha.2 latest
+npm dist-tag add effect-durable-agent@0.1.0-alpha.4 latest
+npm dist-tag add effect-durable-agent-cloudflare@0.1.0-alpha.4 latest
+npm dist-tag add effect-durable-agent-celld@0.1.0-alpha.4 latest
 ```
 
 Trusted publishing authorizes `npm publish`, not `npm dist-tag`, so changing a dist-tag is an
@@ -58,8 +70,8 @@ reason to move or remove it.
 
 ## Release checklist
 
-1. Choose a new, never-before-published version.
-2. Update `package.json` and refresh `pnpm-lock.yaml`.
+1. Choose a new version that has never been published for any of the three packages.
+2. Update all three `package.json` files to that exact version and refresh `pnpm-lock.yaml`.
 3. Add the release notes to `CHANGELOG.md`.
 4. Run the complete release validation:
 
@@ -70,14 +82,16 @@ reason to move or remove it.
 
 5. Merge the version PR and confirm `CI` passes on `master`.
 6. Create a GitHub release targeting the merged commit. Its tag must be exactly
-   `v<package version>`; for example, `v0.1.0-alpha.2`.
+   `v<package version>`; for example, `v0.1.0-alpha.4`.
 7. Wait for the `Publish to npm` workflow to pass. The workflow independently reruns the full
    release check and rejects a tag that does not match `package.json`.
 8. Verify the registry metadata and dist-tags:
 
    ```bash
-   npm view effect-durable-agent@0.1.0-alpha.2 name version repository.url dist.integrity --json
-   npm dist-tag ls effect-durable-agent
+   for package_name in effect-durable-agent effect-durable-agent-cloudflare effect-durable-agent-celld; do
+     npm view "$package_name@0.1.0-alpha.4" name version repository.url dist.integrity --json
+     npm dist-tag ls "$package_name"
+   done
    ```
 
 9. Install from the public registry in a clean consumer and run its typecheck and bundle. Do not
@@ -89,8 +103,12 @@ reason to move or remove it.
 
 - npm package versions are immutable. Never try to reuse a version after any successful publish;
   increment the version and release again.
-- If the workflow fails before publishing, fix the cause on `master` and create a release for the
-  corrected, incremented version. Do not move an existing release tag to a different commit.
+- npm does not provide a multi-package transaction. If any package uploads before a later publish
+  fails, rerun `pnpm run publish:workspace` from the exact same commit: it verifies identical
+  published bytes, skips them, and continues the remaining packages. If the bytes differ, increment
+  every package and release a new version.
+- If the workflow fails before any package publishes, fix the cause on `master` and create a release
+  for the corrected, incremented version. Do not move an existing release tag to another commit.
 - If only a dist-tag is wrong, correct the tag instead of republishing the package.
 - Avoid unpublishing except for a genuine security or legal incident. Coordinate through the
   process in [`SECURITY.md`](../SECURITY.md).

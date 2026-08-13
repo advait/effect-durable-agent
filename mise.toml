@@ -22,22 +22,22 @@ sources = ["package.json", "patches/**/*", "pnpm-lock.yaml", "pnpm-workspace.yam
 outputs = ["node_modules/.pnpm/lock.yaml", "node_modules/.effect-tsgo-oxlint-patched"]
 
 [tasks.build]
-description = "Build the publishable effect-durable-agent package"
+description = "Build all publishable effect-durable-agent packages"
 depends = ["install"]
-run = "pnpm exec vp pack"
-sources = ["package.json", "src/**/*", "tsconfig.json", "vite.config.ts"]
-outputs = ["dist/**/*"]
+run = "pnpm run build"
+sources = ["package.json", "packages/**/*", "src/**/*", "tsconfig.json", "vite.config.ts"]
+outputs = ["dist/**/*", "packages/*/dist/**/*"]
 
 [tasks."package:check"]
-description = "Validate the packed package in an isolated Cloudflare Worker"
+description = "Validate all packed packages in an isolated Cloudflare Worker"
 depends = ["build"]
 run = "node scripts/check-package.mjs"
 sources = [
   "dist/**/*",
   "docs/**/*",
-  "examples/**/*",
   "LICENSE",
   "package.json",
+  "packages/**/*",
   "README.md",
   "scripts/check-package.mjs",
   "testing/package-consumer/**/*",
@@ -46,7 +46,8 @@ sources = [
 
 [tasks.check]
 description = "Validate formatting, lint, and TypeScript types"
-depends = ["lint:check", "ts:check"]
+depends = ["install"]
+run = "pnpm run check"
 
 [tasks.lint]
 description = "Alias for lint:check"
@@ -57,8 +58,8 @@ description = "Format-check and lint effect-durable-agent"
 depends = ["install"]
 run = ["pnpm exec vp fmt --check", "pnpm exec vp lint --deny-warnings"]
 sources = [
-  "examples/**/*",
   "package.json",
+  "packages/**/*",
   "src/**/*",
   "testing/**/*",
   "tooling/**/*",
@@ -86,9 +87,10 @@ sources = ["package.json", "src/**/*", "tsconfig.json"]
 [tasks.test]
 description = "Run effect-durable-agent tests"
 depends = ["install"]
-run = "pnpm exec vp test run --passWithNoTests"
-sources = ["examples/**/*", "package.json", "src/**/*", "testing/**/*", "vite.config.ts"]
+run = "pnpm run test"
+sources = ["package.json", "packages/**/*", "src/**/*", "testing/**/*", "vite.config.ts"]
 
 [tasks.ci]
 description = "Run all effect-durable-agent validation"
-depends = ["check", "package:check", "test"]
+depends = ["install"]
+run = "pnpm run ci"
