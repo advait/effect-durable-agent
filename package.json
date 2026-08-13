@@ -161,7 +161,7 @@
     "build": "pnpm run build:core && pnpm --filter effect-durable-agent-cloudflare run build && pnpm --filter effect-durable-agent-celld run build",
     "build:core": "vp pack",
     "check": "pnpm run lint && pnpm run typecheck && pnpm --filter effect-durable-agent-cloudflare run check && pnpm --filter effect-durable-agent-celld run check",
-    "ci": "pnpm run check && pnpm run test && pnpm run release:versions && pnpm run package:check",
+    "ci": "pnpm run build && pnpm run check && pnpm run test && pnpm run release:versions && pnpm run package:check",
     "lint": "vp fmt --check && vp lint --deny-warnings",
     "lint:fix": "vp fmt && vp lint --fix",
     "package:check": "node scripts/check-package.mjs",

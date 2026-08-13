@@ -832,13 +832,18 @@ export const encodeEdaRpcSubmittables = (
 /** Decode a raw RPC command payload at the Durable Object boundary. */
 export const decodeEdaRpcCommand = (
   input: unknown,
-): Effect.Effect<EDACommand, Schema.SchemaError> => Schema.decodeUnknownEffect(EDACommand)(input);
+): Effect.Effect<EDACommand, Schema.SchemaError> =>
+  Schema.decodeUnknownExit(EDACommand)(input).pipe(
+    Exit.match({ onFailure: Effect.failCause, onSuccess: Effect.succeed }),
+  );
 
 /** Decode a raw RPC batch item at the Durable Object boundary. */
 export const decodeEdaRpcSubmittable = (
   input: unknown,
 ): Effect.Effect<EDASubmittable, Schema.SchemaError> =>
-  Schema.decodeUnknownEffect(EDARpcSubmittable)(input);
+  Schema.decodeUnknownExit(EDARpcSubmittable)(input).pipe(
+    Exit.match({ onFailure: Effect.failCause, onSuccess: Effect.succeed }),
+  );
 
 /** Decode raw RPC batch items at the Durable Object boundary. */
 export const decodeEdaRpcSubmittables = (

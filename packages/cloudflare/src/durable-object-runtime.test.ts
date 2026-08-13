@@ -364,8 +364,8 @@ describe("EDASessionDurableObjectHost", () => {
     const storage = new FakeDurableObjectStorage();
     await Effect.runPromise(EDASessionDurableObjectHost.migrate(storage));
     let attempts = 0;
-    const modelLayer = Layer.unwrap(
-      Effect.sync(() => {
+    const modelLayer: Layer.Layer<LanguageModel.LanguageModel> = Layer.unwrap(
+      Effect.sync<Layer.Layer<LanguageModel.LanguageModel>>(() => {
         attempts += 1;
         if (attempts === 1) {
           throw new Error("model layer unavailable");
