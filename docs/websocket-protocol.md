@@ -116,20 +116,46 @@ export const counterWebSocketProtocol = makeEDAWebSocketWireProtocol({
   appEvents: CounterIncrementedEvent,
 });
 
-export const CounterWebSocketServerFrame = counterWebSocketProtocol.serverFrame;
+export const CounterWebSocketServerFrame = counterWebSocketProtocol.wire.serverFrame;
 export type CounterWebSocketServerFrame = typeof CounterWebSocketServerFrame.Type;
 ```
 
-`makeEDAWebSocketWireProtocol` automatically unions the app events with all EDA durable and ephemeral events. The returned value serves both boundaries:
+`makeEDAWebSocketWireProtocol` automatically unions the app events with all EDA durable and ephemeral events. The returned value makes the two schema directions explicit:
 
-- Pass it to the EDA host as `webSocketProtocol` so outbound frames are encoded and validated against the app's exact event union.
-- Share its `serverFrame`, `eventsFrame`, and `positionedEvent` schemas with browser or other WebSocket consumers for decoding and type inference.
+- `domain.event`, `domain.positionedEvent`, `domain.eventsFrame`, and `domain.serverFrame`
+  describe decoded in-memory values. Schema transformations have already run on their `Type` side.
+- `wire.event`, `wire.positionedEvent`, `wire.eventsFrame`, and `wire.serverFrame` describe
+  the UTF-8 JSON representation. Browser and other external consumers decode with these schemas
+  when they need validated wire values without hydrating domain transformations.
+- `wire.clientFrame` validates client-to-server ACK messages.
+- `encodeServerFrame` accepts only the exact app-bound domain server-frame type and serializes it to
+  one JSON text message.
+- `host` is the adapter passed as `webSocketProtocol` to the EDA host. It validates and encodes the
+  host's broad event envelope against the registered app/framework union at runtime.
 
-The exposed schemas describe the encoded JSON representation. Domain-only brands and transformations therefore do not leak into ordinary wire consumers, while every field is still derived from and checked by the domain event schemas. Switching on `event.type` narrows `event.payload` to that event's exact schema.
+For example, a transformed message content field may be a prompt-part array in
+`domain.serverFrame.Type` and a string in `wire.serverFrame.Type`. TypeScript rejects passing the
+wire frame to `encodeServerFrame`; callers must decode external input through the domain schema
+before treating it as an in-memory value. Both surfaces are derived from the same event schemas, so
+there is still one logical contract rather than parallel hand-maintained models. Switching on
+`event.type` narrows `event.payload` to that event's exact schema on either surface.
+
+The EDA host binding is therefore explicit:
+
+```ts
+const options = {
+  // Other host options omitted.
+  webSocketProtocol: counterWebSocketProtocol.host,
+};
+```
 
 The app event union is the registration point: adding a custom event there changes the WebSocket union everywhere it is imported. Consumers that use an exhaustive event policy or `assertNever` then receive a TypeScript error until they explicitly apply or ignore the new event.
 
 Hosts without custom events use the strict framework-only protocol. The default host encoder does not accept an arbitrary `EventEnvelope`; an app event must be registered explicitly or outbound encoding fails. This prevents an omitted app binding from silently degrading payloads back to `unknown`.
+
+This API separation does not change protocol version `1` or any serialized frame shape. It makes the
+existing domain-to-wire transformation direction visible in TypeScript and tests it through a full
+domain frame → JSON text → wire/domain decode round trip.
 
 ## 3. Schema sketch
 

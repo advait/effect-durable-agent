@@ -384,7 +384,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
 
         const runLoop = Effect.gen(function* () {
           yield* drainDurablesThrough(input.initialHead);
-          yield* Effect.forever(
+          return yield* Effect.forever(
             Effect.gen(function* () {
               const event = yield* PubSub.take(live);
               yield* processLiveEvent(event);

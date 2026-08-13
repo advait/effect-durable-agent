@@ -499,7 +499,10 @@ Current extension points:
 Apps bind their custom durable-event union to the live protocol once with
 `makeEDAWebSocketWireProtocol({ appEvents })`. The binding automatically includes
 all framework durable and ephemeral events, configures strict host encoding, and
-exports the same event/frame schemas for browser or other WebSocket consumers.
+exports explicit `domain` and `wire` event/frame schema surfaces. Apps pass the
+binding's `host` adapter to the EDA host and share its `wire` schemas with browser
+or other WebSocket consumers. Its typed `encodeServerFrame` accepts only the
+app-bound domain frame type.
 Framework-only hosts reject unregistered app events rather than widening their
 payloads to `unknown`.
 

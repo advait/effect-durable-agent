@@ -1,6 +1,6 @@
 {
-  "name": "@advait/effect-durable-agent",
-  "version": "0.0.1",
+  "name": "effect-durable-agent",
+  "version": "0.1.0-alpha.3",
   "description": "A Redux-inspired state-management and durable execution layer for agentic applications on Cloudflare Durable Objects.",
   "keywords": [
     "agents",
@@ -148,7 +148,7 @@
     "build": "vp pack",
     "check": "pnpm run lint && pnpm run typecheck",
     "ci": "pnpm run check && pnpm run test",
-    "lint": "vp fmt --check && vp lint",
+    "lint": "vp fmt --check && vp lint --deny-warnings",
     "lint:fix": "vp fmt && vp lint --fix",
     "package:check": "node scripts/check-package.mjs",
     "prepack": "pnpm run build",
@@ -156,10 +156,16 @@
     "test": "vp test run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
+  "pnpm": {
+    "overrides": {
+      "vite-plus>oxlint": "1.77.0",
+      "vite-plus>oxlint-tsgolint": "7.0.2001"
+    }
+  },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/",
-    "tag": "latest"
+    "tag": "alpha"
   },
   "peerDependencies": {
     "@effect/ai-openai": "4.0.0-beta.102",
@@ -168,10 +174,12 @@
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260727.1",
     "@effect/ai-openai": "4.0.0-beta.102",
+    "@effect/tsgo": "0.31.0",
     "@types/node": "^25.7.0",
     "effect": "4.0.0-beta.102",
     "fast-check": "^4.8.0",
-    "oxlint": "1.63.0",
+    "oxlint": "1.77.0",
+    "oxlint-tsgolint": "7.0.2001",
     "publint": "^0.3.22",
     "tsx": "4.21.0",
     "typescript": "^6.0.3",
