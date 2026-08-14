@@ -620,13 +620,13 @@ Shared conformance tests exercise this flow against real workerd and celld proce
 
 Implemented artifacts:
 
-1. `src/host/websocket-wire.ts` defines the app-event-parameterized public wire schemas and encoder.
-2. `src/host/websocket-protocol.ts` defines host frame schemas, attachment schema, flow-control config, close-code constants, and encode/decode helpers.
-3. `src/services/live-event-bus.ts` owns bounded active-turn ephemeral replay: open on `TurnStarted`, append active-turn ephemerals, drop on `TurnCompleted`/`TurnStopped`/`TurnFailed`, expose `activeTurnReplay()`.
-4. `src/services/session-query.ts` / `EDARuntime.eventsAfter(...)` merge durable replay, active-turn ephemerals, already-buffered live events, and follow-live delivery.
-5. `src/services/websocket-subscriber.ts` defines typed subscriber errors and `runWebSocketSubscriber(...)` over `EDARuntime.eventsAfter`, `Queue.dropping`, ACK refs, scoped cancellation, and ACK timeouts.
-6. `packages/cloudflare/src/durable-object-runtime.ts` adapts Durable Object WebSockets to the transport, persists ACKs in `serializeAttachment`, restores accepted sockets, and maps typed errors to close codes for Cloudflare and celld.
-7. `packages/cloudflare/src/durable-object.ts` and the consuming application's routes expose a WebSocket-only events endpoint with `426` for non-upgrade requests.
+1. `packages/effect-durable-agent/src/host/websocket-wire.ts` defines the app-event-parameterized public wire schemas and encoder.
+2. `packages/effect-durable-agent/src/host/websocket-protocol.ts` defines host frame schemas, attachment schema, flow-control config, close-code constants, and encode/decode helpers.
+3. `packages/effect-durable-agent/src/services/live-event-bus.ts` owns bounded active-turn ephemeral replay: open on `TurnStarted`, append active-turn ephemerals, drop on `TurnCompleted`/`TurnStopped`/`TurnFailed`, expose `activeTurnReplay()`.
+4. `packages/effect-durable-agent/src/services/session-query.ts` / `EDARuntime.eventsAfter(...)` merge durable replay, active-turn ephemerals, already-buffered live events, and follow-live delivery.
+5. `packages/effect-durable-agent/src/services/websocket-subscriber.ts` defines typed subscriber errors and `runWebSocketSubscriber(...)` over `EDARuntime.eventsAfter`, `Queue.dropping`, ACK refs, scoped cancellation, and ACK timeouts.
+6. `packages/effect-durable-agent-cloudflare/src/durable-object-runtime.ts` adapts Durable Object WebSockets to the transport, persists ACKs in `serializeAttachment`, restores accepted sockets, and maps typed errors to close codes for Cloudflare and celld.
+7. `packages/effect-durable-agent-cloudflare/src/durable-object.ts` and the consuming application's routes expose a WebSocket-only events endpoint with `426` for non-upgrade requests.
 8. Tests cover typed custom-event bindings, normal subscriber delivery, subscriber overflow lag, active-turn replay retention/drop, reconnect ordering, and fake DO WebSocket streaming.
 
 Remaining hardening:

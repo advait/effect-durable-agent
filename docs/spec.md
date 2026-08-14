@@ -38,8 +38,8 @@ EDA exists because callback-first agent loops do not define the hard boundaries:
 
 ## 2. Current package/API grounding
 
-The implementation is grounded in the versions installed by this package. Check `package.json`
-and local `node_modules` before changing API-shaped docs.
+The implementation is grounded in the versions installed by this workspace. Check the root and
+package manifests plus local `node_modules` before changing API-shaped docs.
 
 | Package | Version | Current role |
 | --- | --- | --- |
@@ -83,17 +83,17 @@ ManagedRuntime<Effect services> for one session
 
 | Area | Files |
 | --- | --- |
-| Public runtime | `src/services/runtime.ts`, `src/services/runtime-layer.ts` |
-| Durable store port + Cloudflare/celld implementation | `src/services/session-store.ts`, `packages/cloudflare/src/durable-object-storage.ts`, `packages/cloudflare/src/durable-object-store.ts` |
-| Session authority | `services/session-state.ts` |
-| Query/read APIs | `services/session-query.ts` |
-| Live stream/WebSocket | `src/services/live-event-bus.ts`, `src/services/websocket-subscriber.ts`, `src/host/websocket-wire.ts`, `src/host/websocket-protocol.ts` |
-| Pure reducers/policies | `domain/reduced-state.ts`, `domain/command-queues.ts`, `domain/dispatch-policy.ts`, `domain/run-continuation-policy.ts`, `domain/inference-state.ts` |
-| Model/turn/tool execution | `services/turn-runner.ts`, `services/inference-runner.ts`, `services/tool-executor.ts`, `services/tool-registry.ts` |
-| Extension points | `services/reducer-registry.ts`, `services/sink-registry.ts` |
-| Compaction | `services/compaction.ts`, `domain/context-projection.ts` |
-| Cloudflare/celld host adapters | `packages/cloudflare/src/durable-object-runtime.ts`, `packages/cloudflare/src/durable-object-keepalive.ts`, `packages/cloudflare/src/durable-object-sink-checkpoints.ts` |
-| Examples | `packages/cloudflare/examples/` |
+| Public runtime | `packages/effect-durable-agent/src/services/runtime.ts`, `packages/effect-durable-agent/src/services/runtime-layer.ts` |
+| Durable store port + Cloudflare/celld implementation | `packages/effect-durable-agent/src/services/session-store.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-storage.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-store.ts` |
+| Session authority | `packages/effect-durable-agent/src/services/session-state.ts` |
+| Query/read APIs | `packages/effect-durable-agent/src/services/session-query.ts` |
+| Live stream/WebSocket | `packages/effect-durable-agent/src/services/live-event-bus.ts`, `packages/effect-durable-agent/src/services/websocket-subscriber.ts`, `packages/effect-durable-agent/src/host/websocket-wire.ts`, `packages/effect-durable-agent/src/host/websocket-protocol.ts` |
+| Pure reducers/policies | `packages/effect-durable-agent/src/domain/reduced-state.ts`, `packages/effect-durable-agent/src/domain/command-queues.ts`, `packages/effect-durable-agent/src/domain/dispatch-policy.ts`, `packages/effect-durable-agent/src/domain/run-continuation-policy.ts`, `packages/effect-durable-agent/src/domain/inference-state.ts` |
+| Model/turn/tool execution | `packages/effect-durable-agent/src/services/turn-runner.ts`, `packages/effect-durable-agent/src/services/inference-runner.ts`, `packages/effect-durable-agent/src/services/tool-executor.ts`, `packages/effect-durable-agent/src/services/tool-registry.ts` |
+| Extension points | `packages/effect-durable-agent/src/services/reducer-registry.ts`, `packages/effect-durable-agent/src/services/sink-registry.ts` |
+| Compaction | `packages/effect-durable-agent/src/services/compaction.ts`, `packages/effect-durable-agent/src/domain/context-projection.ts` |
+| Cloudflare/celld host adapters | `packages/effect-durable-agent-cloudflare/src/durable-object-runtime.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-keepalive.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-sink-checkpoints.ts` |
+| Examples | `examples/cloudflare/`, `examples/celld/` |
 
 ---
 
@@ -530,8 +530,9 @@ snapshot union.
 
 The current examples show the intended shape:
 
-- `packages/cloudflare/examples/002-slack-bridge` — idempotent Slack ingress, reducer correlation across framework/app events, and durable sink delivery.
-- `packages/cloudflare/examples/003-sandbox-lifecycle` — framework tool events + app sandbox events reduced into one UI model, including SSR handoff math.
+- `examples/cloudflare/002-slack-bridge` — idempotent Slack ingress, reducer correlation across framework/app events, and durable sink delivery.
+- `examples/cloudflare/003-sandbox-lifecycle` — framework tool events + app sandbox events reduced into one UI model, including SSR handoff math.
+- `examples/celld/001-no-tools` — deployable celld host with Durable Objects-compatible SQLite, alarms, RPC, and WebSockets.
 
 ### Sinks
 

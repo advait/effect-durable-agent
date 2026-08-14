@@ -9,8 +9,8 @@ import { makeRootEDATraceMetadata } from "effect-durable-agent/types/tracing";
 import type {
   EDASessionDurableObject,
   EDASessionDurableObjectOptions,
-} from "../../packages/cloudflare/dist/index.js";
-import { encodeEdaRpcCommand } from "../../packages/cloudflare/dist/index.js";
+} from "../../packages/effect-durable-agent-cloudflare/dist/index.js";
+import { encodeEdaRpcCommand } from "../../packages/effect-durable-agent-cloudflare/dist/index.js";
 
 declare const EDA_CONFORMANCE_BLOCK_MODEL: boolean;
 

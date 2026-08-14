@@ -1,0 +1,191 @@
+{
+  "name": "effect-durable-agent",
+  "version": "0.1.0-alpha.4",
+  "description": "A host-independent, event-sourced durable state-management and execution layer for agentic applications.",
+  "keywords": [
+    "agents",
+    "effect",
+    "event-sourcing",
+    "state-machine"
+  ],
+  "homepage": "https://github.com/advait/effect-durable-agent#readme",
+  "bugs": {
+    "url": "https://github.com/advait/effect-durable-agent/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/advait/effect-durable-agent.git",
+    "directory": "packages/effect-durable-agent"
+  },
+  "license": "MIT",
+  "author": "Advait Shinde",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "packageManager": "pnpm@10.33.2",
+  "files": [
+    "dist",
+    "testing/offline-trace/README.md",
+    "tooling/oxlint/index.mjs",
+    "tooling/oxlint/rules/*.mjs"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./domain/command-queues": {
+      "types": "./dist/domain/command-queues.d.ts",
+      "import": "./dist/domain/command-queues.js"
+    },
+    "./domain/message-transcript": {
+      "types": "./dist/domain/message-transcript.d.ts",
+      "import": "./dist/domain/message-transcript.js"
+    },
+    "./domain/reduced-state": {
+      "types": "./dist/domain/reduced-state.d.ts",
+      "import": "./dist/domain/reduced-state.js"
+    },
+    "./domain/reduced-state-schema": {
+      "types": "./dist/domain/reduced-state-schema.d.ts",
+      "import": "./dist/domain/reduced-state-schema.js"
+    },
+    "./host/websocket-wire": {
+      "types": "./dist/host/websocket-wire.d.ts",
+      "import": "./dist/host/websocket-wire.js"
+    },
+    "./host/websocket-protocol": {
+      "types": "./dist/host/websocket-protocol.d.ts",
+      "import": "./dist/host/websocket-protocol.js"
+    },
+    "./services/keep-alive": {
+      "types": "./dist/services/keep-alive.d.ts",
+      "import": "./dist/services/keep-alive.js"
+    },
+    "./services/compaction": {
+      "types": "./dist/services/compaction.d.ts",
+      "import": "./dist/services/compaction.js"
+    },
+    "./services/id-generator": {
+      "types": "./dist/services/id-generator.d.ts",
+      "import": "./dist/services/id-generator.js"
+    },
+    "./services/prompt-projector": {
+      "types": "./dist/services/prompt-projector.d.ts",
+      "import": "./dist/services/prompt-projector.js"
+    },
+    "./services/reducer-registry": {
+      "types": "./dist/services/reducer-registry.d.ts",
+      "import": "./dist/services/reducer-registry.js"
+    },
+    "./services/runtime": {
+      "types": "./dist/services/runtime.d.ts",
+      "import": "./dist/services/runtime.js"
+    },
+    "./services/runtime-layer": {
+      "types": "./dist/services/runtime-layer.d.ts",
+      "import": "./dist/services/runtime-layer.js"
+    },
+    "./services/session-query": {
+      "types": "./dist/services/session-query.d.ts",
+      "import": "./dist/services/session-query.js"
+    },
+    "./services/session-store": {
+      "types": "./dist/services/session-store.d.ts",
+      "import": "./dist/services/session-store.js"
+    },
+    "./services/session-state": {
+      "types": "./dist/services/session-state.d.ts",
+      "import": "./dist/services/session-state.js"
+    },
+    "./services/sink-checkpoint-store": {
+      "types": "./dist/services/sink-checkpoint-store.d.ts",
+      "import": "./dist/services/sink-checkpoint-store.js"
+    },
+    "./services/sink-registry": {
+      "types": "./dist/services/sink-registry.d.ts",
+      "import": "./dist/services/sink-registry.js"
+    },
+    "./services/span-names": {
+      "types": "./dist/services/span-names.d.ts",
+      "import": "./dist/services/span-names.js"
+    },
+    "./services/tool-registry": {
+      "types": "./dist/services/tool-registry.d.ts",
+      "import": "./dist/services/tool-registry.js"
+    },
+    "./services/tracing": {
+      "types": "./dist/services/tracing.d.ts",
+      "import": "./dist/services/tracing.js"
+    },
+    "./services/websocket-subscriber": {
+      "types": "./dist/services/websocket-subscriber.d.ts",
+      "import": "./dist/services/websocket-subscriber.js"
+    },
+    "./domain/context-projection": {
+      "types": "./dist/domain/context-projection.d.ts",
+      "import": "./dist/domain/context-projection.js"
+    },
+    "./testkit/layers": {
+      "types": "./dist/testkit/layers.d.ts",
+      "import": "./dist/testkit/layers.js"
+    },
+    "./tooling/oxlint": "./tooling/oxlint/index.mjs",
+    "./types/commands": {
+      "types": "./dist/types/commands.d.ts",
+      "import": "./dist/types/commands.js"
+    },
+    "./types/core": {
+      "types": "./dist/types/core.d.ts",
+      "import": "./dist/types/core.js"
+    },
+    "./types/events": {
+      "types": "./dist/types/events.d.ts",
+      "import": "./dist/types/events.js"
+    },
+    "./types/events/durable": {
+      "types": "./dist/types/events/durable.d.ts",
+      "import": "./dist/types/events/durable.js"
+    },
+    "./types/tracing": {
+      "types": "./dist/types/tracing.d.ts",
+      "import": "./dist/types/tracing.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "check": "pnpm run lint && pnpm run typecheck",
+    "lint": "vp fmt --check src testing tooling package.json tsconfig.json vite.config.ts && vp lint --deny-warnings src testing vite.config.ts",
+    "lint:fix": "vp fmt src testing tooling package.json tsconfig.json vite.config.ts && vp lint --fix src testing vite.config.ts",
+    "prepack": "vp pack --no-publint",
+    "test": "vp test run --passWithNoTests src testing/offline-trace",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "tag": "alpha"
+  },
+  "peerDependencies": {
+    "effect": "4.0.0-beta.102"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260813.1",
+    "@effect/ai-openai": "4.0.0-beta.102",
+    "@effect/tsgo": "0.31.0",
+    "@types/node": "^25.7.0",
+    "effect": "4.0.0-beta.102",
+    "esbuild": "^0.28.1",
+    "fast-check": "^4.8.0",
+    "oxlint": "1.77.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "publint": "^0.3.22",
+    "tsx": "4.21.0",
+    "typescript": "^6.0.3",
+    "vite-plus": "^0.1.21",
+    "vitest": "^4.1.8",
+    "wrangler": "^4.114.0"
+  }
+}

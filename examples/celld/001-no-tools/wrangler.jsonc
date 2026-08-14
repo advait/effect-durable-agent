@@ -1,0 +1,24 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "eda-celld-no-tools",
+  "main": "./worker.ts",
+  "compatibility_date": "2026-08-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "EDA_OPENAI_MODEL": "gpt-4.1-mini",
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "EDA_SESSION",
+        "class_name": "CelldNoToolsSession",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "eda-celld-no-tools-v1",
+      "new_sqlite_classes": ["CelldNoToolsSession"],
+    },
+  ],
+}

@@ -34,7 +34,7 @@ jobs:
 
       - name: Verify release tag
         run: |
-          package_version="$(node --input-type=module -e "import packageJson from './package.json' with { type: 'json' }; process.stdout.write(packageJson.version)")"
+          package_version="$(node --input-type=module -e "import packageJson from './packages/effect-durable-agent/package.json' with { type: 'json' }; process.stdout.write(packageJson.version)")"
           if [ "$GITHUB_REF_NAME" != "v$package_version" ]; then
             echo "Release tag $GITHUB_REF_NAME does not match package version v$package_version."
             exit 1

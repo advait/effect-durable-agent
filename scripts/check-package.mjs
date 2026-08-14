@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const fixtureRoot = join(repositoryRoot, "testing", "package-consumer");
 const packageRoots = [
-  repositoryRoot,
-  join(repositoryRoot, "packages/cloudflare"),
-  join(repositoryRoot, "packages/celld"),
+  join(repositoryRoot, "packages/effect-durable-agent"),
+  join(repositoryRoot, "packages/effect-durable-agent-cloudflare"),
+  join(repositoryRoot, "packages/effect-durable-agent-celld"),
 ];
 const temporaryRoot = mkdtempSync(join(tmpdir(), "effect-durable-agent-packages-"));
 const consumerRoot = join(temporaryRoot, "consumer");
