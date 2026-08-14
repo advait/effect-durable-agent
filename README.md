@@ -1,6 +1,6 @@
 # effect-durable-agent
 
-![EDA is a redux-inspired durable state management layer for agentic applications](./docs/assets/hero.svg)
+> ## EDA is a redux-inspired durable agent framework hosted on [Durable Objects](https://developers.cloudflare.com/durable-objects/) and [celld](https://celld.dev/)
 
 [![npm version](https://img.shields.io/npm/v/effect-durable-agent)](https://www.npmjs.com/package/effect-durable-agent)
 [![CI](https://github.com/advait/effect-durable-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/advait/effect-durable-agent/actions/workflows/ci.yml)
