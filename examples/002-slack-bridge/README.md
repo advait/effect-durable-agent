@@ -99,7 +99,7 @@ seq  event                                      why it matters
 
 ```jsonc
 {
-  "main": "./examples/cloudflare/002-slack-bridge/worker.ts",
+  "main": "./examples/002-slack-bridge/worker.ts",
   "durable_objects": {
     "bindings": [
       {

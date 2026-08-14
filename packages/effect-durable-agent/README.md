@@ -127,7 +127,7 @@ keeps moving. When Slack recovers, it receives the committed events and converge
 history. External availability stays off the application's critical path without sacrificing
 reliable delivery.
 
-See the [Slack bridge example](https://github.com/advait/effect-durable-agent/tree/master/examples/cloudflare/002-slack-bridge) for idempotent
+See the [Slack bridge example](https://github.com/advait/effect-durable-agent/tree/master/examples/002-slack-bridge) for idempotent
 ingress, a custom reducer, and durable outbound delivery.
 
 **Durable state. Durable side effects.**
@@ -210,10 +210,10 @@ Start with the executable examples:
 
 | Example | What it demonstrates |
 | --- | --- |
-| [`cloudflare/001-no-tools`](https://github.com/advait/effect-durable-agent/tree/master/examples/cloudflare/001-no-tools) | Minimal Durable Object session and durable command admission. |
-| [`cloudflare/002-slack-bridge`](https://github.com/advait/effect-durable-agent/tree/master/examples/cloudflare/002-slack-bridge) | Idempotent ingress, application events and reducers, and a retrying durable sink. |
-| [`cloudflare/003-sandbox-lifecycle`](https://github.com/advait/effect-durable-agent/tree/master/examples/cloudflare/003-sandbox-lifecycle) | Tool and product events reduced into one UI model, including snapshot-to-stream handoff. |
-| [`celld/001-no-tools`](https://github.com/advait/effect-durable-agent/tree/master/examples/celld/001-no-tools) | Deployable celld cell with durable command admission. |
+| [`001-no-tools`](https://github.com/advait/effect-durable-agent/tree/master/examples/001-no-tools) | Minimal Durable Object session and durable command admission. |
+| [`002-slack-bridge`](https://github.com/advait/effect-durable-agent/tree/master/examples/002-slack-bridge) | Idempotent ingress, application events and reducers, and a retrying durable sink. |
+| [`003-sandbox-lifecycle`](https://github.com/advait/effect-durable-agent/tree/master/examples/003-sandbox-lifecycle) | Tool and product events reduced into one UI model, including snapshot-to-stream handoff. |
+| [`004-celld-no-tools`](https://github.com/advait/effect-durable-agent/tree/master/examples/004-celld-no-tools) | Deployable celld cell with durable command admission. |
 
 ## Why EDA instead of another agent SDK or framework?
 

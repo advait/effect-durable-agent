@@ -93,7 +93,7 @@ ManagedRuntime<Effect services> for one session
 | Extension points | `packages/effect-durable-agent/src/services/reducer-registry.ts`, `packages/effect-durable-agent/src/services/sink-registry.ts` |
 | Compaction | `packages/effect-durable-agent/src/services/compaction.ts`, `packages/effect-durable-agent/src/domain/context-projection.ts` |
 | Cloudflare/celld host adapters | `packages/effect-durable-agent-cloudflare/src/durable-object-runtime.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-keepalive.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-sink-checkpoints.ts` |
-| Examples | `examples/cloudflare/`, `examples/celld/` |
+| Examples | `examples/` |
 
 ---
 
@@ -530,9 +530,9 @@ snapshot union.
 
 The current examples show the intended shape:
 
-- `examples/cloudflare/002-slack-bridge` — idempotent Slack ingress, reducer correlation across framework/app events, and durable sink delivery.
-- `examples/cloudflare/003-sandbox-lifecycle` — framework tool events + app sandbox events reduced into one UI model, including SSR handoff math.
-- `examples/celld/001-no-tools` — deployable celld host with Durable Objects-compatible SQLite, alarms, RPC, and WebSockets.
+- `examples/002-slack-bridge` — idempotent Slack ingress, reducer correlation across framework/app events, and durable sink delivery.
+- `examples/003-sandbox-lifecycle` — framework tool events + app sandbox events reduced into one UI model, including SSR handoff math.
+- `examples/004-celld-no-tools` — deployable celld host with Durable Objects-compatible SQLite, alarms, RPC, and WebSockets.
 
 ### Sinks
 

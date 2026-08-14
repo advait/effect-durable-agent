@@ -2,7 +2,7 @@
 
 [celld](https://celld.dev/) host for [`effect-durable-agent`](../effect-durable-agent/README.md).
 
-Start with the deployable [`examples/celld/001-no-tools`](../../examples/celld/001-no-tools)
+Start with the deployable [`examples/004-celld-no-tools`](../../examples/004-celld-no-tools)
 application.
 
 ```sh

@@ -38,7 +38,7 @@ for migrated callers.
 
 ```jsonc
 {
-  "main": "./examples/cloudflare/001-no-tools/worker.ts",
+  "main": "./examples/001-no-tools/worker.ts",
   "durable_objects": {
     "bindings": [
       {

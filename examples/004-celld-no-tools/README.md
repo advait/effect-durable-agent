@@ -1,4 +1,4 @@
-# 001 — celld no-tools host
+# 004 — celld no-tools host
 
 This is the smallest deployable EDA session on [celld](https://celld.dev/): one named cell, Durable
 Objects-compatible SQLite state, and a tiny HTTP command facade.

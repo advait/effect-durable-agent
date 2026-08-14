@@ -18,7 +18,7 @@ exact matching core version after packing.
 
 ```text
 packages/   publishable package source and package-owned tests
-examples/   executable consumers grouped by host
+examples/   executable consumers in one discoverable sequence
 docs/       architecture, protocols, testing, and release guidance
 scripts/    workspace-wide validation and release orchestration
 testing/    cross-package conformance harnesses and package-consumer fixtures
