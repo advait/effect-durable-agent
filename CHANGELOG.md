@@ -4,6 +4,15 @@ All notable changes to Effect Durable Agent will be documented in this file.
 
 ## Unreleased
 
+## 0.1.0-alpha.4
+
+- Let applications project instruction and data messages from current reducer state into each model prompt
+- Build prompts only after turn input selection is committed into durable reducer state
+- Split the host-neutral runtime, Cloudflare Durable Objects host, and celld host into lockstep packages
+- Add shared real-runtime conformance tests for workerd and celld, including RPC, persistence,
+  hard-restart recovery, durable idempotency, WebSocket resume/ACK, and warm/cold session recreation
+- Encode Effect Schema values explicitly at Durable Object RPC boundaries
+
 ## 0.1.0-alpha.3
 
 - Publish the state-projected prompt context and WebSocket schema changes from the unpublished `0.1.0-alpha.2` package

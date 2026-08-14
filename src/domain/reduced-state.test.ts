@@ -117,7 +117,27 @@ const activeInferenceEvents = () => [
 
 describe("reduced-state", () => {
   it("uses the current checkpoint schema version", () => {
-    expect(frameworkReducedStateReducerSchemaVersion).toBe(4);
+    expect(frameworkReducedStateReducerSchemaVersion).toBe(5);
+  });
+
+  it("folds and checkpoint-hydrates imported assistant context", () => {
+    const importedMessageId = MessageId.make(uuid(0xd001));
+    const imported = committed(1, "AssistantMessageImported", {
+      inferenceId: INFERENCE_ID,
+      messageId: importedMessageId,
+      promptParts: [Prompt.textPart({ text: "Earlier Gia response" })],
+      runId: RUN_ID,
+      turnId: TURN_ID,
+    });
+
+    const state = reduceCommittedEvents([imported]);
+    const hydrated = decodeReducedStateCheckpoint(encodeReducedStateCheckpoint(state), [imported]);
+
+    expect(hydrated.messages.get(importedMessageId)).toMatchObject({
+      _tag: "Assistant",
+      content: { text: "Earlier Gia response" },
+      imported: true,
+    });
   });
 
   it("omits terminal fields from active lifecycle records", () => {

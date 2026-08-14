@@ -117,7 +117,7 @@ export type EDAWebSocketAckFrame = typeof EDAWebSocketAckFrame.Type;
 export const EDAWebSocketClientFrame = Schema.Union([EDAWebSocketAckFrame]);
 export type EDAWebSocketClientFrame = typeof EDAWebSocketClientFrame.Type;
 
-/** Small attachment persisted by Cloudflare for hibernating WebSockets. */
+/** Small attachment persisted by hibernation-capable WebSocket hosts. */
 export const EDAWebSocketAttachment = Schema.Struct({
   kind: Schema.Literal("eda-events-v1"),
   sessionId: SessionId,
@@ -133,7 +133,7 @@ export const encodeEDAWebSocketServerFrame = (
   protocol?: EDAWebSocketServerFrameEncoder,
 ): string => (protocol ?? edaFrameworkWebSocketWireProtocol.host).encodeServerFrame(frame);
 
-/** Decode an unknown attachment value from Cloudflare WebSocket hibernation storage. */
+/** Decode an unknown attachment value from host WebSocket hibernation storage. */
 export const decodeEDAWebSocketAttachment = (
   input: unknown,
 ): Effect.Effect<EDAWebSocketAttachment, unknown> =>

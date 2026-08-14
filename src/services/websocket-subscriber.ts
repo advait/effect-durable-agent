@@ -63,7 +63,7 @@ export type EDAWebSocketSubscriberError =
   | SubscriberSendFailed
   | EDASessionStoreError;
 
-/** Transport boundary implemented by the Cloudflare WebSocket adapter or tests. */
+/** Transport boundary implemented by a host WebSocket adapter or tests. */
 export interface EDAWebSocketSubscriberTransport {
   readonly send: (frame: EDAWebSocketServerFrame) => Effect.Effect<void, SubscriberSendFailed>;
   readonly incoming: Queue.Queue<EDAWebSocketClientFrame>;

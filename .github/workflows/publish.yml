@@ -39,9 +39,10 @@ jobs:
             echo "Release tag $GITHUB_REF_NAME does not match package version v$package_version."
             exit 1
           fi
+          pnpm run release:versions
 
       - name: Validate release
         run: pnpm run release:check
 
-      - name: Publish package
-        run: npm publish --tag alpha
+      - name: Publish lockstep packages
+        run: pnpm run publish:workspace

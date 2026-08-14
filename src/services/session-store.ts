@@ -34,7 +34,7 @@ export type CommittedDurableEvent = typeof CommittedDurableEvent.Type;
  * Store-level failure surfaced by durable append, replay, and hydration APIs.
  *
  * The error intentionally stays storage-semantic rather than SQL-specific so
- * framework services can treat DO SQLite, in-memory tests, and future adapters
+ * framework services can treat SQL-backed hosts, in-memory tests, and future adapters
  * as the same durability boundary.
  */
 export class EDASessionStoreError extends Schema.TaggedErrorClass<EDASessionStoreError>()(
@@ -49,14 +49,6 @@ export const hasEDASessionStoreError = (cause: Cause.Cause<unknown>): boolean =>
   cause.reasons.some(
     (reason) => Cause.isFailReason(reason) && reason.error instanceof EDASessionStoreError,
   );
-
-/**
- * Initial hard cap for one serialized JSON value stored in DO SQLite.
- *
- * Cloudflare's SQL row/string limit is 2MB; failing around 1.5MB leaves margin
- * for encoding overhead and makes the future blob/chunk decision explicit.
- */
-export const durableObjectSerializedJsonHardCapBytes = 1_500_000;
 
 /**
  * One logical event to persist in the durable session log.

@@ -1,12 +1,17 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const fixtureRoot = join(packageRoot, "testing", "package-consumer");
-const temporaryRoot = mkdtempSync(join(tmpdir(), "effect-durable-agent-package-"));
+const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const fixtureRoot = join(repositoryRoot, "testing", "package-consumer");
+const packageRoots = [
+  repositoryRoot,
+  join(repositoryRoot, "packages/cloudflare"),
+  join(repositoryRoot, "packages/celld"),
+];
+const temporaryRoot = mkdtempSync(join(tmpdir(), "effect-durable-agent-packages-"));
 const consumerRoot = join(temporaryRoot, "consumer");
 const unsupportedNpmConfig = new Set([
   "npm_config__jsr_registry",
@@ -25,43 +30,34 @@ const run = (command, args, cwd) =>
     stdio: ["ignore", "pipe", "inherit"],
   });
 
-try {
+const packAndValidate = (packageRoot) => {
   const packOutput = run(
-    "npm",
-    ["pack", "--json", "--ignore-scripts", "--pack-destination", temporaryRoot],
+    "pnpm",
+    ["--config.ignore-scripts=true", "pack", "--json", "--pack-destination", temporaryRoot],
     packageRoot,
   );
-  const [packResult] = JSON.parse(packOutput);
+  const parsedPackOutput = JSON.parse(packOutput);
+  const packResult = Array.isArray(parsedPackOutput) ? parsedPackOutput[0] : parsedPackOutput;
   if (packResult === undefined) {
-    throw new Error("npm pack did not return package metadata.");
+    throw new Error(`npm pack did not return metadata for ${packageRoot}`);
   }
 
   const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
   const packedFiles = new Set(packResult.files.map(({ path }) => path));
-  const requiredFiles = [
-    "LICENSE",
-    "README.md",
-    "dist/index.js",
-    "dist/index.d.ts",
-    "package.json",
-  ];
-  for (const path of requiredFiles) {
+  for (const path of ["LICENSE", "README.md", "dist/index.js", "dist/index.d.ts", "package.json"]) {
     if (!packedFiles.has(path)) {
-      throw new Error(`Packed artifact is missing ${path}.`);
+      throw new Error(`${packageJson.name} artifact is missing ${path}`);
     }
   }
 
-  const forbiddenPrefixes = [
-    "node_modules/",
-    "patches/",
-    "scripts/",
-    "src/",
-    "testing/package-consumer/",
-  ];
+  const forbiddenPrefixes = ["node_modules/", "patches/", "scripts/", "src/", "testing/"];
   for (const path of packedFiles) {
+    if (path === "testing/offline-trace/README.md") {
+      continue;
+    }
     const forbiddenPrefix = forbiddenPrefixes.find((prefix) => path.startsWith(prefix));
     if (forbiddenPrefix !== undefined) {
-      throw new Error(`Packed artifact unexpectedly contains ${path}.`);
+      throw new Error(`${packageJson.name} artifact unexpectedly contains ${path}`);
     }
   }
 
@@ -72,16 +68,40 @@ try {
     for (const condition of ["types", "import"]) {
       const path = target[condition]?.replace(/^\.\//, "");
       if (path === undefined || !packedFiles.has(path)) {
-        throw new Error(`Export ${subpath} has no packed ${condition} target.`);
+        throw new Error(`${packageJson.name} export ${subpath} has no packed ${condition} target`);
       }
     }
   }
 
+  const tarballPath = packResult.filename;
+  const packedManifest = JSON.parse(run("tar", ["-xOf", tarballPath, "package/package.json"]));
+  for (const dependencyGroup of ["dependencies", "peerDependencies"]) {
+    for (const [name, version] of Object.entries(packedManifest[dependencyGroup] ?? {})) {
+      if (
+        packageRoots.some(
+          (root) => JSON.parse(readFileSync(join(root, "package.json"), "utf8")).name === name,
+        ) &&
+        version !== packageJson.version
+      ) {
+        throw new Error(
+          `${packageJson.name} packed ${dependencyGroup}.${name} as ${version}, expected ${packageJson.version}`,
+        );
+      }
+    }
+  }
+
+  process.stdout.write(
+    `Validated ${packageJson.name} (${packResult.files.length} files, ${statSync(tarballPath).size} packed bytes).\n`,
+  );
+  return tarballPath;
+};
+
+try {
+  const tarballs = packageRoots.map(packAndValidate);
   cpSync(fixtureRoot, consumerRoot, { recursive: true });
-  const tarballPath = join(temporaryRoot, packResult.filename);
   run(
     "npm",
-    ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarballPath],
+    ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", ...tarballs],
     consumerRoot,
   );
   run("npm", ["run", "typecheck"], consumerRoot);
@@ -89,7 +109,7 @@ try {
   run("npm", ["run", "check:tooling"], consumerRoot);
 
   process.stdout.write(
-    `Validated ${basename(tarballPath)} (${packResult.entryCount} files, ${packResult.unpackedSize} bytes unpacked).\n`,
+    `Validated isolated consumption of ${tarballs.map((tarball) => basename(tarball)).join(", ")}.\n`,
   );
 } finally {
   rmSync(temporaryRoot, { force: true, recursive: true });

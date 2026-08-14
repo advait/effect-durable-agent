@@ -614,7 +614,7 @@ Future hardening tests should add:
 - Oversized outbound frame behavior and inbound text-frame byte cap before JSON parse.
 - Explicit client reducer reset/de-duplication behavior after active-turn replay overflow.
 
-Integration tests can later use a real Cloudflare Workers test pool if available.
+Shared conformance tests exercise this flow against real workerd and celld processes.
 
 ## 12. Implemented artifacts and remaining work
 
@@ -625,8 +625,8 @@ Implemented artifacts:
 3. `src/services/live-event-bus.ts` owns bounded active-turn ephemeral replay: open on `TurnStarted`, append active-turn ephemerals, drop on `TurnCompleted`/`TurnStopped`/`TurnFailed`, expose `activeTurnReplay()`.
 4. `src/services/session-query.ts` / `EDARuntime.eventsAfter(...)` merge durable replay, active-turn ephemerals, already-buffered live events, and follow-live delivery.
 5. `src/services/websocket-subscriber.ts` defines typed subscriber errors and `runWebSocketSubscriber(...)` over `EDARuntime.eventsAfter`, `Queue.dropping`, ACK refs, scoped cancellation, and ACK timeouts.
-6. `src/host/durable-object-runtime.ts` adapts Cloudflare WebSockets to the transport, persists ACKs in `serializeAttachment`, restores accepted sockets, and maps typed errors to close codes.
-7. `src/host/durable-object.ts`, `app/routes/api.eda-agent.sessions.$sessionId.events.ts`, and `workers/eda-agent/api.ts` expose a WebSocket-only events route with `426` for non-upgrade requests.
+6. `packages/cloudflare/src/durable-object-runtime.ts` adapts Durable Object WebSockets to the transport, persists ACKs in `serializeAttachment`, restores accepted sockets, and maps typed errors to close codes for Cloudflare and celld.
+7. `packages/cloudflare/src/durable-object.ts` and the consuming application's routes expose a WebSocket-only events endpoint with `426` for non-upgrade requests.
 8. Tests cover typed custom-event bindings, normal subscriber delivery, subscriber overflow lag, active-turn replay retention/drop, reconnect ordering, and fake DO WebSocket streaming.
 
 Remaining hardening:
@@ -636,4 +636,4 @@ Remaining hardening:
 3. Focused ACK-timeout and protocol-error tests.
 4. Micro-batching (`maxFrameEvents > 1`, optional frame delay) once token volume needs it.
 5. Explicit client-visible behavior for active-turn replay overflow.
-6. Real Cloudflare Workers/WebSocket integration test pool if available.
+6. Broader host conformance coverage for lag/timeout failure paths.

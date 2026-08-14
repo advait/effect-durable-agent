@@ -171,7 +171,7 @@ export const edaFrameworkWebSocketWireProtocol: EDAWebSocketWireProtocol<
  * Framework durable and ephemeral events are included automatically. Future EDA
  * apps register only their custom events. Servers use the returned domain schemas
  * and typed encoder; external consumers decode with the wire schemas. Pass the
- * returned `host` adapter to `EDASessionDurableObjectHost`.
+ * returned `host` adapter to the selected host package.
  */
 export const makeEDAWebSocketWireProtocol = <
   AppEventSchema extends Schema.Codec<EventEnvelope, unknown, never, never>,

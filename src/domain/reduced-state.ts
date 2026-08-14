@@ -16,6 +16,7 @@ import {
 } from "../types/core";
 import {
   assistantMessageCommittedEventType,
+  assistantMessageImportedEventType,
   assistantPartialCommittedEventType,
   baseStateCreatedEventType,
   baseStateFailedEventType,
@@ -249,6 +250,8 @@ export type MessageRecord =
       readonly runId: RunId;
       readonly turnId: TurnId;
       readonly inferenceId: InferenceId;
+      /** True when the assistant message originated outside this EDA session. */
+      readonly imported?: true;
       readonly content: AssistantMessageContent;
       readonly createdAtMs?: number;
       readonly promptParts?: ReadonlyArray<Prompt.AssistantMessagePart>;
@@ -413,7 +416,7 @@ export const initialReducedState: ReducedState = {
 export const frameworkReducedStateReducerName = "_eda.framework.reduced-state";
 
 /** Schema version for the framework-owned `ReducedState` checkpoint payload. */
-export const frameworkReducedStateReducerSchemaVersion = 4;
+export const frameworkReducedStateReducerSchemaVersion = 5;
 
 /** JSON payload stored for the framework-owned reduced-state reducer checkpoint. */
 export type ReducedStateCheckpointCommandRecord = Omit<CommandRecord, "command">;
@@ -740,7 +743,9 @@ const checkpointMessageEventType = (record: ReducedStateCheckpointMessageRecord)
     case "Steering":
       return steeringMessageQueuedEventType;
     case "Assistant":
-      return assistantMessageCommittedEventType;
+      return record.imported === true
+        ? assistantMessageImportedEventType
+        : assistantMessageCommittedEventType;
     case "AssistantPartial":
       return assistantPartialCommittedEventType;
     default:
@@ -1185,6 +1190,22 @@ export const foldReducedState = (
           runId,
           turnId,
           inferenceId: inferenceId,
+          content: assistantContentFromPromptParts(promptParts),
+          ...(Number.isFinite(eventCreatedAtMs) ? { createdAtMs: eventCreatedAtMs } : {}),
+          promptParts,
+          seq,
+        });
+        break;
+      }
+      case assistantMessageImportedEventType: {
+        const { messageId, runId, turnId, inferenceId, promptParts } = payload;
+        messages.set(messageId, {
+          _tag: "Assistant",
+          messageId,
+          runId,
+          turnId,
+          inferenceId,
+          imported: true,
           content: assistantContentFromPromptParts(promptParts),
           ...(Number.isFinite(eventCreatedAtMs) ? { createdAtMs: eventCreatedAtMs } : {}),
           promptParts,
