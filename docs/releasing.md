@@ -73,7 +73,11 @@ reason to move or remove it.
 ## Release checklist
 
 1. Choose a new version that has never been published for any of the three packages.
-2. Update all three `package.json` files to that exact version and refresh `pnpm-lock.yaml`.
+2. Update these three manifests to that exact version and refresh `pnpm-lock.yaml`:
+
+   - `packages/effect-durable-agent/package.json`
+   - `packages/effect-durable-agent-cloudflare/package.json`
+   - `packages/effect-durable-agent-celld/package.json`
 3. Add the release notes to `CHANGELOG.md`.
 4. Run the complete release validation:
 
@@ -86,7 +90,7 @@ reason to move or remove it.
 6. Create a GitHub release targeting the merged commit. Its tag must be exactly
    `v<package version>`; for example, `v0.1.0-alpha.4`.
 7. Wait for the `Publish to npm` workflow to pass. The workflow independently reruns the full
-   release check and rejects a tag that does not match `package.json`.
+   release check and rejects a tag that does not match the core package manifest.
 8. Verify the registry metadata and dist-tags:
 
    ```bash

@@ -21,9 +21,11 @@ Examples and documentation scenarios are not a seventh archetype. They should re
 - Service contracts own typed error, interruption, retry, and resource semantics.
 - `session-state-control.model.test.ts` owns generated command/control lifecycle invariants.
 - `session-state-crash-simulation.test.ts` owns recovery from every durable batch prefix. Do not replace these prefix sweeps with a few named regressions.
-- `host/durable-object-runtime.test.ts` owns the canned-model host journey through admission, streaming, SQLite persistence, reducer checkpoints, cold-start replay, and transcript hydration.
-- `testing/offline-trace/offline-trace.test.ts` owns multi-turn prompt continuity, tool continuation, parallel tool ordering, and trace artifacts.
-- `testing/integration/runtime-real.test.ts` is the opt-in provider smoke. The default suite must never need a network or provider key.
+- `packages/effect-durable-agent-cloudflare/src/durable-object-runtime.test.ts` owns the canned-model host journey through admission, streaming, SQLite persistence, reducer checkpoints, cold-start replay, and transcript hydration.
+- `packages/effect-durable-agent-cloudflare/src/durable-object-store.test.ts` owns the semantic store contract plus Durable Object SQLite paging, transaction, sidecar, and migration behavior.
+- `packages/effect-durable-agent/testing/offline-trace/offline-trace.test.ts` owns multi-turn prompt continuity, tool continuation, parallel tool ordering, and trace artifacts.
+- `packages/effect-durable-agent-cloudflare/testing/integration/host-conformance.test.ts` and `packages/effect-durable-agent-celld/testing/integration/host-conformance.test.ts` register the same `testing/host-conformance/suite.ts` against real workerd and celld processes. The shared suite owns persistence, WebSocket resume/ACK, restart idempotency, in-flight hard-crash recovery, and warm/cold destruction semantics.
+- `packages/effect-durable-agent/src/services/runtime.openai-smoke.test.ts` and `packages/effect-durable-agent-cloudflare/testing/integration/runtime-real.test.ts` are opt-in provider smokes. The default suite must never need a network or provider key.
 
 Before adding a regression test, identify which owner failed. Extend an existing table, generator, crash scenario, or journey when possible. Add a standalone named regression only when the input represents a distinct business rule or failure boundary.
 
@@ -44,7 +46,7 @@ Until the runners converge, follow the same boundaries explicitly: run Effect pr
 
 ## Commands
 
-Run the standalone EDA suite:
+Run every package, example, and real-host conformance suite:
 
 ```bash
 mise run test
@@ -56,9 +58,24 @@ Run Gia's Effect-based EDA adapter tests from the sibling consumer package:
 mise run //gia-cf:test -- workers/eda-agent
 ```
 
+Run only the host-neutral core tests:
+
+```bash
+pnpm --filter effect-durable-agent run test
+```
+
 Run EDA's opt-in real-provider smoke:
 
 ```bash
+EDA_OPENAI_SMOKE=true OPENAI_API_KEY=... \
+  pnpm --filter effect-durable-agent exec vp test run \
+  src/services/runtime.openai-smoke.test.ts
+```
+
+Run the larger provider-backed Durable Object host journey:
+
+```bash
 EDA_REAL_INTEGRATION=true OPENAI_API_KEY=... \
-  mise run test -- testing/integration/runtime-real.test.ts
+  pnpm --filter effect-durable-agent-cloudflare exec vp test run \
+  testing/integration/runtime-real.test.ts
 ```

@@ -3,7 +3,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const packagePaths = [".", "packages/cloudflare", "packages/celld"];
+const packagePaths = [
+  "packages/effect-durable-agent",
+  "packages/effect-durable-agent-cloudflare",
+  "packages/effect-durable-agent-celld",
+];
 const packages = packagePaths.map((path) => ({
   path,
   manifest: JSON.parse(readFileSync(join(repositoryRoot, path, "package.json"), "utf8")),

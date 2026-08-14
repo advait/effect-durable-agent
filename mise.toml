@@ -25,23 +25,30 @@ outputs = ["node_modules/.pnpm/lock.yaml", "node_modules/.effect-tsgo-oxlint-pat
 description = "Build all publishable effect-durable-agent packages"
 depends = ["install"]
 run = "pnpm run build"
-sources = ["package.json", "packages/**/*", "src/**/*", "tsconfig.json", "vite.config.ts"]
-outputs = ["dist/**/*", "packages/*/dist/**/*"]
+sources = [
+  "examples/**/*",
+  "package.json",
+  "packages/**/*",
+  "tsconfig.base.json",
+  "tsconfig.json",
+  "vite.config.ts",
+]
+outputs = ["packages/*/dist/**/*"]
 
 [tasks."package:check"]
 description = "Validate all packed packages in an isolated Cloudflare Worker"
 depends = ["build"]
 run = "node scripts/check-package.mjs"
 sources = [
-  "dist/**/*",
   "docs/**/*",
+  "examples/**/*",
   "LICENSE",
   "package.json",
   "packages/**/*",
   "README.md",
   "scripts/check-package.mjs",
   "testing/package-consumer/**/*",
-  "tooling/oxlint/**/*",
+  "packages/effect-durable-agent/tooling/oxlint/**/*",
 ]
 
 [tasks.check]
@@ -58,11 +65,11 @@ description = "Format-check and lint effect-durable-agent"
 depends = ["install"]
 run = ["pnpm exec vp fmt --check", "pnpm exec vp lint --deny-warnings"]
 sources = [
+  "examples/**/*",
   "package.json",
   "packages/**/*",
-  "src/**/*",
   "testing/**/*",
-  "tooling/**/*",
+  "tsconfig.base.json",
   "tsconfig.json",
   "vite.config.ts",
 ]
@@ -81,14 +88,18 @@ hide = true
 description = "Typecheck effect-durable-agent"
 depends = ["install"]
 hide = true
-run = "tsc -p tsconfig.json --noEmit"
-sources = ["package.json", "src/**/*", "tsconfig.json"]
+run = [
+  "pnpm --filter effect-durable-agent run typecheck",
+  "pnpm --filter effect-durable-agent-cloudflare run typecheck",
+  "pnpm --filter effect-durable-agent-celld run typecheck",
+]
+sources = ["examples/**/*", "package.json", "packages/**/*", "tsconfig.base.json", "tsconfig.json"]
 
 [tasks.test]
 description = "Run effect-durable-agent tests"
 depends = ["install"]
 run = "pnpm run test"
-sources = ["package.json", "packages/**/*", "src/**/*", "testing/**/*", "vite.config.ts"]
+sources = ["examples/**/*", "package.json", "packages/**/*", "testing/**/*", "vite.config.ts"]
 
 [tasks.ci]
 description = "Run all effect-durable-agent validation"

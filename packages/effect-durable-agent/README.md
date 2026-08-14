@@ -21,7 +21,7 @@ the same event sequence.
 EDA models the agent and the surrounding product as one application state machine. For example, a
 coding-agent session might record:
 
-![An ordered EDA session history where framework and application events share one sequence.](./docs/assets/event-sequence.svg)
+![An ordered EDA session history where framework and application events share one sequence.](https://raw.githubusercontent.com/advait/effect-durable-agent/master/docs/assets/event-sequence.svg)
 
 Framework events and product events are not separate channels. They form the same history and
 transition the same application state.
@@ -38,7 +38,7 @@ external conversations, delivery state, or anything else the product needs to re
 
 Those events flow through the rest of the system as follows:
 
-![A numbered guide to EDA architecture: 1, commands enter the session runtime; 2, durable transitions form an ordered event log; 3, clients follow the live event stream; 4, pure reducers derive state; 5, state captures agent and product lifecycles; 6, pure UI and LLM context projections shape state for different consumers; 7, durable sinks deliver events to external systems.](./docs/assets/architecture.svg)
+![A numbered guide to EDA architecture: 1, commands enter the session runtime; 2, durable transitions form an ordered event log; 3, clients follow the live event stream; 4, pure reducers derive state; 5, state captures agent and product lifecycles; 6, pure UI and LLM context projections shape state for different consumers; 7, durable sinks deliver events to external systems.](https://raw.githubusercontent.com/advait/effect-durable-agent/master/docs/assets/architecture.svg)
 
 ### 1. Session runtime: one state machine for the entire application
 
@@ -92,7 +92,7 @@ projection of state, and the LLM context is a separate pure projection of that s
 The UI can preserve tool progress, approvals, sandbox status, and rich product history while the
 LLM context selects and compacts only what the model should see. Applications can model each
 consumer honestly instead of collapsing both into one constrained representation. See the
-[UI projection guide](./docs/ui-projection.md) for the projection contract.
+[UI projection guide](https://github.com/advait/effect-durable-agent/blob/master/docs/ui-projection.md) for the projection contract.
 
 ### 7. Durable sinks: callbacks that survive failure
 
@@ -127,7 +127,7 @@ keeps moving. When Slack recovers, it receives the committed events and converge
 history. External availability stays off the application's critical path without sacrificing
 reliable delivery.
 
-See the [Slack bridge example](./examples/002-slack-bridge) for idempotent
+See the [Slack bridge example](https://github.com/advait/effect-durable-agent/tree/master/examples/002-slack-bridge) for idempotent
 ingress, a custom reducer, and durable outbound delivery.
 
 **Durable state. Durable side effects.**
@@ -149,7 +149,7 @@ pending approval, the completed delivery, or the recovered run.
 
 A difficult production session becomes a reproducible UI test instead of a story in a bug report.
 The package includes pure reducer tests, generated state-machine properties, canned-model journeys,
-crash-prefix simulations, and an [offline trace harness](./packages/effect-durable-agent/testing/offline-trace) that writes durable
+crash-prefix simulations, and an [offline trace harness](./testing/offline-trace) that writes durable
 and live event artifacts.
 
 ### Tracing for every agent run
@@ -161,7 +161,7 @@ turns, model inference, tools, event streaming, durable sinks, and recovery. Tra
 the durable boundaries that separate ingress, execution, and side effects, and Effect telemetry can
 be exported through OpenTelemetry to Google Cloud Trace or another existing backend.
 
-![Google Cloud Trace view of an EDA session, showing agent turns, model inference, tool calls, sandbox execution, and an external integration in one timeline.](./docs/assets/gcp-trace.png)
+![Google Cloud Trace view of an EDA session, showing agent turns, model inference, tool calls, sandbox execution, and an external integration in one timeline.](https://raw.githubusercontent.com/advait/effect-durable-agent/master/docs/assets/gcp-trace.png)
 
 ## Host-neutral core, pluggable deployment
 
@@ -210,10 +210,10 @@ Start with the executable examples:
 
 | Example | What it demonstrates |
 | --- | --- |
-| [`001-no-tools`](./examples/001-no-tools) | Minimal Durable Object session and durable command admission. |
-| [`002-slack-bridge`](./examples/002-slack-bridge) | Idempotent ingress, application events and reducers, and a retrying durable sink. |
-| [`003-sandbox-lifecycle`](./examples/003-sandbox-lifecycle) | Tool and product events reduced into one UI model, including snapshot-to-stream handoff. |
-| [`004-celld-no-tools`](./examples/004-celld-no-tools) | Deployable celld cell with durable command admission. |
+| [`001-no-tools`](https://github.com/advait/effect-durable-agent/tree/master/examples/001-no-tools) | Minimal Durable Object session and durable command admission. |
+| [`002-slack-bridge`](https://github.com/advait/effect-durable-agent/tree/master/examples/002-slack-bridge) | Idempotent ingress, application events and reducers, and a retrying durable sink. |
+| [`003-sandbox-lifecycle`](https://github.com/advait/effect-durable-agent/tree/master/examples/003-sandbox-lifecycle) | Tool and product events reduced into one UI model, including snapshot-to-stream handoff. |
+| [`004-celld-no-tools`](https://github.com/advait/effect-durable-agent/tree/master/examples/004-celld-no-tools) | Deployable celld cell with durable command admission. |
 
 ## Why EDA instead of another agent SDK or framework?
 
@@ -294,16 +294,16 @@ typed boundaries, structured concurrency, and first-class tracing.
 
 ## Documentation
 
-- [Current implementation](./docs/spec.md)
-- [Testing strategy](./docs/testing.md)
-- [WebSocket live-event protocol](./docs/websocket-protocol.md)
-- [Message steering](./docs/message-steering.md)
-- [UI projection proposal](./docs/ui-projection.md)
-- [Subagents proposal](./docs/subagents.md)
-- [Maintainer release guide](./docs/releasing.md)
+- [Current implementation](https://github.com/advait/effect-durable-agent/blob/master/docs/spec.md)
+- [Testing strategy](https://github.com/advait/effect-durable-agent/blob/master/docs/testing.md)
+- [WebSocket live-event protocol](https://github.com/advait/effect-durable-agent/blob/master/docs/websocket-protocol.md)
+- [Message steering](https://github.com/advait/effect-durable-agent/blob/master/docs/message-steering.md)
+- [UI projection proposal](https://github.com/advait/effect-durable-agent/blob/master/docs/ui-projection.md)
+- [Subagents proposal](https://github.com/advait/effect-durable-agent/blob/master/docs/subagents.md)
+- [Maintainer release guide](https://github.com/advait/effect-durable-agent/blob/master/docs/releasing.md)
 
 ## Contributing and license
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) to run the project and validate the npm package. Effect
+See [CONTRIBUTING.md](https://github.com/advait/effect-durable-agent/blob/master/CONTRIBUTING.md) to run the project and validate the npm package. Effect
 Durable Agent is available under the [MIT License](./LICENSE). Please report vulnerabilities
-through the process in [SECURITY.md](./SECURITY.md).
+through the process in [SECURITY.md](https://github.com/advait/effect-durable-agent/blob/master/SECURITY.md).

@@ -797,14 +797,14 @@ turn start, turn terminal, and run failure and assert the invariants in section
 
 Primary framework areas:
 
-- `src/types/commands.ts`
-- `src/types/events/durable.ts`
-- `src/domain/reduced-state.ts`
-- `src/domain/command-queues.ts`
-- `src/domain/dispatch-policy.ts`
-- `src/domain/run-continuation-policy.ts`
-- `src/services/session-state.ts`
-- `packages/cloudflare/src/durable-object-store.ts`
+- `packages/effect-durable-agent/src/types/commands.ts`
+- `packages/effect-durable-agent/src/types/events/durable.ts`
+- `packages/effect-durable-agent/src/domain/reduced-state.ts`
+- `packages/effect-durable-agent/src/domain/command-queues.ts`
+- `packages/effect-durable-agent/src/domain/dispatch-policy.ts`
+- `packages/effect-durable-agent/src/domain/run-continuation-policy.ts`
+- `packages/effect-durable-agent/src/services/session-state.ts`
+- `packages/effect-durable-agent-cloudflare/src/durable-object-store.ts`
 
 Primary Gia areas:
 
