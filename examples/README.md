@@ -9,6 +9,7 @@ without choosing a host first.
 | [`002-slack-bridge`](./002-slack-bridge) | Cloudflare Durable Objects | Idempotent ingress, custom events/reducers, and retrying durable delivery. |
 | [`003-sandbox-lifecycle`](./003-sandbox-lifecycle) | Cloudflare Durable Objects | Tool and product events reduced into one UI model. |
 | [`004-celld-no-tools`](./004-celld-no-tools) | celld | A deployable cell using the same EDA durability bridge. |
+| [`005-rivet-no-tools`](./005-rivet-no-tools) | Rivet Actors | Native actor-local SQLite, lifecycle recovery, actions, and resumable WebSockets. |
 
 Examples import the public workspace package names. They do not reach into package-local source, so
 their typecheck and tests exercise the same API surface available to external consumers.

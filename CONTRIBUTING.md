@@ -12,7 +12,7 @@ pnpm install --frozen-lockfile
 pnpm run ci
 ```
 
-Validate the distributable package, including an install into an isolated Cloudflare Worker:
+Validate all distributable packages, including isolated Cloudflare Worker and Node/Rivet consumers:
 
 ```bash
 pnpm run build

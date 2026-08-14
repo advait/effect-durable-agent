@@ -1,19 +1,34 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { build } from "esbuild";
+import * as Prompt from "effect/unstable/ai/Prompt";
+import { getEnginePath } from "@rivetkit/engine-cli";
+import { createClient } from "rivetkit/client";
 import { describe, expect, it } from "vite-plus/test";
 
 import { installCelld } from "../../packages/effect-durable-agent-celld/scripts/install-celld.mjs";
+import { encodeEDARivetCommand } from "../../packages/effect-durable-agent-rivet/src/actor";
+import type { registry as rivetConformanceRegistry } from "../../packages/effect-durable-agent-rivet/testing/host-conformance/server";
+import { CommandIdempotencyKey, SubmitMessageCommand } from "effect-durable-agent/types/commands";
 
 /** Runtime variants required to satisfy the shared EDA host contract. */
-export type HostKind = "celld" | "cloudflare";
+export type HostKind = "celld" | "cloudflare" | "rivet";
+
+const rivetConformanceAuthorization = "eda-rivet-conformance-authorized";
+
+const rivetConnectionParams = (afterSeq?: number) => ({
+  authorization: rivetConformanceAuthorization,
+  ...(afterSeq === undefined ? {} : { afterSeq }),
+});
 
 interface HostProcess {
   readonly baseUrl: string;
+  readonly kind: HostKind;
+  diagnostics(): string;
   restart(options?: { readonly blockModel?: boolean; readonly hard?: boolean }): Promise<void>;
   stop(): Promise<void>;
 }
@@ -21,7 +36,7 @@ interface HostProcess {
 interface MessageResult {
   readonly messages: ReadonlyArray<{
     readonly _tag: string;
-    readonly content?: { readonly text?: string };
+    readonly content?: { readonly text?: string } | ReadonlyArray<unknown>;
   }>;
   readonly snapshot: { readonly lastSeq: number };
   readonly terminal: {
@@ -39,6 +54,13 @@ interface EventsFrame {
     readonly position: { readonly seq: number };
   }>;
 }
+
+const messageText = (
+  content: { readonly text?: string } | ReadonlyArray<unknown> | undefined,
+): string | undefined =>
+  content !== undefined && "text" in content && typeof content.text === "string"
+    ? content.text
+    : undefined;
 
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 
@@ -98,11 +120,19 @@ const waitForExit = async (child: ChildProcess, timeoutMs: number): Promise<void
 const startHost = async (kind: HostKind): Promise<HostProcess> => {
   const scratch = await mkdtemp(join(tmpdir(), `eda-${kind}-conformance-`));
   const dataDirectory = join(scratch, "data");
-  const port = await availablePort();
+  await mkdir(dataDirectory, { recursive: true });
+  // Rivet Engine 2.3 advertises its local canonical endpoint as :6420 to
+  // serverless runners, even when Guard binds elsewhere. Use that canonical
+  // local endpoint while still allocating the runner's private ports.
+  const port = kind === "rivet" ? 6420 : await availablePort();
   const internalPort = await availablePort();
+  const rivetPeerPort = kind === "rivet" ? await availablePort() : undefined;
+  const rivetMetricsPort = kind === "rivet" ? await availablePort() : undefined;
   const baseUrl = `http://127.0.0.1:${port}`;
   let child: ChildProcess | undefined;
+  let rivetEngine: ChildProcess | undefined;
   let logs = "";
+  let rivetEngineLogs = "";
 
   let celldBinary: string | undefined;
   const celldBundle = kind === "celld" ? join(scratch, "celld-worker.mjs") : undefined;
@@ -141,6 +171,35 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
     }
   }
 
+  const startRivetEngine = (): void => {
+    if (kind !== "rivet") {
+      return;
+    }
+    const launchedEngine = spawn(getEnginePath(), ["start"], {
+      cwd: repositoryRoot,
+      detached: process.platform !== "win32",
+      env: {
+        ...process.env,
+        RIVET_INSPECTOR_DISABLE: "1",
+        RIVET_LOG_LEVEL: "error",
+        RIVET__API_PEER__HOST: "127.0.0.1",
+        RIVET__API_PEER__PORT: String(rivetPeerPort),
+        RIVET__FILE_SYSTEM__PATH: join(dataDirectory, "rivet-engine"),
+        RIVET__GUARD__HOST: "127.0.0.1",
+        RIVET__GUARD__PORT: String(port),
+        RIVET__METRICS__HOST: "127.0.0.1",
+        RIVET__METRICS__PORT: String(rivetMetricsPort),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const appendEngineLog = (chunk: Uint8Array) => {
+      rivetEngineLogs = `${rivetEngineLogs}${new TextDecoder().decode(chunk)}`.slice(-20_000);
+    };
+    launchedEngine.stdout?.on("data", appendEngineLog);
+    launchedEngine.stderr?.on("data", appendEngineLog);
+    rivetEngine = launchedEngine;
+  };
+
   const launch = async (options: { readonly blockModel?: boolean } = {}): Promise<void> => {
     logs = "";
     const blockModel = options.blockModel === true;
@@ -178,7 +237,7 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
           stdio: ["ignore", "pipe", "pipe"],
         },
       );
-    } else {
+    } else if (kind === "celld") {
       await build({
         bundle: true,
         conditions: ["workerd", "worker", "browser"],
@@ -210,6 +269,32 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
         },
         stdio: ["ignore", "pipe", "pipe"],
       });
+    } else {
+      launchedChild = spawn(
+        resolve(repositoryRoot, "node_modules/.bin/tsx"),
+        [
+          resolve(
+            repositoryRoot,
+            "packages/effect-durable-agent-rivet/testing/host-conformance/server.ts",
+          ),
+        ],
+        {
+          cwd: repositoryRoot,
+          detached: process.platform !== "win32",
+          env: {
+            ...process.env,
+            EDA_CONFORMANCE_BLOCK_MODEL: blockModel ? "1" : "0",
+            EDA_RIVET_AUTHORIZATION: rivetConformanceAuthorization,
+            EDA_RIVET_ENGINE_ENDPOINT: baseUrl,
+            EDA_RIVET_HTTP_PORT: String(internalPort),
+            RIVET_INSPECTOR_DISABLE: "1",
+            RIVETKIT_RUNTIME_MODE: "serverless",
+            RIVET_LOG_LEVEL: "error",
+            XDG_DATA_HOME: join(dataDirectory, "xdg"),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
     }
     child = launchedChild;
 
@@ -222,19 +307,34 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
     const deadline = Date.now() + 90_000;
     while (Date.now() < deadline) {
       if (launchedChild.exitCode !== null) {
-        throw new Error(`${kind} exited during startup (${launchedChild.exitCode})\n${logs}`);
+        throw new Error(
+          `${kind} exited during startup (${launchedChild.exitCode})\n${logs}\n${rivetEngineLogs}`,
+        );
       }
-      try {
-        const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(1_000) });
-        if (response.ok) {
+      if (rivetEngine?.exitCode !== null && rivetEngine?.exitCode !== undefined) {
+        throw new Error(
+          `rivet engine exited during startup (${rivetEngine.exitCode})\n${rivetEngineLogs}`,
+        );
+      }
+      if (kind === "rivet") {
+        if (logs.includes("EDA_RIVET_READY")) {
           return;
         }
-      } catch {
-        // The runtime is still binding its listener.
+      } else {
+        try {
+          const response = await fetch(`${baseUrl}/health`, {
+            signal: AbortSignal.timeout(1_000),
+          });
+          if (response.ok) {
+            return;
+          }
+        } catch {
+          // The runtime is still binding its listener.
+        }
       }
       await new Promise((resolveWait) => setTimeout(resolveWait, 100));
     }
-    throw new Error(`Timed out starting ${kind}\n${logs}`);
+    throw new Error(`Timed out starting ${kind}\n${logs}\n${rivetEngineLogs}`);
   };
 
   const stopChild = async (hard = false): Promise<void> => {
@@ -246,21 +346,35 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
     child = undefined;
   };
 
+  const stopRivetEngine = async (): Promise<void> => {
+    if (rivetEngine === undefined) {
+      return;
+    }
+    killHostProcess(rivetEngine, "SIGTERM");
+    await waitForExit(rivetEngine, 10_000);
+    rivetEngine = undefined;
+  };
+
   try {
+    startRivetEngine();
     await launch();
   } catch (error) {
     await stopChild();
+    await stopRivetEngine();
     await rm(scratch, { force: true, recursive: true });
     throw error;
   }
   return {
     baseUrl,
+    diagnostics: () => `${logs}\n${rivetEngineLogs}`,
+    kind,
     restart: async (options) => {
       await stopChild(options?.hard);
       await launch(options);
     },
     stop: async () => {
       await stopChild();
+      await stopRivetEngine();
       await rm(scratch, { force: true, recursive: true });
     },
   };
@@ -277,8 +391,28 @@ const submitMessage = async (
   host: HostProcess,
   sessionId: string,
   input: { readonly idempotencyKey: string; readonly text: string },
-): Promise<MessageResult> =>
-  await decodeJson<MessageResult>(
+): Promise<MessageResult> => {
+  if (host.kind === "rivet") {
+    const handle = createClient<typeof rivetConformanceRegistry>(
+      host.baseUrl,
+    ).edaConformanceSession.getOrCreate([sessionId], { params: rivetConnectionParams() });
+    const command = encodeEDARivetCommand(
+      new SubmitMessageCommand({
+        idempotencyKey: CommandIdempotencyKey.make(input.idempotencyKey),
+        disposition: "queue",
+        content: [Prompt.textPart({ text: input.text })],
+      }),
+    );
+    const terminal = await handle.submitAndBlock({ command });
+    const messages = await handle.messages({});
+    const snapshot = await handle.snapshot({});
+    return {
+      messages,
+      snapshot: { lastSeq: snapshot.state.lastSeq },
+      terminal: terminal as MessageResult["terminal"],
+    };
+  }
+  return await decodeJson<MessageResult>(
     await fetch(`${host.baseUrl}/sessions/${sessionId}/messages`, {
       body: JSON.stringify(input),
       headers: { "content-type": "application/json" },
@@ -286,24 +420,92 @@ const submitMessage = async (
       signal: AbortSignal.timeout(30_000),
     }),
   );
+};
 
 const getMessages = async (
   host: HostProcess,
   sessionId: string,
-): Promise<MessageResult["messages"]> =>
-  await decodeJson(
+): Promise<MessageResult["messages"]> => {
+  if (host.kind === "rivet") {
+    return await createClient<typeof rivetConformanceRegistry>(host.baseUrl)
+      .edaConformanceSession.getOrCreate([sessionId], { params: rivetConnectionParams() })
+      .messages({});
+  }
+  return await decodeJson(
     await fetch(`${host.baseUrl}/sessions/${sessionId}/messages`, {
       signal: AbortSignal.timeout(30_000),
     }),
   );
+};
+
+const destroySession = async (host: HostProcess, sessionId: string): Promise<number> => {
+  if (host.kind === "rivet") {
+    await createClient<typeof rivetConformanceRegistry>(host.baseUrl)
+      .edaConformanceSession.getOrCreate([sessionId], { params: rivetConnectionParams() })
+      .destroySession({});
+    return 204;
+  }
+  return (
+    await fetch(`${host.baseUrl}/sessions/${sessionId}/destroy`, {
+      method: "DELETE",
+    })
+  ).status;
+};
+
+interface ConformanceWebSocket {
+  readonly readyState: number;
+  addEventListener(
+    type: string,
+    listener: (event: { readonly data?: unknown }) => void,
+    options?: {
+      readonly once?: boolean;
+    },
+  ): void;
+  close(code?: number, reason?: string): void;
+  send(data: string): void;
+}
+
+const expectRejectedWebSocket = async (socket: ConformanceWebSocket): Promise<void> => {
+  if (socket.readyState === 3) {
+    return;
+  }
+  await new Promise<void>((resolveClose, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Timed out waiting for unauthorized WebSocket rejection")),
+      10_000,
+    );
+    socket.addEventListener(
+      "close",
+      () => {
+        clearTimeout(timeout);
+        resolveClose();
+      },
+      { once: true },
+    );
+    socket.addEventListener(
+      "message",
+      () => {
+        clearTimeout(timeout);
+        reject(new Error("Unauthorized WebSocket received an EDA frame"));
+      },
+      { once: true },
+    );
+  });
+};
 
 class EventSocket {
+  readonly #closed: Promise<void>;
   readonly #messages: string[] = [];
   readonly #waiters: Array<(message: string) => void> = [];
-  readonly #socket: WebSocket;
+  readonly #socket: ConformanceWebSocket;
+  readonly #diagnostics: () => string;
 
-  private constructor(socket: WebSocket) {
+  private constructor(socket: ConformanceWebSocket, diagnostics: () => string) {
     this.#socket = socket;
+    this.#diagnostics = diagnostics;
+    this.#closed = new Promise((resolveClose) => {
+      socket.addEventListener("close", () => resolveClose(), { once: true });
+    });
     socket.addEventListener("message", (event) => {
       const message = typeof event.data === "string" ? event.data : String(event.data);
       const waiter = this.#waiters.shift();
@@ -316,11 +518,27 @@ class EventSocket {
   }
 
   static async open(host: HostProcess, sessionId: string, afterSeq: number): Promise<EventSocket> {
-    const url = new URL(`${host.baseUrl}/sessions/${sessionId}/events`);
-    url.protocol = "ws:";
-    url.searchParams.set("afterSeq", String(afterSeq));
-    const socket = new WebSocket(url);
-    const eventSocket = new EventSocket(socket);
+    let socket: ConformanceWebSocket;
+    if (host.kind === "rivet") {
+      const session = createClient<typeof rivetConformanceRegistry>(
+        host.baseUrl,
+      ).edaConformanceSession.getOrCreate([sessionId], {
+        params: rivetConnectionParams(afterSeq),
+      });
+      // Resolve and wake the dynamic actor before opening its raw gateway socket.
+      // The local engine can accept the WebSocket upgrade before a newly allocated
+      // runner has installed onWebSocket, which would otherwise lose the hello frame.
+      await session.messages({});
+      socket = await session.webSocket();
+    } else {
+      socket = new WebSocket(eventSocketUrl(host, sessionId, afterSeq));
+    }
+    const eventSocket = new EventSocket(socket, host.diagnostics);
+    if (socket.readyState === 1) {
+      const hello = JSON.parse(await eventSocket.nextMessage()) as { readonly _tag?: string };
+      expect(hello._tag).toBe("hello");
+      return eventSocket;
+    }
     await new Promise<void>((resolveOpen, reject) => {
       socket.addEventListener("open", () => resolveOpen(), { once: true });
       socket.addEventListener("error", () => reject(new Error("WebSocket failed to open")), {
@@ -362,6 +580,24 @@ class EventSocket {
     this.#socket.close(1000, "conformance step complete");
   }
 
+  async waitForClose(): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.#closed,
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(
+            () =>
+              reject(new Error(`Timed out waiting for WebSocket close\n${this.#diagnostics()}`)),
+            30_000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private async nextMessage(): Promise<string> {
     const existing = this.#messages.shift();
     if (existing !== undefined) {
@@ -369,7 +605,7 @@ class EventSocket {
     }
     return await new Promise((resolveMessage, reject) => {
       const timeout = setTimeout(
-        () => reject(new Error("Timed out waiting for WebSocket frame")),
+        () => reject(new Error(`Timed out waiting for WebSocket frame\n${this.#diagnostics()}`)),
         30_000,
       );
       this.#waiters.push((message) => {
@@ -380,6 +616,13 @@ class EventSocket {
   }
 }
 
+const eventSocketUrl = (host: HostProcess, sessionId: string, afterSeq: number): URL => {
+  const url = new URL(`${host.baseUrl}/sessions/${sessionId}/events`);
+  url.protocol = "ws:";
+  url.searchParams.set("afterSeq", String(afterSeq));
+  return url;
+};
+
 /** Register the identical durable-session behavior suite for one concrete host package. */
 export const defineHostConformanceSuite = (kind: HostKind): void => {
   describe(`${kind} host conformance`, () => {
@@ -388,8 +631,26 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
       const sessionId =
         kind === "cloudflare"
           ? "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a"
-          : "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a";
+          : kind === "celld"
+            ? "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"
+            : "018f6bd5-2f2a-7b1e-8f1c-1f2e3d4c5b6a";
       try {
+        if (kind === "rivet") {
+          const unauthorizedClient = createClient<typeof rivetConformanceRegistry>(host.baseUrl);
+          await expect(
+            unauthorizedClient.edaConformanceSession
+              .getOrCreate([sessionId], {
+                params: { authorization: "wrong" },
+              })
+              .messages({}),
+          ).rejects.toBeDefined();
+          const unauthorizedSocket = await unauthorizedClient.edaConformanceSession
+            .getOrCreate([sessionId], {
+              params: { authorization: "wrong" },
+            })
+            .webSocket();
+          await expectRejectedWebSocket(unauthorizedSocket);
+        }
         const initialSocket = await EventSocket.open(host, sessionId, 0);
         const first = await submitMessage(host, sessionId, {
           idempotencyKey: "conformance:first",
@@ -400,7 +661,7 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
 
         expect(first.terminal.event.type).toBe("CommandCompleted");
         expect(first.messages.map((message) => message._tag)).toEqual(["User", "Assistant"]);
-        expect(first.messages[1]?.content?.text).toBe("pong");
+        expect(messageText(first.messages[1]?.content)).toBe("pong");
         expect(first.snapshot.lastSeq).toBeGreaterThan(0);
         expect(firstEvents.some((event) => event.event.type === "CommandAdmitted")).toBe(true);
         expect(firstEvents.some((event) => event.event.type === "CommandCompleted")).toBe(true);
@@ -469,12 +730,14 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
           "User",
           "Assistant",
         ]);
-        expect(recovered.messages[5]?.content?.text).toBe("pong");
+        expect(messageText(recovered.messages[5]?.content)).toBe("pong");
 
-        const destroyResponse = await fetch(`${host.baseUrl}/sessions/${sessionId}/destroy`, {
-          method: "DELETE",
-        });
-        expect(destroyResponse.status).toBe(204);
+        const destroyedSocket =
+          kind === "rivet"
+            ? await EventSocket.open(host, sessionId, recovered.terminal.position.seq)
+            : undefined;
+        expect(await destroySession(host, sessionId)).toBe(204);
+        await destroyedSocket?.waitForClose();
         expect(await getMessages(host, sessionId)).toEqual([]);
 
         const recreated = await submitMessage(host, sessionId, {
@@ -482,14 +745,13 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
           text: "ping after destroy",
         });
         expect(recreated.messages.map((message) => message._tag)).toEqual(["User", "Assistant"]);
-        expect(recreated.messages[1]?.content?.text).toBe("pong");
+        expect(messageText(recreated.messages[1]?.content)).toBe("pong");
 
-        const secondDestroyResponse = await fetch(`${host.baseUrl}/sessions/${sessionId}/destroy`, {
-          method: "DELETE",
-        });
-        expect(secondDestroyResponse.status).toBe(204);
+        expect(await destroySession(host, sessionId)).toBe(204);
         await host.restart();
         expect(await getMessages(host, sessionId)).toEqual([]);
+      } catch (error) {
+        throw new Error(`${kind} host conformance failed\n${host.diagnostics()}`, { cause: error });
       } finally {
         await host.stop();
       }

@@ -1,13 +1,13 @@
 {
-  "name": "effect-durable-agent-cloudflare",
+  "name": "effect-durable-agent-rivet",
   "version": "0.1.0-alpha.5",
-  "description": "Cloudflare Durable Objects host for effect-durable-agent.",
+  "description": "Rivet Actors host for effect-durable-agent.",
   "keywords": [
+    "actors",
     "agents",
-    "cloudflare",
-    "durable-objects",
     "effect",
-    "event-sourcing"
+    "event-sourcing",
+    "rivet"
   ],
   "homepage": "https://github.com/advait/effect-durable-agent#readme",
   "bugs": {
@@ -16,10 +16,13 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/advait/effect-durable-agent.git",
-    "directory": "packages/effect-durable-agent-cloudflare"
+    "directory": "packages/effect-durable-agent-rivet"
   },
   "license": "MIT",
   "author": "Advait Shinde",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -33,17 +36,17 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./durable-object": {
-      "types": "./dist/durable-object.d.ts",
-      "import": "./dist/durable-object.js"
+    "./actor": {
+      "types": "./dist/actor.d.ts",
+      "import": "./dist/actor.js"
     },
-    "./durable-object-runtime": {
-      "types": "./dist/durable-object-runtime.d.ts",
-      "import": "./dist/durable-object-runtime.js"
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js"
     },
-    "./durable-object-storage": {
-      "types": "./dist/durable-object-storage.d.ts",
-      "import": "./dist/durable-object-storage.js"
+    "./storage": {
+      "types": "./dist/storage.d.ts",
+      "import": "./dist/storage.js"
     },
     "./websocket-protocol": {
       "types": "./dist/websocket-protocol.d.ts",
@@ -67,18 +70,19 @@
     "tag": "alpha"
   },
   "dependencies": {
-    "effect-durable-agent": "workspace:*"
+    "effect-durable-agent": "workspace:*",
+    "rivetkit": "2.3.10"
   },
   "peerDependencies": {
     "@effect/ai-openai": "4.0.0-beta.102",
     "effect": "4.0.0-beta.102"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "0.18.8",
-    "@cloudflare/workers-types": "5.20260813.1",
     "@effect/ai-openai": "4.0.0-beta.102",
+    "@types/node": "^25.0.0",
     "effect": "4.0.0-beta.102",
     "vite-plus": "^0.1.21",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.8",
+    "ws": "^8.18.3"
   }
 }

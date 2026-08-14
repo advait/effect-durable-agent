@@ -10,6 +10,7 @@ const packageRoots = [
   join(repositoryRoot, "packages/effect-durable-agent"),
   join(repositoryRoot, "packages/effect-durable-agent-cloudflare"),
   join(repositoryRoot, "packages/effect-durable-agent-celld"),
+  join(repositoryRoot, "packages/effect-durable-agent-rivet"),
 ];
 const temporaryRoot = mkdtempSync(join(tmpdir(), "effect-durable-agent-packages-"));
 const consumerRoot = join(temporaryRoot, "consumer");
@@ -106,6 +107,7 @@ try {
   );
   run("npm", ["run", "typecheck"], consumerRoot);
   run("npm", ["run", "bundle"], consumerRoot);
+  run("npm", ["run", "check:rivet"], consumerRoot);
   run("npm", ["run", "check:tooling"], consumerRoot);
 
   process.stdout.write(

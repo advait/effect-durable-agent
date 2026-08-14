@@ -2,7 +2,7 @@
 
 Status: current
 Runtime: EDAGiaAgent
-Last reviewed: 2026-07-15
+Last reviewed: 2026-08-14
 
 This is the agent-facing implementation guide for EDA. It should describe what the runtime **does today**. Product-specific UI and subagent proposals belong in the downstream-consumer documents under `docs/` listed at the end.
 
@@ -30,7 +30,9 @@ The core idea is simple:
 - **Reducers derive state.** Framework state and app state are pure folds over the same ordered event stream.
 - **`SessionState` is the live-process authority.** Every durable append, durable fold, ephemeral position allocation, active-execution mutation, and live publish flows through it.
 - **Effect owns execution.** Model streams, tools, sinks, interruption, scopes, retries, finalizers, and observability are Effect workflows, not detached promises.
-- **The host is pluggable.** The current production host is Cloudflare Durable Objects with Durable Object SQLite, WebSockets, alarms, and RPC, but the core runtime depends on small service boundaries.
+- **The host is pluggable.** Cloudflare Durable Objects, celld, and Rivet Actors provide production
+  adapters, while the core runtime depends only on semantic storage, checkpoint, keep-alive, and
+  transport boundaries.
 
 EDA exists because callback-first agent loops do not define the hard boundaries: command admission, event ordering, reconnect, multi-client sync, stop semantics, tool lifecycle, durable side effects, and crash recovery. EDA makes those boundaries first-class.
 
@@ -61,7 +63,7 @@ Important version facts:
 Host route / RPC / WebSocket
         |
         v
-Host adapter (`effect-durable-agent-cloudflare` or `effect-durable-agent-celld`)
+Host adapter (Cloudflare, celld, or Rivet)
         |
         v
 ManagedRuntime<Effect services> for one session
@@ -84,7 +86,7 @@ ManagedRuntime<Effect services> for one session
 | Area | Files |
 | --- | --- |
 | Public runtime | `packages/effect-durable-agent/src/services/runtime.ts`, `packages/effect-durable-agent/src/services/runtime-layer.ts` |
-| Durable store port + Cloudflare/celld implementation | `packages/effect-durable-agent/src/services/session-store.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-storage.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-store.ts` |
+| Durable store port + host implementations | `packages/effect-durable-agent/src/services/session-store.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-store.ts`, `packages/effect-durable-agent-rivet/src/storage.ts` |
 | Session authority | `packages/effect-durable-agent/src/services/session-state.ts` |
 | Query/read APIs | `packages/effect-durable-agent/src/services/session-query.ts` |
 | Live stream/WebSocket | `packages/effect-durable-agent/src/services/live-event-bus.ts`, `packages/effect-durable-agent/src/services/websocket-subscriber.ts`, `packages/effect-durable-agent/src/host/websocket-wire.ts`, `packages/effect-durable-agent/src/host/websocket-protocol.ts` |
@@ -92,14 +94,15 @@ ManagedRuntime<Effect services> for one session
 | Model/turn/tool execution | `packages/effect-durable-agent/src/services/turn-runner.ts`, `packages/effect-durable-agent/src/services/inference-runner.ts`, `packages/effect-durable-agent/src/services/tool-executor.ts`, `packages/effect-durable-agent/src/services/tool-registry.ts` |
 | Extension points | `packages/effect-durable-agent/src/services/reducer-registry.ts`, `packages/effect-durable-agent/src/services/sink-registry.ts` |
 | Compaction | `packages/effect-durable-agent/src/services/compaction.ts`, `packages/effect-durable-agent/src/domain/context-projection.ts` |
-| Cloudflare/celld host adapters | `packages/effect-durable-agent-cloudflare/src/durable-object-runtime.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-keepalive.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-sink-checkpoints.ts` |
+| Host adapters | `packages/effect-durable-agent-cloudflare/src/durable-object-runtime.ts`, `packages/effect-durable-agent-celld/src/index.ts`, `packages/effect-durable-agent-rivet/src/actor.ts`, `packages/effect-durable-agent-rivet/src/runtime.ts` |
 | Examples | `examples/` |
 
 ---
 
 ## 4. Current terms
 
-- **Session** — one durable agent conversation. Current production host stores one session per Durable Object.
+- **Session** — one durable agent conversation. Hosts store one session per Durable Object, cell,
+  or Rivet Actor key.
 - **Command** — mutating user/control input. Current commands include
   `SubmitMessage`, `CancelPendingMessage`, `PromotePendingMessage`, and
   `StopTurn`; `ResumePendingMessages` is framework-internal recovery work.
@@ -127,7 +130,9 @@ These are the current implementation rules worth preserving during edits:
 6. **Effect owns resources and interruption.** Runners, tools, subscribers, sinks, and finalizers are scoped workflows.
 7. **Started boundaries must terminalize.** In a live process, abnormal exits commit matching failure/interruption/cancellation terminals. Host eviction is repaired by recovery.
 8. **No lifecycle events from app code.** Applications emit app events and tool results; framework lifecycle boundaries remain framework-owned.
-9. **Durable store transactions do not suspend.** The Cloudflare SQLite append kernel is synchronous and contains no external I/O.
+9. **Durable store transactions contain only local persistence work.** Cloudflare uses a
+   synchronous SQLite append kernel; Rivet uses its async actor-local SQLite transaction. Neither
+   transaction performs model, tool, network, publish, or other external work.
 10. **Reducer checkpoints are caches.** Missing/stale checkpoints are repaired by replaying durable events after the checkpoint cursor.
 11. **Prompt prefixes are immutable outside compaction.** After model-facing context has been sent, later turns append rather than rewrite it. Compaction creates a new context version.
 
@@ -292,9 +297,10 @@ interface EDASessionStore {
 }
 ```
 
-### Current production store
+### Current production stores
 
-Production uses Cloudflare Durable Object SQLite. One Durable Object stores one EDA session.
+Cloudflare/celld use Durable Object SQLite and Rivet uses actor-local SQLite. One host object stores
+one EDA session in both models.
 
 Foundational tables:
 
@@ -313,9 +319,15 @@ There is intentionally no separate privileged session-state table. Framework `Re
 
 Foreign/app namespace events are currently stored as full logical payloads in `_eda_event_log.fact_json`; there is no app physical sidecar codec registration.
 
+The Rivet adapter stores each complete encoded logical envelope in `_eda_event_log.event_json` and
+maintains command-admission and summary indexes that grow with retained history, plus bounded
+per-reducer checkpoints and per-sink cursors. Its async transaction still commits an entire ordered
+append batch and projections atomically.
+
 ### Append rule
 
-Each durable append is one synchronous store transaction. In the Cloudflare host this means `ctx.storage.transactionSync(() => { ... })` around synchronous `ctx.storage.sql.exec(...)` calls only.
+Each durable append is one host-local store transaction. Cloudflare uses
+`ctx.storage.transactionSync(() => { ... })`; Rivet uses `c.db.transaction(async tx => { ... })`.
 
 Inside append:
 
@@ -324,7 +336,10 @@ Inside append:
 3. Update synchronous command metadata.
 4. Return committed logical events with positions.
 
-No `await`, model/tool calls, publishing, or external I/O may occur inside the transaction. Live publish happens after append succeeds and is owned by `SessionState`.
+No model/tool calls, publishing, or external I/O may occur inside the transaction. The Cloudflare
+transaction callback is synchronous; Rivet awaits only actor-local SQLite statements inside its
+async transaction callback. Live publish happens after append succeeds and is owned by
+`SessionState`.
 
 ### Current limits
 
@@ -381,7 +396,8 @@ The current WebSocket transport is described in detail in `docs/websocket-protoc
 - Heartbeats are not ACKed.
 - Each subscriber has a bounded buffer and ACK-gated sender.
 - Slow subscribers are closed independently; they do not backpressure `SessionState`, the durable append path, model streams, tools, sinks, or other subscribers.
-- Cloudflare WebSocket attachment stores the last ACKed durable `seq` for hibernation restore.
+- Cloudflare serializes the last ACKed durable `seq` in its WebSocket attachment; Rivet stores the
+  same protocol state in `c.conn.state` for raw-WebSocket hibernation and migration.
 
 ### Active-turn ephemeral replay
 
@@ -533,6 +549,8 @@ The current examples show the intended shape:
 - `examples/002-slack-bridge` — idempotent Slack ingress, reducer correlation across framework/app events, and durable sink delivery.
 - `examples/003-sandbox-lifecycle` — framework tool events + app sandbox events reduced into one UI model, including SSR handoff math.
 - `examples/004-celld-no-tools` — deployable celld host with Durable Objects-compatible SQLite, alarms, RPC, and WebSockets.
+- `examples/005-rivet-no-tools` — native Rivet Actor with actor-local SQLite, lifecycle recovery,
+  typed actions, and raw WebSockets.
 
 ### Sinks
 
@@ -680,7 +698,7 @@ This gives reconnecting clients a durable explanation of stale work before repla
 
 ---
 
-## 16. Cloudflare host and pluggability
+## 16. Host adapters and pluggability
 
 Current production host:
 
@@ -696,7 +714,17 @@ Current production host:
 
 The Cloudflare host imports Cloudflare APIs. Core domain/runtime code depends on services such as `EDASessionStore`, `SessionContext`, `IdGenerator`, `EDAKeepAlive`, model/tool layers, and live subscriber abstractions.
 
-The host boundary supports multiple deployments. The Cloudflare and celld packages provide the same semantics: one ordered durable session log, atomic append, per-session coordination, resumable live delivery, durable sink checkpoints, clock/id services, and wakeup/keep-alive hooks.
+The Rivet host maps the same boundary natively rather than emulating Durable Objects: one actor key
+per `SessionId`, actor-local SQLite for the event log and checkpoints, `createVars`/`onWake` for
+runtime hydration, `onSleep` for scoped disposal, `c.keepAwake` for active work, actor actions for
+commands/queries, and `onWebSocket` plus `c.conn.state` for resumable delivery.
+
+All three host packages are required to provide the same semantics: one ordered durable session
+log, atomic append, per-session coordination, resumable live delivery, durable sink checkpoints,
+clock/id services, and lifecycle keep-alive hooks. The shared real-process conformance suite proves
+the cross-host command journey, explicit-cursor WebSocket resume/ACK, restart persistence,
+idempotency, in-flight recovery, and warm/cold destruction against workerd, celld, and Rivet
+Engine. Store and service contract suites own the broader append, reducer, and sink invariants.
 
 ---
 
@@ -751,6 +779,7 @@ EDA currently provides:
 - durable sinks with at-least-once cursor semantics;
 - best-effort ephemeral sinks;
 - Cloudflare Durable Object SQLite store and WebSocket host;
+- native Rivet Actor SQLite store, action boundary, lifecycle bridge, and WebSocket host;
 - reconnect-safe `eventsAfter` merged stream;
 - deterministic recovery of incomplete durable lifecycles;
 - model-context compaction/rebase without storage pruning;
@@ -765,7 +794,7 @@ EDA currently does **not** provide:
 - provider-executed tool projection/replay;
 - durable stdout/stderr chunks or file-change artifacts for sandbox tools;
 - app-side physical payload sidecars/chunking;
-- additional production hosts beyond the Cloudflare-compatible contract.
+- additional production hosts beyond Cloudflare/celld and Rivet.
 
 ---
 

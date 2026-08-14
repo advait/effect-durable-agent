@@ -18,6 +18,7 @@ const packageRoots = [
   "packages/effect-durable-agent",
   "packages/effect-durable-agent-cloudflare",
   "packages/effect-durable-agent-celld",
+  "packages/effect-durable-agent-rivet",
 ];
 const dryRun = process.argv.includes("--dry-run");
 const temporaryRoot = mkdtempSync(join(tmpdir(), "eda-publish-"));

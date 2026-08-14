@@ -8,7 +8,7 @@ Objects-compatible SQLite state, and a tiny HTTP command facade.
 Install matching package versions and make `esbuild` and `celld` available on `PATH`:
 
 ```sh
-pnpm add effect-durable-agent@0.1.0-alpha.4 effect-durable-agent-celld@0.1.0-alpha.4
+pnpm add effect-durable-agent@0.1.0-alpha.5 effect-durable-agent-celld@0.1.0-alpha.5
 ```
 
 celld reads the fleet location from `--bucket` or `CELLD_BUCKET`. Provider secrets can be passed as

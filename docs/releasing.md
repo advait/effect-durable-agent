@@ -1,16 +1,16 @@
 # Releasing Effect Durable Agent
 
-Releases publish `effect-durable-agent`, `effect-durable-agent-cloudflare`, and
-`effect-durable-agent-celld` together from the public
+Releases publish `effect-durable-agent`, `effect-durable-agent-cloudflare`,
+`effect-durable-agent-celld`, and `effect-durable-agent-rivet` together from the public
 [`advait/effect-durable-agent`](https://github.com/advait/effect-durable-agent) repository. The
-three packages always use the same version, and host packages depend on that exact core version in
+four packages always use the same version, and host packages depend on that exact core version in
 their published manifests.
 
 ## Current public baseline
 
-The current lockstep baseline is `0.1.0-alpha.4`. Both the `alpha` and `latest` npm dist-tags resolve
-to that version for core, Cloudflare, and celld. Consumers should still name the exact lockstep
-version so dependency updates remain deliberate.
+The current three-package public baseline is `0.1.0-alpha.4`. The workspace stages
+`0.1.0-alpha.5` as the first four-package release, adding the Rivet host. Consumers should name the
+exact lockstep version so dependency updates remain deliberate.
 
 Do not reuse a published version or create a GitHub release for an older tag: publishing that
 release would run the npm workflow against an immutable registry version. The Git tag alone does
@@ -27,10 +27,10 @@ Configure the same trusted publisher for each package in its npm package setting
 - Allowed action: `npm publish`
 - Environment: leave blank unless `.github/workflows/publish.yml` is updated to use one
 
-The two new package names must exist on npm before their trusted-publisher settings are available.
-For the first three-package release only, an authenticated maintainer must run `release:check` and
-then `pnpm run publish:workspace`. Publish all three manifests at the same version, and configure
-the trusted publisher on both new packages immediately after that bootstrap. The publish script is
+The Rivet package name must exist on npm before its trusted-publisher settings are available. For
+the first four-package release, an authenticated maintainer must run `release:check` and then
+`pnpm run publish:workspace`. Publish all four manifests at the same version, and configure the
+trusted publisher on the new package immediately after that bootstrap. The publish script is
 idempotent: it verifies and skips an identical artifact already in the registry, but refuses an
 existing version with different contents. All subsequent versions use the release workflow. Do not
 add a long-lived npm publishing token to the repository.
@@ -57,9 +57,10 @@ If an alpha has been verified and should also become the default for unqualified
 authenticated maintainer can move `latest` explicitly:
 
 ```bash
-npm dist-tag add effect-durable-agent@0.1.0-alpha.4 latest
-npm dist-tag add effect-durable-agent-cloudflare@0.1.0-alpha.4 latest
-npm dist-tag add effect-durable-agent-celld@0.1.0-alpha.4 latest
+npm dist-tag add effect-durable-agent@0.1.0-alpha.5 latest
+npm dist-tag add effect-durable-agent-cloudflare@0.1.0-alpha.5 latest
+npm dist-tag add effect-durable-agent-celld@0.1.0-alpha.5 latest
+npm dist-tag add effect-durable-agent-rivet@0.1.0-alpha.5 latest
 ```
 
 Trusted publishing authorizes `npm publish`, not `npm dist-tag`, so changing a dist-tag is an
@@ -72,12 +73,13 @@ reason to move or remove it.
 
 ## Release checklist
 
-1. Choose a new version that has never been published for any of the three packages.
-2. Update these three manifests to that exact version and refresh `pnpm-lock.yaml`:
+1. Choose a new version that has never been published for any of the four packages.
+2. Update these four manifests to that exact version and refresh `pnpm-lock.yaml`:
 
    - `packages/effect-durable-agent/package.json`
    - `packages/effect-durable-agent-cloudflare/package.json`
    - `packages/effect-durable-agent-celld/package.json`
+   - `packages/effect-durable-agent-rivet/package.json`
 3. Add the release notes to `CHANGELOG.md`.
 4. Run the complete release validation:
 
@@ -88,14 +90,14 @@ reason to move or remove it.
 
 5. Merge the version PR and confirm `CI` passes on `master`.
 6. Create a GitHub release targeting the merged commit. Its tag must be exactly
-   `v<package version>`; for example, `v0.1.0-alpha.4`.
+   `v<package version>`; for example, `v0.1.0-alpha.5`.
 7. Wait for the `Publish to npm` workflow to pass. The workflow independently reruns the full
    release check and rejects a tag that does not match the core package manifest.
 8. Verify the registry metadata and dist-tags:
 
    ```bash
-   for package_name in effect-durable-agent effect-durable-agent-cloudflare effect-durable-agent-celld; do
-     npm view "$package_name@0.1.0-alpha.4" name version repository.url dist.integrity --json
+   for package_name in effect-durable-agent effect-durable-agent-cloudflare effect-durable-agent-celld effect-durable-agent-rivet; do
+     npm view "$package_name@0.1.0-alpha.5" name version repository.url dist.integrity --json
      npm dist-tag ls "$package_name"
    done
    ```

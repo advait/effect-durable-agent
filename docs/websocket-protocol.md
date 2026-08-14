@@ -2,9 +2,13 @@
 
 Status: current
 Runtime: effect-durable-agent host with app-specific event bindings
-Last reviewed: 2026-07-16
+Last reviewed: 2026-08-14
 
-Current scope: WebSocket-only live transport. The implemented slice includes protocol schemas, Cloudflare Durable Object upgrade/restore/message/close handling, ACK-window subscriber flow control, `4008` lag close, bounded active-turn ephemeral replay in `LiveEventBus`, and reconnect-safe `EDARuntime.eventsAfter(...)`. Items called out as future hardening below are not current behavior. This document replaces the earlier SSE-oriented live-event idea.
+Current scope: WebSocket-only live transport. The implemented slice includes protocol schemas,
+Cloudflare/celld hibernation handling, native Rivet raw-WebSocket handling, ACK-window subscriber
+flow control, `4008` lag close, bounded active-turn ephemeral replay in `LiveEventBus`, and
+reconnect-safe `EDARuntime.eventsAfter(...)`. Items called out as future hardening below are not
+current behavior. This document replaces the earlier SSE-oriented live-event idea.
 
 ## 0. Objectives
 
@@ -16,7 +20,9 @@ The protocol exists to satisfy these objectives, in priority order:
 4. **Subscriber isolation.** Slow-client lag closes only the lagging socket. It never backpressures `SessionState`, the durable append path, `LiveEventBus`, other subscribers, model streams, tools, or sinks.
 5. **Explicit failure semantics.** Expected subscriber failures are typed `Schema.TaggedErrorClass` values (`SubscriberLagged`, `SubscriberProtocolError`, etc.) and are mapped once at the host boundary to WebSocket close codes/reasons.
 6. **Effect-native resource ownership.** Each subscriber is one scoped workflow made of queues, refs, streams, deferred cancellation, and forked fibers. Closing the WebSocket closes the scope; closing the scope closes the WebSocket. No detached global fibers, raw timers, or hidden promises own protocol correctness.
-7. **Cloudflare Durable Object fit.** Use the Hibernation WebSocket API (`ctx.acceptWebSocket`) and small `serializeAttachment` state so an idle object can hibernate and later restore subscribers from their last acknowledged durable cursor.
+7. **Host hibernation fit.** Cloudflare/celld use `ctx.acceptWebSocket` and
+   `serializeAttachment`; Rivet uses raw `onWebSocket` and `c.conn.state`. Both persist only the
+   small subscriber identity, trace, and last acknowledged durable cursor.
 8. **Operational clarity.** Observability must expose subscriber id, session id, current durable ack, in-flight frame count, queue size, close reason, lag reason, active turn id, and active-turn ephemeral buffer size.
 9. **Protocol evolution.** The frame shape should be versioned and batch-capable from day one, while allowing the first implementation to send one event per frame.
 
@@ -614,7 +620,10 @@ Future hardening tests should add:
 - Oversized outbound frame behavior and inbound text-frame byte cap before JSON parse.
 - Explicit client reducer reset/de-duplication behavior after active-turn replay overflow.
 
-Shared conformance tests exercise this flow against real workerd and celld processes.
+Shared conformance tests exercise live delivery, ACK handling, and explicit-cursor reconnects
+against real workerd, celld, and Rivet Engine processes. A future hardening case should keep one
+ACKed host WebSocket alive across host-native hibernation and prove attachment/connection-state
+restoration directly.
 
 ## 12. Implemented artifacts and remaining work
 
@@ -627,13 +636,18 @@ Implemented artifacts:
 5. `packages/effect-durable-agent/src/services/websocket-subscriber.ts` defines typed subscriber errors and `runWebSocketSubscriber(...)` over `EDARuntime.eventsAfter`, `Queue.dropping`, ACK refs, scoped cancellation, and ACK timeouts.
 6. `packages/effect-durable-agent-cloudflare/src/durable-object-runtime.ts` adapts Durable Object WebSockets to the transport, persists ACKs in `serializeAttachment`, restores accepted sockets, and maps typed errors to close codes for Cloudflare and celld.
 7. `packages/effect-durable-agent-cloudflare/src/durable-object.ts` and the consuming application's routes expose a WebSocket-only events endpoint with `426` for non-upgrade requests.
-8. Tests cover typed custom-event bindings, normal subscriber delivery, subscriber overflow lag, active-turn replay retention/drop, reconnect ordering, and fake DO WebSocket streaming.
+8. `packages/effect-durable-agent-rivet/src/runtime.ts` adapts Rivet raw WebSockets to the same
+   subscriber workflow and persists ACK state in `c.conn.state`.
+9. Tests cover typed custom-event bindings, normal subscriber delivery, subscriber overflow lag,
+   active-turn replay retention/drop, reconnect ordering, and real host streaming.
 
 Remaining hardening:
 
 1. Browser/client-side protocol helper with ordered apply, ACK-after-apply, active-turn replay reset/de-dupe, duplicate durable drop, and reconnect from last durable seq.
 2. Inbound text-frame byte cap before JSON parse.
-3. Focused ACK-timeout and protocol-error tests.
-4. Micro-batching (`maxFrameEvents > 1`, optional frame delay) once token volume needs it.
-5. Explicit client-visible behavior for active-turn replay overflow.
-6. Broader host conformance coverage for lag/timeout failure paths.
+3. Real-host hibernation coverage that verifies persisted ACK attachment/connection state without
+   supplying an explicit reconnect cursor.
+4. Focused ACK-timeout and protocol-error tests.
+5. Micro-batching (`maxFrameEvents > 1`, optional frame delay) once token volume needs it.
+6. Explicit client-visible behavior for active-turn replay overflow.
+7. Broader host conformance coverage for lag/timeout failure paths.

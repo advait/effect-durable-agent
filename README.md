@@ -1,6 +1,6 @@
 # effect-durable-agent
 
-> ## EDA is a redux-inspired durable agent framework hosted on [Durable Objects](https://developers.cloudflare.com/durable-objects/) and [celld](https://celld.dev/)
+> ## EDA is a redux-inspired durable agent framework hosted on [Durable Objects](https://developers.cloudflare.com/durable-objects/), [celld](https://celld.dev/), and [Rivet Actors](https://rivet.dev/actors/)
 
 [![npm version](https://img.shields.io/npm/v/effect-durable-agent)](https://www.npmjs.com/package/effect-durable-agent)
 [![CI](https://github.com/advait/effect-durable-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/advait/effect-durable-agent/actions/workflows/ci.yml)
@@ -173,8 +173,9 @@ storage, scheduling, identity, and live WebSockets. Applications select one host
 | `effect-durable-agent` | Host-independent commands, events, reducers, runtime, and adapter contracts. |
 | `effect-durable-agent-cloudflare` | Cloudflare Durable Objects, SQLite, alarms, RPC, and hibernatable WebSockets. |
 | `effect-durable-agent-celld` | [celld](https://celld.dev/) deployment of the Durable Objects contract on your infrastructure. |
+| `effect-durable-agent-rivet` | Native [Rivet Actor](https://rivet.dev/actors/) actions, actor-local SQLite, lifecycle recovery, and raw WebSockets. |
 
-All three packages are released together with the same version. A host and core from different
+All four packages are released together with the same version. A host and core from different
 versions are not a supported combination; keep the versions identical when upgrading.
 
 ## Get started
@@ -189,6 +190,12 @@ For celld, select its host package at the same version instead:
 
 ```bash
 pnpm add effect-durable-agent@alpha effect-durable-agent-celld@alpha
+```
+
+For Rivet Actors:
+
+```bash
+pnpm add effect-durable-agent@alpha effect-durable-agent-rivet@alpha rivetkit@2.3.10
 ```
 
 The smallest Cloudflare host is a concrete Durable Object subclass:
@@ -214,6 +221,7 @@ Start with the executable examples:
 | [`002-slack-bridge`](./examples/002-slack-bridge) | Idempotent ingress, application events and reducers, and a retrying durable sink. |
 | [`003-sandbox-lifecycle`](./examples/003-sandbox-lifecycle) | Tool and product events reduced into one UI model, including snapshot-to-stream handoff. |
 | [`004-celld-no-tools`](./examples/004-celld-no-tools) | Deployable celld cell with durable command admission. |
+| [`005-rivet-no-tools`](./examples/005-rivet-no-tools) | Native Rivet Actor with actor-local SQLite and typed client actions. |
 
 ## Why EDA instead of another agent SDK or framework?
 
@@ -269,7 +277,7 @@ client catch-up, restart recovery, production-derived UI fixtures, and durable s
 ## Capabilities
 
 - Effect-native agent runtime with command, run, turn, inference, message, and tool lifecycles
-- Pluggable Cloudflare Durable Objects and celld hosts with one session per object and SQLite event storage
+- Pluggable Cloudflare Durable Objects, celld, and Rivet Actor hosts with one session per object and SQLite event storage
 - Typed custom durable application events and pure application reducers
 - Reducer checkpoints and serialized snapshots
 - Reconnect-safe event streaming with sequence resume and WebSocket ACK flow control
