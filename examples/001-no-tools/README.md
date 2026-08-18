@@ -31,7 +31,8 @@ This example intentionally stays free of custom reducers, app events, tools, and
 - `GET /sessions/:sessionId/messages`
   - returns durable user/assistant messages in committed order
 
-`sessionId` must be a UUIDv7 because EDA validates lifecycle ids at ingress.
+`sessionId` must be a UUID. EDA mints new lifecycle ids as UUIDv7 and accepts UUIDv4 session ids
+for migrated callers.
 
 ## Wrangler binding sketch
 

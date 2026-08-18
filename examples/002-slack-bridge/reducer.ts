@@ -1,9 +1,9 @@
 import * as Schema from "effect/Schema";
 
-import type { CommittedDurableEvent } from "../../src/services/session-store";
-import { EDAReducer } from "../../src/services/reducer-registry";
-import { CommandIdempotencyKey } from "../../src/types/commands";
-import { CommandId, MessageId, RunId } from "../../src/types/core";
+import type { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
+import { EDAReducer } from "effect-durable-agent/services/reducer-registry";
+import { CommandIdempotencyKey } from "effect-durable-agent/types/commands";
+import { CommandId, MessageId, RunId } from "effect-durable-agent/types/core";
 import {
   AssistantMessageCommittedPayload,
   CommandAdmittedPayload,
@@ -13,7 +13,7 @@ import {
   commandAdmittedEventType,
   runStartedEventType,
   userMessageCommittedEventType,
-} from "../../src/types/events";
+} from "effect-durable-agent/types/events";
 import {
   SlackMessageReceivedPayload,
   SlackReplyDeliveredPayload,

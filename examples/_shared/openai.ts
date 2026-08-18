@@ -1,8 +1,8 @@
 import {
   edaRuntimeConfig,
+  makeEDADurableObjectOpenAiModelLayer,
   type EDASessionDurableObjectOptions,
-} from "../../src/host/durable-object";
-import { makeEDADurableObjectOpenAiModelLayer } from "../../src/host/durable-object-runtime";
+} from "effect-durable-agent-cloudflare";
 import { optionalString } from "./http";
 
 export const EXAMPLE_DEFAULT_MODEL_ID = "gpt-4.1-mini";

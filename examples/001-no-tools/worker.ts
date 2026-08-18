@@ -1,12 +1,13 @@
 import * as Prompt from "effect/unstable/ai/Prompt";
 
-import { CommandIdempotencyKey, SubmitMessageCommand } from "../../src/types/commands";
-import { SessionId } from "../../src/types/core";
-import { makeRootEDATraceMetadata } from "../../src/types/tracing";
+import { CommandIdempotencyKey, SubmitMessageCommand } from "effect-durable-agent/types/commands";
+import { SessionId } from "effect-durable-agent/types/core";
+import { makeRootEDATraceMetadata } from "effect-durable-agent/types/tracing";
 import {
   EDASessionDurableObject,
+  encodeEdaRpcCommand,
   getEDASessionDurableObjectByName,
-} from "../../src/host/durable-object";
+} from "effect-durable-agent-cloudflare";
 import { json, parseJsonObject, pathParam, requiredString } from "../_shared/http";
 import { makeExampleOpenAiOptions, type ExampleOpenAiEnv } from "../_shared/openai";
 
@@ -56,11 +57,13 @@ export default {
     const idempotencyKey =
       requiredString(body, "idempotencyKey") ?? `http:message:${crypto.randomUUID()}`;
     const admitted = await session.submit({
-      command: new SubmitMessageCommand({
-        idempotencyKey: CommandIdempotencyKey.make(idempotencyKey),
-        disposition: "queue",
-        content: [Prompt.textPart({ text })],
-      }),
+      command: encodeEdaRpcCommand(
+        new SubmitMessageCommand({
+          idempotencyKey: CommandIdempotencyKey.make(idempotencyKey),
+          disposition: "queue",
+          content: [Prompt.textPart({ text })],
+        }),
+      ),
       sessionId,
       trace: makeRootEDATraceMetadata(),
     });
@@ -75,5 +78,5 @@ export default {
   },
 } satisfies ExportedHandler<NoToolsEDAEnv>;
 
-// Session ids are externally supplied in this tiny example. They must be UUIDv7
-// because EDA validates lifecycle ids at ingress.
+// Session ids are externally supplied in this tiny example. EDA accepts UUIDv4
+// for migrated callers and mints new lifecycle ids as UUIDv7.

@@ -116,20 +116,46 @@ export const counterWebSocketProtocol = makeEDAWebSocketWireProtocol({
   appEvents: CounterIncrementedEvent,
 });
 
-export const CounterWebSocketServerFrame = counterWebSocketProtocol.serverFrame;
+export const CounterWebSocketServerFrame = counterWebSocketProtocol.wire.serverFrame;
 export type CounterWebSocketServerFrame = typeof CounterWebSocketServerFrame.Type;
 ```
 
-`makeEDAWebSocketWireProtocol` automatically unions the app events with all EDA durable and ephemeral events. The returned value serves both boundaries:
+`makeEDAWebSocketWireProtocol` automatically unions the app events with all EDA durable and ephemeral events. The returned value makes the two schema directions explicit:
 
-- Pass it to the EDA host as `webSocketProtocol` so outbound frames are encoded and validated against the app's exact event union.
-- Share its `serverFrame`, `eventsFrame`, and `positionedEvent` schemas with browser or other WebSocket consumers for decoding and type inference.
+- `domain.event`, `domain.positionedEvent`, `domain.eventsFrame`, and `domain.serverFrame`
+  describe decoded in-memory values. Schema transformations have already run on their `Type` side.
+- `wire.event`, `wire.positionedEvent`, `wire.eventsFrame`, and `wire.serverFrame` describe
+  the UTF-8 JSON representation. Browser and other external consumers decode with these schemas
+  when they need validated wire values without hydrating domain transformations.
+- `wire.clientFrame` validates client-to-server ACK messages.
+- `encodeServerFrame` accepts only the exact app-bound domain server-frame type and serializes it to
+  one JSON text message.
+- `host` is the adapter passed as `webSocketProtocol` to the EDA host. It validates and encodes the
+  host's broad event envelope against the registered app/framework union at runtime.
 
-The exposed schemas describe the encoded JSON representation. Domain-only brands and transformations therefore do not leak into ordinary wire consumers, while every field is still derived from and checked by the domain event schemas. Switching on `event.type` narrows `event.payload` to that event's exact schema.
+For example, a transformed message content field may be a prompt-part array in
+`domain.serverFrame.Type` and a string in `wire.serverFrame.Type`. TypeScript rejects passing the
+wire frame to `encodeServerFrame`; callers must decode external input through the domain schema
+before treating it as an in-memory value. Both surfaces are derived from the same event schemas, so
+there is still one logical contract rather than parallel hand-maintained models. Switching on
+`event.type` narrows `event.payload` to that event's exact schema on either surface.
+
+The EDA host binding is therefore explicit:
+
+```ts
+const options = {
+  // Other host options omitted.
+  webSocketProtocol: counterWebSocketProtocol.host,
+};
+```
 
 The app event union is the registration point: adding a custom event there changes the WebSocket union everywhere it is imported. Consumers that use an exhaustive event policy or `assertNever` then receive a TypeScript error until they explicitly apply or ignore the new event.
 
 Hosts without custom events use the strict framework-only protocol. The default host encoder does not accept an arbitrary `EventEnvelope`; an app event must be registered explicitly or outbound encoding fails. This prevents an omitted app binding from silently degrading payloads back to `unknown`.
+
+This API separation does not change protocol version `1` or any serialized frame shape. It makes the
+existing domain-to-wire transformation direction visible in TypeScript and tests it through a full
+domain frame → JSON text → wire/domain decode round trip.
 
 ## 3. Schema sketch
 
@@ -588,19 +614,19 @@ Future hardening tests should add:
 - Oversized outbound frame behavior and inbound text-frame byte cap before JSON parse.
 - Explicit client reducer reset/de-duplication behavior after active-turn replay overflow.
 
-Integration tests can later use a real Cloudflare Workers test pool if available.
+Shared conformance tests exercise this flow against real workerd and celld processes.
 
 ## 12. Implemented artifacts and remaining work
 
 Implemented artifacts:
 
-1. `src/host/websocket-wire.ts` defines the app-event-parameterized public wire schemas and encoder.
-2. `src/host/websocket-protocol.ts` defines host frame schemas, attachment schema, flow-control config, close-code constants, and encode/decode helpers.
-3. `src/services/live-event-bus.ts` owns bounded active-turn ephemeral replay: open on `TurnStarted`, append active-turn ephemerals, drop on `TurnCompleted`/`TurnStopped`/`TurnFailed`, expose `activeTurnReplay()`.
-4. `src/services/session-query.ts` / `EDARuntime.eventsAfter(...)` merge durable replay, active-turn ephemerals, already-buffered live events, and follow-live delivery.
-5. `src/services/websocket-subscriber.ts` defines typed subscriber errors and `runWebSocketSubscriber(...)` over `EDARuntime.eventsAfter`, `Queue.dropping`, ACK refs, scoped cancellation, and ACK timeouts.
-6. `src/host/durable-object-runtime.ts` adapts Cloudflare WebSockets to the transport, persists ACKs in `serializeAttachment`, restores accepted sockets, and maps typed errors to close codes.
-7. `src/host/durable-object.ts`, `app/routes/api.eda-agent.sessions.$sessionId.events.ts`, and `workers/eda-agent/api.ts` expose a WebSocket-only events route with `426` for non-upgrade requests.
+1. `packages/effect-durable-agent/src/host/websocket-wire.ts` defines the app-event-parameterized public wire schemas and encoder.
+2. `packages/effect-durable-agent/src/host/websocket-protocol.ts` defines host frame schemas, attachment schema, flow-control config, close-code constants, and encode/decode helpers.
+3. `packages/effect-durable-agent/src/services/live-event-bus.ts` owns bounded active-turn ephemeral replay: open on `TurnStarted`, append active-turn ephemerals, drop on `TurnCompleted`/`TurnStopped`/`TurnFailed`, expose `activeTurnReplay()`.
+4. `packages/effect-durable-agent/src/services/session-query.ts` / `EDARuntime.eventsAfter(...)` merge durable replay, active-turn ephemerals, already-buffered live events, and follow-live delivery.
+5. `packages/effect-durable-agent/src/services/websocket-subscriber.ts` defines typed subscriber errors and `runWebSocketSubscriber(...)` over `EDARuntime.eventsAfter`, `Queue.dropping`, ACK refs, scoped cancellation, and ACK timeouts.
+6. `packages/effect-durable-agent-cloudflare/src/durable-object-runtime.ts` adapts Durable Object WebSockets to the transport, persists ACKs in `serializeAttachment`, restores accepted sockets, and maps typed errors to close codes for Cloudflare and celld.
+7. `packages/effect-durable-agent-cloudflare/src/durable-object.ts` and the consuming application's routes expose a WebSocket-only events endpoint with `426` for non-upgrade requests.
 8. Tests cover typed custom-event bindings, normal subscriber delivery, subscriber overflow lag, active-turn replay retention/drop, reconnect ordering, and fake DO WebSocket streaming.
 
 Remaining hardening:
@@ -610,4 +636,4 @@ Remaining hardening:
 3. Focused ACK-timeout and protocol-error tests.
 4. Micro-batching (`maxFrameEvents > 1`, optional frame delay) once token volume needs it.
 5. Explicit client-visible behavior for active-turn replay overflow.
-6. Real Cloudflare Workers/WebSocket integration test pool if available.
+6. Broader host conformance coverage for lag/timeout failure paths.

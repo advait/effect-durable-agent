@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { EventId, SessionId, ToolCallId } from "../../src/types/core";
+import { EventId, SessionId, ToolCallId } from "effect-durable-agent/types/core";
 import {
   DurableEventEnvelope,
   EventNamespace,
@@ -9,7 +9,7 @@ import {
   UnixEpochMillis,
   makeRootEDAEventTrace,
   schemaV1,
-} from "../../src/types/events";
+} from "effect-durable-agent/types/events";
 
 export const sandboxLifecycleNamespace = EventNamespace.make("example.sandbox");
 

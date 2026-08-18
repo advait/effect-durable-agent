@@ -3,13 +3,13 @@ import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 
-import { getEDAReducerState } from "../../src/services/reducer-registry";
-import { EDASink } from "../../src/services/sink-registry";
+import { getEDAReducerState } from "effect-durable-agent/services/reducer-registry";
+import { EDASink } from "effect-durable-agent/services/sink-registry";
 import {
   AssistantMessageCommittedPayload,
   UnixEpochMillis,
   assistantMessageCommittedEventType,
-} from "../../src/types/events";
+} from "effect-durable-agent/types/events";
 import {
   OutboundSlackIdempotencyKey,
   SlackChannelId,

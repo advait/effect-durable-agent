@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Prompt from "effect/unstable/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
 
-import { CommandIdempotencyKey, SubmitMessageCommand } from "../../src/types/commands";
+import { CommandIdempotencyKey, SubmitMessageCommand } from "effect-durable-agent/types/commands";
 import {
   InferenceId,
   CommandId,
@@ -13,7 +13,7 @@ import {
   SessionId,
   TurnId,
   durablePosition,
-} from "../../src/types/core";
+} from "effect-durable-agent/types/core";
 import {
   AssistantMessageCommittedPayload,
   CommandAdmittedPayload,
@@ -28,10 +28,13 @@ import {
   runStartedEventType,
   schemaV1,
   userMessageCommittedEventType,
-} from "../../src/types/events";
-import { sequentialUuidV7 } from "../../src/services/id-generator";
-import { CommittedDurableEvent } from "../../src/services/session-store";
-import type { EDASinkContext, EDASinkDurableBatch } from "../../src/services/sink-registry";
+} from "effect-durable-agent/types/events";
+import { sequentialUuidV7 } from "effect-durable-agent/services/id-generator";
+import { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
+import type {
+  EDASinkContext,
+  EDASinkDurableBatch,
+} from "effect-durable-agent/services/sink-registry";
 import {
   OutboundSlackIdempotencyKey,
   SlackChannelId,

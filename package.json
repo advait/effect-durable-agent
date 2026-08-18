@@ -1,181 +1,46 @@
 {
-  "name": "@advait/effect-durable-agent",
-  "version": "0.0.1",
-  "description": "A Redux-inspired state-management and durable execution layer for agentic applications on Cloudflare Durable Objects.",
-  "keywords": [
-    "agents",
-    "cloudflare",
-    "durable-objects",
-    "effect",
-    "event-sourcing",
-    "state-machine"
-  ],
-  "homepage": "https://github.com/advait/effect-durable-agent#readme",
-  "bugs": {
-    "url": "https://github.com/advait/effect-durable-agent/issues"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/advait/effect-durable-agent.git"
-  },
-  "license": "MIT",
-  "author": "Advait Shinde",
+  "name": "effect-durable-agent-monorepo",
+  "private": true,
   "type": "module",
-  "sideEffects": false,
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "packageManager": "pnpm@10.33.2",
-  "files": [
-    "CHANGELOG.md",
-    "CONTRIBUTING.md",
-    "SECURITY.md",
-    "dist",
-    "docs",
-    "examples",
-    "testing/offline-trace/README.md",
-    "tooling/oxlint/index.mjs",
-    "tooling/oxlint/rules/*.mjs"
-  ],
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./domain/command-queues": {
-      "types": "./dist/domain/command-queues.d.ts",
-      "import": "./dist/domain/command-queues.js"
-    },
-    "./domain/message-transcript": {
-      "types": "./dist/domain/message-transcript.d.ts",
-      "import": "./dist/domain/message-transcript.js"
-    },
-    "./domain/reduced-state": {
-      "types": "./dist/domain/reduced-state.d.ts",
-      "import": "./dist/domain/reduced-state.js"
-    },
-    "./domain/reduced-state-schema": {
-      "types": "./dist/domain/reduced-state-schema.d.ts",
-      "import": "./dist/domain/reduced-state-schema.js"
-    },
-    "./host/durable-object": {
-      "types": "./dist/host/durable-object.d.ts",
-      "import": "./dist/host/durable-object.js"
-    },
-    "./host/durable-object-runtime": {
-      "types": "./dist/host/durable-object-runtime.d.ts",
-      "import": "./dist/host/durable-object-runtime.js"
-    },
-    "./host/durable-object-storage": {
-      "types": "./dist/host/durable-object-storage.d.ts",
-      "import": "./dist/host/durable-object-storage.js"
-    },
-    "./host/websocket-wire": {
-      "types": "./dist/host/websocket-wire.d.ts",
-      "import": "./dist/host/websocket-wire.js"
-    },
-    "./services/compaction": {
-      "types": "./dist/services/compaction.d.ts",
-      "import": "./dist/services/compaction.js"
-    },
-    "./services/id-generator": {
-      "types": "./dist/services/id-generator.d.ts",
-      "import": "./dist/services/id-generator.js"
-    },
-    "./services/prompt-projector": {
-      "types": "./dist/services/prompt-projector.d.ts",
-      "import": "./dist/services/prompt-projector.js"
-    },
-    "./services/reducer-registry": {
-      "types": "./dist/services/reducer-registry.d.ts",
-      "import": "./dist/services/reducer-registry.js"
-    },
-    "./services/runtime": {
-      "types": "./dist/services/runtime.d.ts",
-      "import": "./dist/services/runtime.js"
-    },
-    "./services/session-query": {
-      "types": "./dist/services/session-query.d.ts",
-      "import": "./dist/services/session-query.js"
-    },
-    "./services/session-store": {
-      "types": "./dist/services/session-store.d.ts",
-      "import": "./dist/services/session-store.js"
-    },
-    "./services/sink-registry": {
-      "types": "./dist/services/sink-registry.d.ts",
-      "import": "./dist/services/sink-registry.js"
-    },
-    "./services/span-names": {
-      "types": "./dist/services/span-names.d.ts",
-      "import": "./dist/services/span-names.js"
-    },
-    "./services/tool-registry": {
-      "types": "./dist/services/tool-registry.d.ts",
-      "import": "./dist/services/tool-registry.js"
-    },
-    "./services/tracing": {
-      "types": "./dist/services/tracing.d.ts",
-      "import": "./dist/services/tracing.js"
-    },
-    "./testkit/layers": {
-      "types": "./dist/testkit/layers.d.ts",
-      "import": "./dist/testkit/layers.js"
-    },
-    "./tooling/oxlint": "./tooling/oxlint/index.mjs",
-    "./types/commands": {
-      "types": "./dist/types/commands.d.ts",
-      "import": "./dist/types/commands.js"
-    },
-    "./types/core": {
-      "types": "./dist/types/core.d.ts",
-      "import": "./dist/types/core.js"
-    },
-    "./types/events": {
-      "types": "./dist/types/events.d.ts",
-      "import": "./dist/types/events.js"
-    },
-    "./types/events/durable": {
-      "types": "./dist/types/events/durable.d.ts",
-      "import": "./dist/types/events/durable.js"
-    },
-    "./types/tracing": {
-      "types": "./dist/types/tracing.d.ts",
-      "import": "./dist/types/tracing.js"
-    },
-    "./package.json": "./package.json"
-  },
   "scripts": {
-    "build": "vp pack",
-    "check": "pnpm run lint && pnpm run typecheck",
-    "ci": "pnpm run check && pnpm run test",
-    "lint": "vp fmt --check && vp lint",
-    "lint:fix": "vp fmt && vp lint --fix",
+    "build": "pnpm --filter effect-durable-agent run build && pnpm --filter effect-durable-agent-cloudflare run build && pnpm --filter effect-durable-agent-celld run build",
+    "check": "pnpm run lint && pnpm exec tsc -p tsconfig.json --noEmit && pnpm --filter effect-durable-agent run check && pnpm --filter effect-durable-agent-cloudflare run check && pnpm --filter effect-durable-agent-celld run check && pnpm exec tsc -p examples/tsconfig.json --noEmit",
+    "ci": "pnpm run build && pnpm run check && pnpm run test && pnpm run release:versions && pnpm run package:check",
+    "lint": "vp fmt --check .github docs examples scripts testing package.json pnpm-workspace.yaml tsconfig.base.json tsconfig.json vite.config.ts && vp lint --deny-warnings examples scripts testing vite.config.ts",
+    "lint:fix": "vp fmt .github docs examples scripts testing package.json pnpm-workspace.yaml tsconfig.base.json tsconfig.json vite.config.ts && vp lint --fix examples scripts testing vite.config.ts && pnpm --filter effect-durable-agent run lint:fix && pnpm --filter effect-durable-agent-cloudflare run lint:fix && pnpm --filter effect-durable-agent-celld run lint:fix",
     "package:check": "node scripts/check-package.mjs",
-    "prepack": "pnpm run build",
-    "release:check": "pnpm run ci && pnpm run build && pnpm run package:check",
-    "test": "vp test run --passWithNoTests",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "publish:workspace": "node scripts/publish-workspace.mjs",
+    "publish:workspace:dry-run": "node scripts/publish-workspace.mjs --dry-run",
+    "release:versions": "node scripts/check-workspace-versions.mjs",
+    "release:check": "pnpm run ci",
+    "test": "pnpm --filter effect-durable-agent run test && pnpm --filter effect-durable-agent-cloudflare run test && pnpm --filter effect-durable-agent-celld run test && pnpm run test:examples && pnpm run test:integration",
+    "test:examples": "vp test run --passWithNoTests examples",
+    "test:integration": "pnpm run build && pnpm --filter effect-durable-agent-cloudflare run test:integration && pnpm --filter effect-durable-agent-celld run test:integration"
   },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/",
-    "tag": "latest"
-  },
-  "peerDependencies": {
-    "@effect/ai-openai": "4.0.0-beta.102",
-    "effect": "4.0.0-beta.102"
+  "pnpm": {
+    "overrides": {
+      "vite-plus>oxlint": "1.77.0",
+      "vite-plus>oxlint-tsgolint": "7.0.2001"
+    }
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260727.1",
+    "@cloudflare/workers-types": "5.20260813.1",
     "@effect/ai-openai": "4.0.0-beta.102",
+    "@effect/tsgo": "0.31.0",
     "@types/node": "^25.7.0",
     "effect": "4.0.0-beta.102",
-    "fast-check": "^4.8.0",
-    "oxlint": "1.63.0",
+    "effect-durable-agent": "workspace:*",
+    "effect-durable-agent-celld": "workspace:*",
+    "effect-durable-agent-cloudflare": "workspace:*",
+    "esbuild": "^0.28.1",
+    "oxlint": "1.77.0",
+    "oxlint-tsgolint": "7.0.2001",
     "publint": "^0.3.22",
     "tsx": "4.21.0",
     "typescript": "^6.0.3",
     "vite-plus": "^0.1.21",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.8",
+    "wrangler": "^4.114.0"
   }
 }

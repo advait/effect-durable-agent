@@ -1,13 +1,14 @@
 import * as Prompt from "effect/unstable/ai/Prompt";
 
-import { CommandIdempotencyKey, SubmitMessageCommand } from "../../src/types/commands";
-import { SessionId } from "../../src/types/core";
-import { UnixEpochMillis } from "../../src/types/events";
-import { makeRootEDATraceMetadata } from "../../src/types/tracing";
+import { CommandIdempotencyKey, SubmitMessageCommand } from "effect-durable-agent/types/commands";
+import { SessionId } from "effect-durable-agent/types/core";
+import { UnixEpochMillis } from "effect-durable-agent/types/events";
+import { makeRootEDATraceMetadata } from "effect-durable-agent/types/tracing";
 import {
   EDASessionDurableObject,
+  encodeEdaRpcSubmittables,
   getEDASessionDurableObjectByName,
-} from "../../src/host/durable-object";
+} from "effect-durable-agent-cloudflare";
 import { mintExampleEventId } from "../_shared/event-id";
 import { json, parseJsonObject, pathParam, requiredString } from "../_shared/http";
 import { makeExampleOpenAiOptions, type ExampleOpenAiEnv } from "../_shared/openai";
@@ -65,7 +66,7 @@ export default {
       const committed = await session.submitBatch({
         sessionId,
         trace,
-        items: [
+        items: encodeEdaRpcSubmittables([
           new SubmitMessageCommand({
             idempotencyKey,
             disposition: "queue",
@@ -83,7 +84,7 @@ export default {
             eventId: await mintExampleEventId(),
             sessionId,
           }),
-        ],
+        ]),
       });
 
       return json({ committed, messages: await session.messages({ sessionId, trace }) }, 202);

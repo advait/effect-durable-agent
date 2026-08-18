@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 
-import { CommandIdempotencyKey } from "../../src/types/commands";
-import { EventId, MessageId, SessionId } from "../../src/types/core";
+import { CommandIdempotencyKey } from "effect-durable-agent/types/commands";
+import { EventId, MessageId, SessionId } from "effect-durable-agent/types/core";
 import {
   DurableEventEnvelope,
   EventNamespace,
@@ -9,7 +9,7 @@ import {
   UnixEpochMillis,
   makeRootEDAEventTrace,
   schemaV1,
-} from "../../src/types/events";
+} from "effect-durable-agent/types/events";
 
 /** App namespace used by the Slack bridge example. */
 export const slackBridgeNamespace = EventNamespace.make("example.slack");

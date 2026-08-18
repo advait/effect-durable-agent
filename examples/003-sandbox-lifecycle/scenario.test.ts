@@ -10,7 +10,7 @@ import {
   ToolCallId,
   TurnId,
   durablePosition,
-} from "../../src/types/core";
+} from "effect-durable-agent/types/core";
 import {
   DurableEventEnvelope,
   EventType,
@@ -21,9 +21,9 @@ import {
   schemaV1,
   toolCallCompletedEventType,
   toolCallCreatedEventType,
-} from "../../src/types/events";
-import { sequentialUuidV7 } from "../../src/services/id-generator";
-import { CommittedDurableEvent } from "../../src/services/session-store";
+} from "effect-durable-agent/types/events";
+import { sequentialUuidV7 } from "effect-durable-agent/services/id-generator";
+import { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
 import {
   ApprovalAction,
   ApproverId,

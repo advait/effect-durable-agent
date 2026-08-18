@@ -1,14 +1,14 @@
 import * as Schema from "effect/Schema";
 
-import type { CommittedDurableEvent } from "../../src/services/session-store";
-import { EDAReducer } from "../../src/services/reducer-registry";
-import { ToolCallId } from "../../src/types/core";
+import type { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
+import { EDAReducer } from "effect-durable-agent/services/reducer-registry";
+import { ToolCallId } from "effect-durable-agent/types/core";
 import {
   ToolCallCompletedPayload,
   ToolCallCreatedPayload,
   toolCallCompletedEventType,
   toolCallCreatedEventType,
-} from "../../src/types/events";
+} from "effect-durable-agent/types/events";
 import {
   ApprovalGrantedPayload,
   ApprovalRequestedPayload,
