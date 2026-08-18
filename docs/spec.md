@@ -543,9 +543,9 @@ Durable lane:
 - calls `process(batch, ctx)`
 - exposes `ctx.checkpoint.get(schema, initial)` and `ctx.checkpoint.save(schema, state)` for typed sink-owned state
 - serializes state-only saves with cursor commits, including writes from scoped background sink work
-- commits staged durable events after success
-- atomically commits the current sink-owned payload when advancing the cursor after successful processing/staged commits
-- retries failures with capped exponential backoff + jitter
+- commits staged durable events after successful processing
+- atomically commits the current sink-owned payload when advancing the cursor after processing/staged commits
+- requires an infallible typed error channel; each sink owns bounded retry and terminal-failure handling
 
 Ephemeral lane:
 
@@ -553,7 +553,7 @@ Ephemeral lane:
 - optional interests and buffer policy
 - no cursor and no correctness guarantee
 
-Durable sinks are at-least-once. External side effects must be idempotent because a host can die after a remote success but before the local checkpoint write. Existing cursor rows whose payload predates typed checkpoint state retain their cursor and initialize sink-owned state from the supplied default. A stateful sink and the checkpoint-aware runner must roll out together because an older runner can replace the payload while advancing its cursor.
+Durable external side effects remain at-least-once across process loss. They must be idempotent because a host can die after a remote success but before the local checkpoint write. Expected failures do not bubble to the runner: the sink retries transient failures with its own bounded policy, handles and logs terminal failures, and returns with an error channel of `never`. An unexpected defect is logged and skipped so it cannot hold a host keep-alive lease forever. Existing cursor rows whose payload predates typed checkpoint state retain their cursor and initialize sink-owned state from the supplied default. A stateful sink and the checkpoint-aware runner must roll out together because an older runner can replace the payload while advancing its cursor.
 
 ---
 

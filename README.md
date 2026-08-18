@@ -64,10 +64,10 @@ missed.
 EDA makes side effects durable.
 
 If `AssistantMessageCommitted` should post a result to Slack and Slack is temporarily unavailable,
-EDA retains the event and retries the delivery instead of losing it inside a failed callback.
-Durable sinks run independently of the main agent loop, preserve event order, and converge
-eventually. Each sink tracks its own persisted cursor, advances only after successful processing,
-and retries failures with backoff.
+the Slack sink applies its own bounded retry policy. Durable sinks run independently of the main
+agent loop, preserve event order, and track their own persisted cursor. Their typed error channel is
+`never`: each sink must decide which failures to retry and how to log or otherwise handle a terminal
+failure before returning.
 
 Delivery is at-least-once, so external operations still need stable idempotency keys. The important
 guarantee is that a transient process or network failure does not silently erase the work.
@@ -280,7 +280,7 @@ client catch-up, restart recovery, production-derived UI fixtures, and durable s
 - Typed custom durable application events and pure application reducers
 - Reducer checkpoints and serialized snapshots
 - Reconnect-safe event streaming with sequence resume and WebSocket ACK flow control
-- Durable sinks with persisted cursors, at-least-once delivery, and retry
+- Durable sinks with persisted cursors and app-owned retry and terminal-failure policies
 - Deterministic startup recovery with transparent continuation of eligible work
 - Pluggable model-context compaction policies and executors
 - Interoperability with [Effect AI](https://www.effect.website/docs/v3/ai/introduction) models,

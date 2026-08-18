@@ -68,7 +68,7 @@ This is the pattern you want in real integrations: do not hide correlation state
 
 `sinks.ts` watches for `AssistantMessageCommitted`. It uses reducer state to find the Slack thread, posts a reply with a deterministic outbound idempotency key, and stages `SlackReplyDelivered` only after the send succeeds.
 
-If posting fails, the sink cursor does not advance and EDA retries. If posting succeeds but the worker dies before the delivery event commits, the deterministic outbound key lets the retry collapse into one Slack-visible reply.
+If posting fails transiently, the sink applies its own bounded retry policy. After retries are exhausted it logs the terminal failure and returns so one poison event cannot keep the session alive forever. If posting succeeds but the worker dies before the delivery event commits, the deterministic outbound key lets replay collapse into one Slack-visible reply.
 
 ### 4. Multi-client sync is a free consequence
 
@@ -78,8 +78,8 @@ A browser transcript, an internal support console, and the Slack bridge are all 
 
 - `events.ts` — Slack durable event schemas and constructors.
 - `reducer.ts` — pure bridge projection over framework + Slack events.
-- `sinks.ts` — durable Slack reply sink with at-least-once retry semantics.
-- `scenario.test.ts` — executable scenarios for reducer correlation and sink retry.
+- `sinks.ts` — durable Slack reply sink with an app-owned bounded retry policy.
+- `scenario.test.ts` — executable scenarios for reducer correlation and sink-owned retry.
 - `worker.ts` — minimal Cloudflare Worker/Durable Object facade.
 
 ## Example event sequence
