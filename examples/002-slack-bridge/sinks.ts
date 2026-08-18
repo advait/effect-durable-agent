@@ -1,4 +1,6 @@
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 
 import { getEDAReducerState } from "effect-durable-agent/services/reducer-registry";
@@ -18,6 +20,8 @@ import {
 } from "./events";
 import { SlackBridgeReducer } from "./reducer";
 
+const maxSlackDeliveryRetryDelay = Duration.seconds(2);
+
 /** External Slack API seam used by the durable sink. */
 export interface SlackClient {
   readonly postThreadReply: (input: {
@@ -32,9 +36,9 @@ export interface SlackClient {
 /**
  * Durable sink: after an assistant message commits, deliver it to Slack.
  *
- * If delivery fails, the sink cursor does not advance and EDA will retry. If
- * delivery succeeds, the sink stages `SlackReplyDelivered` in the same session
- * log so future retries and all clients can see the durable delivery fact.
+ * The sink owns its bounded delivery retry policy and terminal error logging. If
+ * delivery succeeds, it stages `SlackReplyDelivered` in the same session log so
+ * future retries and all clients can see the durable delivery fact.
  */
 export const makeSlackReplySink = (client: SlackClient): EDASink =>
   EDASink.make({
@@ -84,9 +88,24 @@ export const makeSlackReplySink = (client: SlackClient): EDASink =>
               }),
             );
           }
-        }),
+        }).pipe(
+          Effect.retry(slackDeliveryRetrySchedule),
+          Effect.catch((error) =>
+            Effect.logError("Slack reply delivery failed after controlled retry policy", {
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          ),
+        ),
     },
   });
+
+const slackDeliveryRetrySchedule = Schedule.exponential("100 millis").pipe(
+  Schedule.upTo({ times: 3 }),
+  Schedule.jittered,
+  Schedule.modifyDelay(({ duration }) =>
+    Effect.succeed(Duration.min(duration, maxSlackDeliveryRetryDelay)),
+  ),
+);
 
 export const loggingSlackClient: SlackClient = {
   postThreadReply: (input) =>

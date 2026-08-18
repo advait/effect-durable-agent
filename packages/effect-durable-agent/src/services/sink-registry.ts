@@ -1,11 +1,9 @@
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -87,29 +85,27 @@ export interface EDASinkContext {
   readonly forkScoped: (effect: Effect.Effect<unknown, unknown>) => Effect.Effect<void>;
 }
 
-/** At-least-once sink definition backed by a durable checkpoint. */
+/** Durable sink definition backed by a checkpoint and an app-owned delivery policy. */
 export interface EDADurableSinkDefinition {
   readonly interests?: ReadonlyArray<EventType | string>;
   readonly batchSize?: number;
-  readonly process: (
-    batch: EDASinkDurableBatch,
-    ctx: EDASinkContext,
-  ) => Effect.Effect<void, unknown>;
+  readonly process: (batch: EDASinkDurableBatch, ctx: EDASinkContext) => Effect.Effect<void, never>;
 }
 
 /** Best-effort live-only sink definition. */
 export interface EDAEphemeralSinkDefinition {
   readonly interests?: ReadonlyArray<EventType | string>;
-  readonly process: (event: PositionedEvent, ctx: EDASinkContext) => Effect.Effect<void, unknown>;
+  readonly process: (event: PositionedEvent, ctx: EDASinkContext) => Effect.Effect<void, never>;
 }
 
 /**
  * Named app integration hook with optional durable and ephemeral filters.
  *
- * Every sink runs on one serialized position-ordered lane. Durable callbacks are
- * retried before the sink checkpoint advances; ephemeral callbacks are best-effort
- * and are only processed after the durable prefix at their anchor sequence has
- * been projected.
+ * Every sink runs on one serialized position-ordered lane. Sinks own retry and
+ * terminal failure handling, so callbacks must have an infallible typed error
+ * channel. An unexpected defect is logged and skipped before the durable checkpoint
+ * advances. Ephemeral callbacks are best-effort and are only processed after the
+ * durable prefix at their anchor sequence has been projected.
  */
 export interface EDASink {
   readonly name: string;
@@ -168,14 +164,7 @@ export class EDASinkRegistry extends Context.Service<EDASinkRegistry, EDASinkReg
 }
 
 const defaultBatchSize = 100;
-const maxDurableSinkRetryDelay = Duration.seconds(5);
 const sinkCheckpointFormatVersion = 1;
-const durableSinkRetrySchedule = Schedule.exponential("100 millis").pipe(
-  Schedule.jittered,
-  Schedule.modifyDelay(({ duration }) =>
-    Effect.succeed(Duration.min(duration, maxDurableSinkRetryDelay)),
-  ),
-);
 
 interface DurableRunnerState {
   readonly cursor: SequenceNumber;
@@ -256,17 +245,29 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
           if (durable !== undefined && eventsForSink.length > 0) {
             yield* Effect.gen(function* () {
               const staged: Array<DurableEventEnvelope> = [];
-              yield* durable.process(
-                {
-                  allEvents: fresh,
-                  events: eventsForSink,
-                  stateAfter: nextReduced,
-                  reducerStates: nextReducerStates,
-                  throughSeq,
-                },
-                baseContext(staged, input.publishEphemeral, input.scope, checkpoint),
-              );
-              if (staged.length > 0) {
+              const completed = yield* durable
+                .process(
+                  {
+                    allEvents: fresh,
+                    events: eventsForSink,
+                    stateAfter: nextReduced,
+                    reducerStates: nextReducerStates,
+                    throughSeq,
+                  },
+                  baseContext(staged, input.publishEphemeral, input.scope, checkpoint),
+                )
+                .pipe(
+                  Effect.as(true),
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterruptsOnly(cause)
+                      ? Effect.failCause(cause)
+                      : Effect.logError("EDA durable sink violated its infallible contract", {
+                          cause: Cause.pretty(cause),
+                          sink: sink.name,
+                        }).pipe(Effect.as(false)),
+                  ),
+                );
+              if (completed && staged.length > 0) {
                 yield* annotateEdaSpan({ "eda.sink.staged_events": staged.length });
                 yield* input.appendDurableBatch(staged);
               }
@@ -291,19 +292,8 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
           });
         });
 
-        const processDurableBatchWithRetry = (events: ReadonlyArray<CommittedDurableEvent>) =>
-          keepAlive.withActiveWork(
-            `sink:${sink.name}`,
-            processDurableBatch(events).pipe(
-              Effect.tapError((error) =>
-                Effect.logWarning("EDA sink durable projection failed; retrying", {
-                  error: formatSinkError(error),
-                  sink: sink.name,
-                }),
-              ),
-              Effect.retry(durableSinkRetrySchedule),
-            ),
-          );
+        const processDurableBatchWithKeepAlive = (events: ReadonlyArray<CommittedDurableEvent>) =>
+          keepAlive.withActiveWork(`sink:${sink.name}`, processDurableBatch(events));
 
         const drainDurablesThrough = (targetHead: SequenceNumber) =>
           Effect.gen(function* () {
@@ -321,7 +311,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
               if (allEvents.length === 0) {
                 return;
               }
-              yield* processDurableBatchWithRetry(allEvents);
+              yield* processDurableBatchWithKeepAlive(allEvents);
             }
           });
 
@@ -343,7 +333,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
               });
               return;
             }
-            yield* processDurableBatchWithRetry([committedDurableFromPositioned(event)]);
+            yield* processDurableBatchWithKeepAlive([committedDurableFromPositioned(event)]);
           });
 
         const processLiveEphemeral = (event: PositionedEvent) =>
@@ -559,10 +549,3 @@ const matchesInterest = (
   type: EventType | string,
   interests: ReadonlyArray<EventType | string> | undefined,
 ): boolean => interests === undefined || interests.some((interest) => interest === type);
-
-const formatSinkError = (error: unknown): string => {
-  if (Cause.isUnknownError(error)) {
-    return `${error.message ?? error._tag}: ${formatSinkError(error.cause)}`;
-  }
-  return error instanceof Error ? error.message : String(error);
-};

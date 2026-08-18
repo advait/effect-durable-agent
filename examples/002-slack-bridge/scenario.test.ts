@@ -96,7 +96,7 @@ describe("Slack bridge example", () => {
     );
   });
 
-  it("keeps Slack delivery idempotent when EDA retries the same sink batch", async () => {
+  it("keeps Slack delivery idempotent when the sink retries a batch", async () => {
     const calls: Array<{ readonly idempotencyKey: string; readonly text: string }> = [];
     const flakySlackClient: SlackClient = {
       postThreadReply: (input) =>
@@ -123,11 +123,6 @@ describe("Slack bridge example", () => {
     };
 
     const staged: Array<DurableEventEnvelope> = [];
-    await expect(Effect.runPromise(sink.process(batch, sinkContext(staged)))).rejects.toThrow(
-      "transient Slack outage",
-    );
-    expect(staged).toEqual([]);
-
     await Effect.runPromise(sink.process(batch, sinkContext(staged)));
 
     expect(calls).toHaveLength(2);

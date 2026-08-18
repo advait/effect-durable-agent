@@ -424,21 +424,16 @@ describe("EDASinkRegistry", () => {
     expect(processed).toEqual([["ExternalMarker"]]);
   });
 
-  it("retries bubbled durable sink failures without advancing the cursor first", async () => {
+  it("logs and skips an unexpected durable sink defect without retrying", async () => {
     let calls = 0;
-    const throughSeqs: Array<SequenceNumber> = [];
     const sink: EDASink = {
-      name: "test.retrying-marker-sink",
+      name: "test.defective-marker-sink",
       durable: {
         interests: ["ExternalMarker"],
-        process: (batch) =>
-          Effect.gen(function* () {
+        process: () =>
+          Effect.sync(() => {
             calls += 1;
-            throughSeqs.push(batch.throughSeq);
-            if (calls === 1) {
-              return yield* Effect.fail(new Error("transient sink failure"));
-            }
-          }),
+          }).pipe(Effect.andThen(Effect.die(new Error("unexpected sink defect")))),
       },
     };
 
@@ -447,21 +442,16 @@ describe("EDASinkRegistry", () => {
         const runtime = yield* EDARuntime;
         const checkpointStore = yield* SinkCheckpointStore;
         const committed = yield* runtime.submit([
-          appEvent({ id: 9_005, type: "ExternalMarker", payload: { marker: "retry" } }),
+          appEvent({ id: 9_005, type: "ExternalMarker", payload: { marker: "defect" } }),
         ]);
         const markerSeq = committed[0]!.position.seq;
-        yield* waitUntilSync("first failed sink attempt", () => calls >= 1);
-        const cursorAfterFailure = (yield* checkpointStore.load(EDASinkName.make(sink.name)))
-          .afterSeq;
-        yield* waitUntilWithSleep("successful sink retry", () => calls >= 2);
-        yield* waitUntil("cursor after successful retry", () =>
+        yield* waitUntil("cursor after defective sink", () =>
           checkpointStore
             .load(EDASinkName.make(sink.name))
             .pipe(Effect.map((checkpoint) => checkpoint.afterSeq >= markerSeq)),
         );
-        const cursorAfterSuccess = (yield* checkpointStore.load(EDASinkName.make(sink.name)))
-          .afterSeq;
-        return { cursorAfterFailure, cursorAfterSuccess, markerSeq };
+        const cursor = (yield* checkpointStore.load(EDASinkName.make(sink.name))).afterSeq;
+        return { cursor, markerSeq };
       }),
     ).pipe(
       Effect.provide(
@@ -479,10 +469,8 @@ describe("EDASinkRegistry", () => {
 
     const result = await Effect.runPromise(program);
 
-    expect(calls).toBe(2);
-    expect(result.cursorAfterFailure).toBe(0);
-    expect(result.cursorAfterSuccess).toBe(result.markerSeq);
-    expect(throughSeqs).toEqual([result.markerSeq, result.markerSeq]);
+    expect(calls).toBe(1);
+    expect(result.cursor).toBe(result.markerSeq);
   });
 
   it("persists typed sink state independently from cursor advancement", async () => {
@@ -497,7 +485,7 @@ describe("EDASinkRegistry", () => {
             const current = yield* ctx.checkpoint.get(CounterCheckpoint, { count: 0 });
             observed.push(current.count);
             yield* ctx.checkpoint.save(CounterCheckpoint, { count: current.count + 1 });
-          }),
+          }).pipe(Effect.orDie),
       },
     };
 

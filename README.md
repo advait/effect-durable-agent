@@ -122,10 +122,14 @@ snapshot, and the browser can continue from that exact point as new events arriv
 
 ### Durable side effects
 
-If `AssistantMessageCommitted` should post a result to Slack and Slack is unavailable, the agent
-keeps moving. When Slack recovers, it receives the committed events and converges with the session
-history. External availability stays off the application's critical path without sacrificing
-reliable delivery.
+If `AssistantMessageCommitted` should post a result to Slack and Slack is temporarily unavailable,
+the Slack sink applies its own bounded retry policy while the agent keeps moving. Durable sinks run
+independently of the main agent loop, preserve event order, and track their own persisted cursor.
+Their typed error channel is `never`: each sink must decide which failures to retry and how to log
+or otherwise handle a terminal failure before returning.
+
+Delivery is at-least-once, so external operations still need stable idempotency keys. The important
+guarantee is that a transient process or network failure does not silently erase the work.
 
 See the [Slack bridge example](./examples/002-slack-bridge) for idempotent
 ingress, a custom reducer, and durable outbound delivery.
@@ -273,7 +277,7 @@ client catch-up, restart recovery, production-derived UI fixtures, and durable s
 - Typed custom durable application events and pure application reducers
 - Reducer checkpoints and serialized snapshots
 - Reconnect-safe event streaming with sequence resume and WebSocket ACK flow control
-- Durable sinks with persisted cursors, at-least-once delivery, and retry
+- Durable sinks with persisted cursors and app-owned retry and terminal-failure policies
 - Deterministic startup recovery with transparent continuation of eligible work
 - Pluggable model-context compaction policies and executors
 - Interoperability with [Effect AI](https://www.effect.website/docs/v3/ai/introduction) models,
