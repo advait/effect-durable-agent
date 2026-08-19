@@ -1,10 +1,8 @@
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
-import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
@@ -49,11 +47,15 @@ import type {
   EDAToolRegistryShape,
 } from "effect-durable-agent/services/tool-registry";
 import {
-  SubscriberLagged,
-  SubscriberProtocolError,
-  SubscriberSendFailed,
-  runWebSocketSubscriber,
-} from "effect-durable-agent/services/websocket-subscriber";
+  makeWebSocketDeliveryState,
+  deliveryHelloFrame,
+  onClientAck,
+  onDurableEvents,
+  onEphemeralEvent,
+  type EDAWebSocketDeliveryResult,
+  type EDAWebSocketDeliveryState,
+} from "effect-durable-agent/services/websocket-delivery";
+import { PositionedEvent } from "effect-durable-agent/types/events";
 import type {
   CommittedCommandTerminalEvent,
   EDARuntimeShape,
@@ -67,18 +69,16 @@ import { DurableObjectSessionStore } from "./durable-object-store";
 import { DurableObjectSinkCheckpointStore } from "./durable-object-sink-checkpoints";
 import type { DurableObjectSessionStorage } from "./durable-object-storage";
 import {
-  EDA_WS_CLOSE_LAGGED,
+  EDA_WEB_SOCKET_PONG_MESSAGE,
   EDA_WS_CLOSE_PROTOCOL_ERROR,
   EDA_WS_CLOSE_SEND_FAILED,
   EDAWebSocketAttachment,
-  EDAWebSocketErrorFrame,
-  EDAWebSocketLaggedFrame,
   SubscriberId,
   decodeEDAWebSocketAttachment,
   decodeEDAWebSocketClientMessage,
   defaultEDAWebSocketFlowControl,
   encodeEDAWebSocketServerFrame,
-  laggedCloseReason,
+  type EDAWebSocketAckFrame,
   type EDAWebSocketClientFrame,
   type EDAWebSocketServerFrame,
 } from "./websocket-protocol";
@@ -129,6 +129,8 @@ export interface EDASessionDurableObjectHostOptions {
   readonly toolRegistry?: EDAToolRegistryShape | EDAToolRegistryFactory;
   readonly tracer?: Tracer.Tracer | EDATracerFactory;
   readonly webSocketProtocol?: EDAWebSocketServerFrameEncoder;
+  /** Enumerate accepted WebSockets for live event fanout; hosts pass `ctx.getWebSockets`. */
+  readonly getWebSockets?: () => ReadonlyArray<WebSocket>;
 }
 
 /** Per-session factory for provider-visible model toolkit definitions. */
@@ -182,12 +184,14 @@ interface HostRuntimeState {
 }
 
 interface EventWebSocketState {
-  readonly closed: Deferred.Deferred<void>;
-  readonly incoming: Queue.Queue<EDAWebSocketClientFrame>;
-  interrupt: (() => void) | undefined;
-  lastAckedSeq: SequenceNumber;
   readonly sessionId: SessionId;
   readonly subscriberId: SubscriberId;
+  readonly trace: EDATraceMetadata;
+  delivery: EDAWebSocketDeliveryState;
+  /** Best-known committed durable head, raised by slices and published events. */
+  head: SequenceNumber;
+  /** Serializes async delivery operations for this socket. */
+  queue: Promise<void>;
 }
 
 const resolveRuntimeFactory = <A>(
@@ -355,7 +359,7 @@ const hostSpanOptions = (
 /** Raw Durable Object host controller for one EDA session object. */
 export class EDASessionDurableObjectHost {
   private readonly keepAlive: DurableObjectKeepAlive;
-  private readonly eventSockets = new WeakMap<WebSocket, EventWebSocketState>();
+  private readonly eventSockets = new Map<WebSocket, EventWebSocketState>();
   private runtimeState: HostRuntimeState | undefined;
   private runtimePromise: Promise<HostRuntimeState> | undefined;
 
@@ -495,73 +499,87 @@ export class EDASessionDurableObjectHost {
   async acceptEventWebSocket(
     input: EDASessionEventsInput & { readonly webSocket: WebSocket },
   ): Promise<void> {
+    const trace = input.trace ?? makeRootEDATraceMetadata();
     const attachment = EDAWebSocketAttachment.make({
       kind: "eda-events-v1",
       sessionId: input.sessionId,
       subscriberId: SubscriberId.make(crypto.randomUUID()),
       lastAckedSeq: input.afterSeq ?? SequenceNumber.make(0),
-      trace: input.trace ?? makeRootEDATraceMetadata(),
+      trace,
     });
     input.webSocket.serializeAttachment(attachment);
-    await this.startEventWebSocket(input.webSocket, attachment);
+    const state: EventWebSocketState = {
+      sessionId: attachment.sessionId,
+      subscriberId: attachment.subscriberId,
+      trace,
+      delivery: makeWebSocketDeliveryState({
+        subscriberId: attachment.subscriberId,
+        resumeSeq: attachment.lastAckedSeq,
+        policy: defaultEDAWebSocketFlowControl,
+      }),
+      head: attachment.lastAckedSeq,
+      queue: Promise.resolve(),
+    };
+    this.eventSockets.set(input.webSocket, state);
+    await this.enqueueSocketOp(input.webSocket, state, async () => {
+      if (!this.trySendFrame(input.webSocket, deliveryHelloFrame(state.delivery))) {
+        this.eventSockets.delete(input.webSocket);
+        return;
+      }
+      await this.runCatchUp(input.webSocket, state);
+    });
   }
 
-  /** Restore hibernated event WebSockets whose in-memory subscriber fibers disappeared. */
-  async restoreEventWebSockets(webSockets: ReadonlyArray<WebSocket>): Promise<void> {
-    for (const webSocket of webSockets) {
-      if (this.eventSockets.has(webSocket)) {
-        continue;
-      }
-      const decoded = await decodeWebSocketAttachment(webSocket.deserializeAttachment());
-      if (decoded._tag === "Decoded") {
-        await this.startEventWebSocket(webSocket, decoded.attachment);
-      } else if (decoded._tag === "Malformed") {
-        closeWebSocket(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "attachment");
-      }
-    }
-  }
-
-  /** Route one inbound WebSocket message into the subscriber ACK queue. */
+  /** Apply one inbound client frame: pong liveness pings and advance ACK delivery. */
   async webSocketMessage(webSocket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (typeof message !== "string") {
+      closeWebSocket(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "binary");
+      this.eventSockets.delete(webSocket);
+      return;
+    }
+
+    let frame: EDAWebSocketClientFrame;
+    try {
+      frame = await Effect.runPromise(decodeEDAWebSocketClientMessage(message));
+    } catch {
+      closeWebSocket(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
+      this.eventSockets.delete(webSocket);
+      return;
+    }
+
+    if (frame._tag === "ping") {
+      // Hibernation-capable hosts answer pings with WebSocket auto-response and
+      // never reach this path; this covers hosts without auto-response support.
+      try {
+        webSocket.send(EDA_WEB_SOCKET_PONG_MESSAGE);
+      } catch {
+        closeWebSocket(webSocket, EDA_WS_CLOSE_SEND_FAILED, "send-failed");
+        this.eventSockets.delete(webSocket);
+      }
+      return;
+    }
+
     const state = await this.ensureEventWebSocket(webSocket);
     if (state === undefined) {
       closeWebSocket(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
       return;
     }
-    if (typeof message !== "string") {
-      closeWebSocket(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "binary");
-      state.interrupt?.();
-      return;
-    }
-
-    try {
-      const frame = await Effect.runPromise(decodeEDAWebSocketClientMessage(message));
-      await Effect.runPromise(Queue.offer(state.incoming, frame));
-    } catch {
-      closeWebSocket(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
-      state.interrupt?.();
-    }
+    await this.enqueueSocketOp(webSocket, state, async () => {
+      const result = onClientAck(state.delivery, frame as EDAWebSocketAckFrame, Date.now());
+      const open = this.applyDeliveryResult(webSocket, state, result);
+      if (open && result.wantsCatchUpAfterSeq !== undefined) {
+        await this.runCatchUp(webSocket, state);
+      }
+    });
   }
 
-  /** Interrupt subscriber work after the client closes the WebSocket. */
+  /** Drop delivery state after the client closes the WebSocket. */
   async webSocketClose(webSocket: WebSocket): Promise<void> {
-    const state = this.eventSockets.get(webSocket);
-    if (state === undefined) {
-      return;
-    }
-    await Effect.runPromise(Deferred.succeed(state.closed, undefined).pipe(Effect.ignore));
-    state.interrupt?.();
     this.eventSockets.delete(webSocket);
   }
 
-  /** Interrupt subscriber work after a host WebSocket error. */
+  /** Drop delivery state after a host WebSocket error. */
   async webSocketError(webSocket: WebSocket): Promise<void> {
-    const state = this.eventSockets.get(webSocket);
-    if (state === undefined) {
-      return;
-    }
-    await Effect.runPromise(Deferred.succeed(state.closed, undefined).pipe(Effect.ignore));
-    state.interrupt?.();
     this.eventSockets.delete(webSocket);
   }
 
@@ -600,6 +618,7 @@ export class EDASessionDurableObjectHost {
     );
   }
 
+  /** Rebuild disposable delivery state from the persisted attachment after eviction. */
   private async ensureEventWebSocket(
     webSocket: WebSocket,
   ): Promise<EventWebSocketState | undefined> {
@@ -611,128 +630,177 @@ export class EDASessionDurableObjectHost {
     if (decoded._tag !== "Decoded") {
       return undefined;
     }
-    await this.startEventWebSocket(webSocket, decoded.attachment);
-    return this.eventSockets.get(webSocket);
-  }
-
-  private async startEventWebSocket(
-    webSocket: WebSocket,
-    attachment: EDAWebSocketAttachment,
-  ): Promise<void> {
-    if (this.eventSockets.has(webSocket)) {
-      return;
-    }
-    const runtime = await this.getRuntime(attachment.sessionId);
-    const resources = await runtime.runtime.runPromise(
-      Effect.gen(function* () {
-        const incoming = yield* Queue.unbounded<EDAWebSocketClientFrame>();
-        const closed = yield* Deferred.make<void>();
-        return { incoming, closed };
-      }),
-    );
     const state: EventWebSocketState = {
-      ...resources,
-      interrupt: undefined,
-      lastAckedSeq: attachment.lastAckedSeq,
-      sessionId: attachment.sessionId,
-      subscriberId: attachment.subscriberId,
+      sessionId: decoded.attachment.sessionId,
+      subscriberId: decoded.attachment.subscriberId,
+      trace: decoded.attachment.trace,
+      delivery: makeWebSocketDeliveryState({
+        subscriberId: decoded.attachment.subscriberId,
+        resumeSeq: decoded.attachment.lastAckedSeq,
+        policy: defaultEDAWebSocketFlowControl,
+        coldRestored: true,
+      }),
+      head: decoded.attachment.lastAckedSeq,
+      queue: Promise.resolve(),
     };
     this.eventSockets.set(webSocket, state);
+    return state;
+  }
 
-    const send = (frame: EDAWebSocketServerFrame): Effect.Effect<void, SubscriberSendFailed> =>
-      Effect.try({
-        try: () =>
-          webSocket.send(encodeEDAWebSocketServerFrame(frame, this.options.webSocketProtocol)),
-        catch: (cause) => new SubscriberSendFailed({ subscriberId: state.subscriberId, cause }),
-      });
-    const persistAck = (seq: SequenceNumber): Effect.Effect<void> =>
-      Effect.sync(() => {
-        state.lastAckedSeq = seq;
+  /** Fan one published event out to every accepted event WebSocket, inline in the turn. */
+  private async fanoutPublishedEvent(event: PositionedEvent): Promise<void> {
+    // Union host-enumerated sockets (covers post-eviction restores) with the
+    // in-memory map (covers hosts without a WebSocket enumerator).
+    const webSockets = new Set<WebSocket>([
+      ...(this.options.getWebSockets?.() ?? []),
+      ...this.eventSockets.keys(),
+    ]);
+    const deliveries: Promise<void>[] = [];
+    for (const webSocket of webSockets) {
+      const state = await this.ensureEventWebSocket(webSocket);
+      if (state === undefined) {
+        continue;
+      }
+      deliveries.push(
+        this.enqueueSocketOp(webSocket, state, () =>
+          this.deliverPublishedEvent(webSocket, state, event),
+        ),
+      );
+    }
+    await Promise.all(deliveries);
+  }
+
+  private async deliverPublishedEvent(
+    webSocket: WebSocket,
+    state: EventWebSocketState,
+    event: PositionedEvent,
+  ): Promise<void> {
+    if (event.event.durability !== "durable") {
+      this.applyDeliveryResult(
+        webSocket,
+        state,
+        onEphemeralEvent(state.delivery, event, Date.now()),
+      );
+      return;
+    }
+
+    state.head = SequenceNumber.make(Math.max(state.head, event.position.seq));
+    if (event.position.seq <= state.delivery.sentDurableThroughSeq) {
+      return;
+    }
+    if (event.position.seq === state.delivery.sentDurableThroughSeq + 1) {
+      const result = onDurableEvents(state.delivery, [event], state.head, Date.now());
+      const open = this.applyDeliveryResult(webSocket, state, result);
+      if (open && result.wantsCatchUpAfterSeq !== undefined) {
+        await this.runCatchUp(webSocket, state);
+      }
+      return;
+    }
+    await this.runCatchUp(webSocket, state);
+  }
+
+  /** ACK-clocked durable catch-up: read bounded store slices until the window fills or the head is reached. */
+  private async runCatchUp(webSocket: WebSocket, state: EventWebSocketState): Promise<void> {
+    const policy = state.delivery.policy;
+    const limit = policy.maxInFlightFrames * policy.maxFrameEvents;
+    for (;;) {
+      let slice: { events: ReadonlyArray<PositionedEvent>; head: SequenceNumber };
+      try {
+        const afterSeq = state.delivery.sentDurableThroughSeq;
+        const runtime = await this.getRuntime(state.sessionId);
+        slice = await runtime.runtime.runPromise(
+          Effect.gen(function* () {
+            const eda = yield* EDARuntime;
+            return yield* eda.eventsSlice(afterSeq, limit);
+          }).pipe(
+            Effect.withSpan(
+              "agent.events.stream",
+              hostSpanOptions(state.trace, {
+                "eda.session.id": state.sessionId,
+                "eda.subscriber.id": state.subscriberId,
+                "eda.seq.after": afterSeq,
+              }),
+            ),
+          ),
+        );
+      } catch {
+        closeWebSocket(webSocket, EDA_WS_CLOSE_SEND_FAILED, "subscriber-failed");
+        this.eventSockets.delete(webSocket);
+        return;
+      }
+      state.head = SequenceNumber.make(Math.max(state.head, slice.head));
+      if (slice.events.length === 0) {
+        return;
+      }
+      const result = onDurableEvents(state.delivery, slice.events, state.head, Date.now());
+      const open = this.applyDeliveryResult(webSocket, state, result);
+      if (!open || result.wantsCatchUpAfterSeq === undefined) {
+        return;
+      }
+    }
+  }
+
+  /** Serialize async delivery operations per socket; operations must not throw. */
+  private enqueueSocketOp(
+    webSocket: WebSocket,
+    state: EventWebSocketState,
+    op: () => Promise<void>,
+  ): Promise<void> {
+    const run = async (): Promise<void> => {
+      try {
+        await op();
+      } catch {
+        closeWebSocket(webSocket, EDA_WS_CLOSE_SEND_FAILED, "subscriber-failed");
+        this.eventSockets.delete(webSocket);
+      }
+    };
+    const next = state.queue.then(run);
+    state.queue = next;
+    return next;
+  }
+
+  /** Apply one pure delivery transition to the socket. Returns false when the socket closed. */
+  private applyDeliveryResult(
+    webSocket: WebSocket,
+    state: EventWebSocketState,
+    result: EDAWebSocketDeliveryResult,
+  ): boolean {
+    state.delivery = result.state;
+    for (const frame of result.frames) {
+      if (!this.trySendFrame(webSocket, frame)) {
+        this.eventSockets.delete(webSocket);
+        return false;
+      }
+    }
+    if (result.persistSeq !== undefined) {
+      try {
         webSocket.serializeAttachment({
           kind: "eda-events-v1",
           sessionId: state.sessionId,
           subscriberId: state.subscriberId,
-          lastAckedSeq: seq,
-          trace: attachment.trace,
+          lastAckedSeq: result.persistSeq,
+          trace: state.trace,
         } satisfies EDAWebSocketAttachment);
-      });
-
-    const closeForError = (error: unknown): Effect.Effect<void> => {
-      if (error instanceof SubscriberLagged || isTagged(error, "SubscriberLagged")) {
-        const lagged = error as SubscriberLagged;
-        return send(
-          EDAWebSocketLaggedFrame.make({
-            _tag: "lagged",
-            resumeSeq: lagged.lastAckedSeq,
-            reason: lagged.reason,
-          }),
-        ).pipe(
-          Effect.ignore,
-          Effect.andThen(
-            Effect.sync(() =>
-              closeWebSocket(
-                webSocket,
-                EDA_WS_CLOSE_LAGGED,
-                laggedCloseReason(lagged.lastAckedSeq),
-              ),
-            ),
-          ),
-        );
+      } catch {
+        // Attachment persistence is best-effort; the durable cursor is re-derived from ACKs.
       }
-      if (error instanceof SubscriberProtocolError || isTagged(error, "SubscriberProtocolError")) {
-        const protocolError = error as SubscriberProtocolError;
-        return send(
-          EDAWebSocketErrorFrame.make({
-            _tag: "error",
-            message: protocolError.message.slice(0, 120),
-          }),
-        ).pipe(
-          Effect.ignore,
-          Effect.andThen(
-            Effect.sync(() => closeWebSocket(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol")),
-          ),
-        );
-      }
-      return Effect.sync(() => closeWebSocket(webSocket, EDA_WS_CLOSE_SEND_FAILED, "send-failed"));
-    };
+    }
+    if (result.close !== undefined) {
+      closeWebSocket(webSocket, result.close.code, result.close.reason);
+      this.eventSockets.delete(webSocket);
+      return false;
+    }
+    return true;
+  }
 
-    const program = Effect.scoped(
-      runWebSocketSubscriber({
-        subscriberId: state.subscriberId,
-        resumeSeq: state.lastAckedSeq,
-        policy: defaultEDAWebSocketFlowControl,
-        transport: {
-          send,
-          incoming: state.incoming,
-          closed: state.closed,
-          persistAck,
-        },
-      }).pipe(
-        Effect.catch((error) => closeForError(error)),
-        Effect.ensuring(
-          Effect.sync(() => {
-            this.eventSockets.delete(webSocket);
-          }),
-        ),
-        Effect.withSpan(
-          "agent.events.stream",
-          hostSpanOptions(attachment.trace, {
-            "eda.session.id": state.sessionId,
-            "eda.subscriber.id": state.subscriberId,
-            "eda.seq.after": state.lastAckedSeq,
-          }),
-        ),
-      ),
-    );
-
-    state.interrupt = runtime.runtime.runCallback(program, {
-      onExit: (exit) => {
-        this.eventSockets.delete(webSocket);
-        if (Exit.isFailure(exit)) {
-          closeWebSocket(webSocket, EDA_WS_CLOSE_SEND_FAILED, "subscriber-failed");
-        }
-      },
-    });
+  private trySendFrame(webSocket: WebSocket, frame: EDAWebSocketServerFrame): boolean {
+    try {
+      webSocket.send(encodeEDAWebSocketServerFrame(frame, this.options.webSocketProtocol));
+      return true;
+    } catch {
+      closeWebSocket(webSocket, EDA_WS_CLOSE_SEND_FAILED, "send-failed");
+      return false;
+    }
   }
 
   private async getRuntime(sessionId: SessionId): Promise<HostRuntimeState> {
@@ -779,6 +847,14 @@ export class EDASessionDurableObjectHost {
     const state = { runtime, sessionId } satisfies HostRuntimeState;
     try {
       await runtime.context();
+      const fanout = (event: PositionedEvent): Effect.Effect<void> =>
+        Effect.promise(() => this.fanoutPublishedEvent(event));
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const eda = yield* EDARuntime;
+          yield* eda.registerDeliveryListener(fanout);
+        }),
+      );
       this.runtimeState = state;
       return state;
     } catch (error) {
@@ -814,9 +890,6 @@ const closeWebSocket = (webSocket: WebSocket, code: number, reason: string): voi
     // The peer may already have closed or the runtime may reject duplicate close.
   }
 };
-
-const isTagged = (input: unknown, tag: string): boolean =>
-  typeof input === "object" && input !== null && "_tag" in input && input._tag === tag;
 
 /** Decode a raw RPC command payload at the Durable Object boundary. */
 export const encodeEdaRpcCommand = (input: EDACommand): unknown =>

@@ -25,6 +25,16 @@ export interface ActiveTurnEphemeralReplay {
   readonly overflowed: boolean;
 }
 
+/**
+ * Push-delivery listener invoked inline as each event is published.
+ *
+ * Listeners let hibernation-capable hosts fan events out to accepted
+ * WebSockets during the already-active turn instead of parking a resident
+ * subscriber fiber on the pub/sub. Listeners must not fail; defects are
+ * logged and never interrupt the publishing turn.
+ */
+export type LiveDeliveryListener = (event: PositionedEvent) => Effect.Effect<void>;
+
 /** In-memory live fanout plus active-turn replay source for reconnect streams. */
 export interface LiveEventBusShape {
   readonly publish: (event: PositionedEvent) => Effect.Effect<boolean>;
@@ -36,6 +46,8 @@ export interface LiveEventBusShape {
   >;
   /** Snapshot raw live-only events retained for the currently open turn. */
   readonly activeTurnReplay: () => Effect.Effect<ActiveTurnEphemeralReplay>;
+  /** Register one push-delivery listener invoked inline on every published event. */
+  readonly registerDeliveryListener: (listener: LiveDeliveryListener) => Effect.Effect<void>;
 }
 
 /** Unbounded in-memory fanout plus bounded active-turn ephemeral replay. */
@@ -53,7 +65,8 @@ export class LiveEventBus extends Context.Service<LiveEventBus, LiveEventBusShap
         events: [],
         overflowed: false,
       });
-      return makeLiveBus(pubsub, activeTurnReplay);
+      const listeners = yield* Ref.make<ReadonlyArray<LiveDeliveryListener>>([]);
+      return makeLiveBus(pubsub, activeTurnReplay, listeners);
     }),
   );
 }
@@ -61,9 +74,11 @@ export class LiveEventBus extends Context.Service<LiveEventBus, LiveEventBusShap
 const makeLiveBus = (
   pubsub: PubSub.PubSub<PositionedEvent>,
   activeTurnReplay: Ref.Ref<ActiveTurnEphemeralReplay>,
+  listeners: Ref.Ref<ReadonlyArray<LiveDeliveryListener>>,
 ): LiveEventBusShape => ({
   publish: (event) =>
     updateActiveTurnReplay(activeTurnReplay, event).pipe(
+      Effect.andThen(notifyDeliveryListeners(listeners, event)),
       Effect.andThen(PubSub.publish(pubsub, event)),
     ),
   subscribeQueue: () => PubSub.subscribe(pubsub),
@@ -72,7 +87,28 @@ const makeLiveBus = (
       Stream.fromEffectRepeat(PubSub.take(subscription)),
     ),
   activeTurnReplay: () => Ref.get(activeTurnReplay),
+  registerDeliveryListener: (listener) =>
+    Ref.update(listeners, (current) => [...current, listener]),
 });
+
+const notifyDeliveryListeners = (
+  listeners: Ref.Ref<ReadonlyArray<LiveDeliveryListener>>,
+  event: PositionedEvent,
+): Effect.Effect<void> =>
+  Ref.get(listeners).pipe(
+    Effect.flatMap((current) =>
+      Effect.forEach(
+        current,
+        (listener) =>
+          listener(event).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("EDA live delivery listener defected", cause),
+            ),
+          ),
+        { discard: true },
+      ),
+    ),
+  );
 
 const updateActiveTurnReplay = (
   ref: Ref.Ref<ActiveTurnEphemeralReplay>,

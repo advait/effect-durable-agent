@@ -21,7 +21,7 @@ import * as SinkRegistry from "effect-durable-agent/services/sink-registry";
 import { SpanNames } from "effect-durable-agent/services/span-names";
 import * as ToolRegistry from "effect-durable-agent/services/tool-registry";
 import * as Tracing from "effect-durable-agent/services/tracing";
-import * as WebSocketSubscriber from "effect-durable-agent/services/websocket-subscriber";
+import * as WebSocketDelivery from "effect-durable-agent/services/websocket-delivery";
 import * as TestLayers from "effect-durable-agent/testkit/layers";
 import * as Commands from "effect-durable-agent/types/commands";
 import * as Core from "effect-durable-agent/types/core";
@@ -60,7 +60,7 @@ const publicModules = [
   SinkRegistry,
   ToolRegistry,
   Tracing,
-  WebSocketSubscriber,
+  WebSocketDelivery,
   TestLayers,
   Commands,
   Core,

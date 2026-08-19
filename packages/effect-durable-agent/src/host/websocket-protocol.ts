@@ -1,6 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
+  EDA_WEB_SOCKET_PING_MESSAGE,
+  EDA_WEB_SOCKET_PONG_MESSAGE,
   EDA_WEB_SOCKET_WIRE_PROTOCOL_VERSION,
   EDAWebSocketWireAckFrame,
   EDAWebSocketWireClientFrame,
@@ -9,9 +11,13 @@ import {
   EDAWebSocketWireHeartbeatFrame,
   EDAWebSocketWireHelloFrame,
   EDAWebSocketWireLaggedFrame,
+  EDAWebSocketWirePingFrame,
+  EDAWebSocketWirePongFrame,
   edaFrameworkWebSocketWireProtocol,
   type EDAWebSocketServerFrameEncoder,
 } from "./websocket-wire";
+
+export { EDA_WEB_SOCKET_PING_MESSAGE, EDA_WEB_SOCKET_PONG_MESSAGE };
 
 import { SequenceNumber, SessionId } from "../types/core";
 import { PositionedEvent, UnixEpochMillis } from "../types/events";
@@ -52,10 +58,12 @@ export type EDAWebSocketFlowControl = typeof EDAWebSocketFlowControl.Type;
 /** Default bounded policy sized for fast model deltas and large durable tool/message events. */
 export const defaultEDAWebSocketFlowControl: EDAWebSocketFlowControl = {
   ackTimeoutMs: 30_000,
+  // Deprecated wire-compat field: servers no longer schedule or send heartbeats.
   heartbeatIntervalMs: 10_000,
   maxFrameBytes: 256 * 1024,
   maxFrameEvents: 1,
   maxInFlightFrames: 16,
+  pingIntervalMs: 30_000,
   subscriberBufferCapacityEvents: 2_048,
 };
 
@@ -76,13 +84,27 @@ export const EDAWebSocketEventsFrame = Schema.Struct({
 });
 export type EDAWebSocketEventsFrame = typeof EDAWebSocketEventsFrame.Type;
 
-/** Idle server keepalive frame that clients may ignore and must not ACK. */
+/**
+ * Deprecated idle server keepalive frame.
+ *
+ * Servers no longer send heartbeats; the schema remains so deployed clients
+ * keep decoding the server frame union. Liveness is client-originated via
+ * {@link EDAWebSocketPingFrame} and the host-level auto-response pong.
+ */
 export const EDAWebSocketHeartbeatFrame = Schema.Struct({
   ...EDAWebSocketWireHeartbeatFrame.fields,
   serverTimeMs: UnixEpochMillis,
   durableThroughSeq: SequenceNumber,
 });
 export type EDAWebSocketHeartbeatFrame = typeof EDAWebSocketHeartbeatFrame.Type;
+
+/** Client liveness ping; hosts answer with a pong and never ACK-track it. */
+export const EDAWebSocketPingFrame = EDAWebSocketWirePingFrame;
+export type EDAWebSocketPingFrame = typeof EDAWebSocketPingFrame.Type;
+
+/** Server liveness pong; clients may ignore it and must not ACK it. */
+export const EDAWebSocketPongFrame = EDAWebSocketWirePongFrame;
+export type EDAWebSocketPongFrame = typeof EDAWebSocketPongFrame.Type;
 
 /** Optional final frame sent before a lag-close. */
 export const EDAWebSocketLaggedFrame = Schema.Struct({
@@ -100,6 +122,7 @@ export const EDAWebSocketServerFrame = Schema.Union([
   EDAWebSocketHelloFrame,
   EDAWebSocketEventsFrame,
   EDAWebSocketHeartbeatFrame,
+  EDAWebSocketPongFrame,
   EDAWebSocketLaggedFrame,
   EDAWebSocketErrorFrame,
 ]);
@@ -114,7 +137,7 @@ export const EDAWebSocketAckFrame = Schema.Struct({
 export type EDAWebSocketAckFrame = typeof EDAWebSocketAckFrame.Type;
 
 /** Client-to-server application frame union. */
-export const EDAWebSocketClientFrame = Schema.Union([EDAWebSocketAckFrame]);
+export const EDAWebSocketClientFrame = Schema.Union([EDAWebSocketAckFrame, EDAWebSocketPingFrame]);
 export type EDAWebSocketClientFrame = typeof EDAWebSocketClientFrame.Type;
 
 /** Small attachment persisted by hibernation-capable WebSocket hosts. */

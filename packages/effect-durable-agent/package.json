@@ -1,6 +1,6 @@
 {
   "name": "effect-durable-agent",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "description": "A host-independent, event-sourced durable state-management and execution layer for agentic applications.",
   "keywords": [
     "agents",
@@ -119,9 +119,9 @@
       "types": "./dist/services/tracing.d.ts",
       "import": "./dist/services/tracing.js"
     },
-    "./services/websocket-subscriber": {
-      "types": "./dist/services/websocket-subscriber.d.ts",
-      "import": "./dist/services/websocket-subscriber.js"
+    "./services/websocket-delivery": {
+      "types": "./dist/services/websocket-delivery.d.ts",
+      "import": "./dist/services/websocket-delivery.js"
     },
     "./domain/context-projection": {
       "types": "./dist/domain/context-projection.d.ts",

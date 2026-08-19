@@ -25,7 +25,7 @@ const publicEntries = {
   "services/span-names": "src/services/span-names.ts",
   "services/tool-registry": "src/services/tool-registry.ts",
   "services/tracing": "src/services/tracing.ts",
-  "services/websocket-subscriber": "src/services/websocket-subscriber.ts",
+  "services/websocket-delivery": "src/services/websocket-delivery.ts",
   "testkit/layers": "src/testkit/layers.ts",
   "types/commands": "src/types/commands.ts",
   "types/core": "src/types/core.ts",
