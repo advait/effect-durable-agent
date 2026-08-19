@@ -29,6 +29,7 @@ import {
   type EDASessionDurableObjectHostOptions,
   type EDASessionDurableObjectStorage,
 } from "./durable-object-runtime";
+import { EDA_WEB_SOCKET_PING_MESSAGE, EDA_WEB_SOCKET_PONG_MESSAGE } from "./websocket-protocol";
 
 /** Raw RPC shape decoded before admitting one session command. */
 export interface EDASessionCommandRpcInput {
@@ -68,7 +69,7 @@ export interface EDASessionBlockOnCommandRpcInput {
 /** Constructor options for concrete app subclasses of the EDA Durable Object base. */
 export type EDASessionDurableObjectOptions = Omit<
   EDASessionDurableObjectHostOptions,
-  "background" | "storage"
+  "background" | "getWebSockets" | "storage"
 >;
 
 /** Resolve a concrete EDA session Durable Object binding by domain session id. */
@@ -100,8 +101,15 @@ export abstract class EDASessionDurableObject<
     this.#host = new EDASessionDurableObjectHost({
       ...options,
       background: this.ctx,
+      getWebSockets: () => this.ctx.getWebSockets(),
       storage,
     });
+
+    // Answer client liveness pings at the runtime layer so idle sockets never
+    // wake a hibernated object.
+    this.ctx.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair(EDA_WEB_SOCKET_PING_MESSAGE, EDA_WEB_SOCKET_PONG_MESSAGE),
+    );
 
     this.ctx.blockConcurrencyWhile(async () => {
       await Effect.runPromise(EDASessionDurableObjectHost.migrate(storage));
@@ -138,7 +146,6 @@ export abstract class EDASessionDurableObject<
   }
 
   async submit(input: EDASessionCommandRpcInput): Promise<CommittedDurableEventValue> {
-    await this.restoreAcceptedEventWebSockets();
     const committed = await this.#host.submit({
       command: await decodeCommand(input.command),
       sessionId: this.parseSessionId(input.sessionId),
@@ -150,7 +157,6 @@ export abstract class EDASessionDurableObject<
   async submitBatch(
     input: EDASessionSubmitBatchRpcInput,
   ): Promise<ReadonlyArray<CommittedDurableEventValue>> {
-    await this.restoreAcceptedEventWebSockets();
     const committed = await this.#host.submitBatch({
       items: await decodeSubmittables(input.items),
       sessionId: this.parseSessionId(input.sessionId),
@@ -160,7 +166,6 @@ export abstract class EDASessionDurableObject<
   }
 
   async submitAndBlock(input: EDASessionCommandRpcInput): Promise<CommittedCommandTerminalEvent> {
-    await this.restoreAcceptedEventWebSockets();
     const committed = await this.#host.submitAndBlock({
       command: await decodeCommand(input.command),
       sessionId: this.parseSessionId(input.sessionId),
@@ -172,7 +177,6 @@ export abstract class EDASessionDurableObject<
   async blockOnCommand(
     input: EDASessionBlockOnCommandRpcInput,
   ): Promise<CommittedCommandTerminalEvent> {
-    await this.restoreAcceptedEventWebSockets();
     const committed = await this.#host.blockOnCommand({
       ...(input.afterSeq === undefined ? {} : { afterSeq: SequenceNumber.make(input.afterSeq) }),
       commandId: CommandId.make(input.commandId),
@@ -183,7 +187,6 @@ export abstract class EDASessionDurableObject<
   }
 
   async snapshot(input: EDASessionScopedRpcInput): Promise<EDASessionSnapshot> {
-    await this.restoreAcceptedEventWebSockets();
     const snapshot = await this.#host.snapshot({
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
@@ -194,7 +197,6 @@ export abstract class EDASessionDurableObject<
   async messages(
     input: EDASessionScopedRpcInput,
   ): Promise<ReadonlyArray<DurableTranscriptMessage>> {
-    await this.restoreAcceptedEventWebSockets();
     return await this.#host.messages({
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
@@ -228,7 +230,6 @@ export abstract class EDASessionDurableObject<
   }
 
   async alarm(): Promise<void> {
-    await this.restoreAcceptedEventWebSockets();
     const sessionId = this.sessionIdFromObjectName();
     await this.#host.alarm(
       sessionId === undefined ? undefined : { sessionId, trace: makeRootEDATraceMetadata() },
@@ -248,9 +249,6 @@ export abstract class EDASessionDurableObject<
     return this.ctx.id.name === undefined ? undefined : SessionId.make(this.ctx.id.name);
   }
 
-  private async restoreAcceptedEventWebSockets(): Promise<void> {
-    await this.#host.restoreEventWebSockets(this.ctx.getWebSockets());
-  }
 }
 
 const toEDASessionStorage = (storage: DurableObjectStorage): EDASessionDurableObjectStorage => {

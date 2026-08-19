@@ -12,13 +12,39 @@ export const EDA_WEB_SOCKET_WIRE_PROTOCOL_VERSION = 1 as const;
 /** Flow-control policy announced by the server in the hello frame. */
 export const EDAWebSocketWireFlowControl = Schema.Struct({
   ackTimeoutMs: PositiveInt,
+  /** Deprecated: servers no longer send heartbeat frames. Kept so deployed clients can decode hello. */
   heartbeatIntervalMs: PositiveInt,
   maxFrameBytes: PositiveInt,
   maxFrameEvents: PositiveInt,
   maxInFlightFrames: PositiveInt,
+  /** Suggested client-originated ping cadence; absent on servers that still send heartbeats. */
+  pingIntervalMs: Schema.optionalKey(PositiveInt),
   subscriberBufferCapacityEvents: PositiveInt,
 });
 export type EDAWebSocketWireFlowControl = typeof EDAWebSocketWireFlowControl.Type;
+
+/**
+ * Canonical client liveness ping message.
+ *
+ * The exact string matters: hibernation-capable hosts register it with
+ * WebSocket auto-response so the runtime answers without waking the object.
+ */
+export const EDA_WEB_SOCKET_PING_MESSAGE = '{"_tag":"ping"}';
+
+/** Canonical server pong message paired with {@link EDA_WEB_SOCKET_PING_MESSAGE}. */
+export const EDA_WEB_SOCKET_PONG_MESSAGE = '{"_tag":"pong"}';
+
+/** Client liveness ping; hosts answer with a pong and never ACK-track it. */
+export const EDAWebSocketWirePingFrame = Schema.Struct({
+  _tag: Schema.Literal("ping"),
+});
+export type EDAWebSocketWirePingFrame = typeof EDAWebSocketWirePingFrame.Type;
+
+/** Server liveness pong; clients may ignore it and must not ACK it. */
+export const EDAWebSocketWirePongFrame = Schema.Struct({
+  _tag: Schema.Literal("pong"),
+});
+export type EDAWebSocketWirePongFrame = typeof EDAWebSocketWirePongFrame.Type;
 
 export const EDAWebSocketWireHelloFrame = Schema.Struct({
   _tag: Schema.Literal("hello"),
@@ -56,7 +82,10 @@ export const EDAWebSocketWireAckFrame = Schema.Struct({
 });
 export type EDAWebSocketWireAckFrame = typeof EDAWebSocketWireAckFrame.Type;
 
-export const EDAWebSocketWireClientFrame = Schema.Union([EDAWebSocketWireAckFrame]);
+export const EDAWebSocketWireClientFrame = Schema.Union([
+  EDAWebSocketWireAckFrame,
+  EDAWebSocketWirePingFrame,
+]);
 export type EDAWebSocketWireClientFrame = typeof EDAWebSocketWireClientFrame.Type;
 
 /** Exhaustive decision table for a concrete WebSocket event union. */
@@ -88,6 +117,7 @@ const makeEDAWebSocketDomainSchemas = <
     EDAWebSocketWireHelloFrame,
     eventsFrame,
     EDAWebSocketWireHeartbeatFrame,
+    EDAWebSocketWirePongFrame,
     EDAWebSocketWireLaggedFrame,
     EDAWebSocketWireErrorFrame,
   ]);

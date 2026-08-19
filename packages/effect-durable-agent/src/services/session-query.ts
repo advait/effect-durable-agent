@@ -40,6 +40,17 @@ export interface EDASessionQueryShape {
     EDASessionStoreError,
     Scope.Scope
   >;
+  /** Read one bounded committed durable slice after `afterSeq` plus the committed head. */
+  readonly eventsSlice: (
+    afterSeq: SequenceNumber,
+    limit: number,
+  ) => Effect.Effect<EDASessionEventsSlice, EDASessionStoreError>;
+}
+
+/** Bounded committed durable replay slice for pull-based delivery. */
+export interface EDASessionEventsSlice {
+  readonly events: ReadonlyArray<PositionedEvent>;
+  readonly head: SequenceNumber;
 }
 
 /** Read-only session query facade backed by authoritative SessionState plus durable backfill. */
@@ -102,6 +113,27 @@ export class EDASessionQuery extends Context.Service<EDASessionQuery, EDASession
           }).pipe(
             Effect.withSpan("agent.events.follow", {
               attributes: { "eda.seq.after": afterSeq },
+            }),
+          ),
+        eventsSlice: (afterSeq: SequenceNumber, limit: number) =>
+          Effect.gen(function* () {
+            const head = (yield* sessionState.snapshot()).lastSeq;
+            if (limit <= 0 || afterSeq >= head) {
+              return { events: [], head } satisfies EDASessionEventsSlice;
+            }
+            const events = yield* store.eventsAfter(afterSeq).pipe(
+              Stream.filter((entry) => entry.position.seq <= head),
+              Stream.take(limit),
+              Stream.map((entry) =>
+                PositionedEvent.make({ position: entry.position, event: entry.event }),
+              ),
+              Stream.runCollect,
+              Effect.map((events) => Array.from(events)),
+            );
+            return { events, head } satisfies EDASessionEventsSlice;
+          }).pipe(
+            Effect.withSpan("agent.events.slice", {
+              attributes: { "eda.seq.after": afterSeq, "eda.slice.limit": limit },
             }),
           ),
       };

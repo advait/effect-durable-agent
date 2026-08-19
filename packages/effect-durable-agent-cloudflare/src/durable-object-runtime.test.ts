@@ -5,7 +5,7 @@ import * as Prompt from "effect/unstable/ai/Prompt";
 import * as Response from "effect/unstable/ai/Response";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { SubmitMessageCommand } from "effect-durable-agent/types/commands";
 import { CommandId, EventId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
@@ -17,6 +17,8 @@ import {
 } from "./durable-object-runtime";
 import { DurableObjectKeepAlive } from "./durable-object-keepalive";
 import {
+  EDA_WEB_SOCKET_PING_MESSAGE,
+  EDA_WEB_SOCKET_PONG_MESSAGE,
   EDA_WS_CLOSE_PROTOCOL_ERROR,
   EDAWebSocketAckFrame,
   EDAWebSocketAttachment,
@@ -104,6 +106,7 @@ const makeHost = (
   storage: FakeDurableObjectStorage,
   options: {
     readonly compaction?: boolean;
+    readonly getWebSockets?: () => ReadonlyArray<WebSocket>;
     readonly keepAlive?: DurableObjectKeepAlive;
     readonly modelLayer?: EDASessionDurableObjectHostOptions["modelLayer"];
     readonly parts?: TestModelParts;
@@ -128,6 +131,7 @@ const makeHost = (
           }),
         }
       : {}),
+    ...(options.getWebSockets === undefined ? {} : { getWebSockets: options.getWebSockets }),
     ...(options.keepAlive === undefined ? {} : { keepAlive: options.keepAlive }),
     modelLayer:
       options.modelLayer ??
@@ -323,17 +327,130 @@ describe("EDASessionDurableObjectHost", () => {
     expect(attachment.lastAckedSeq).toBeGreaterThan(0);
   });
 
-  it("closes restored WebSockets with malformed EDA attachments", async () => {
+  it("keeps an idle accepted WebSocket silent: no heartbeats, timers, or frames", async () => {
+    const storage = new FakeDurableObjectStorage();
+    await Effect.runPromise(EDASessionDurableObjectHost.migrate(storage));
+    const host = makeHost(storage);
+    const webSocket = new TestWebSocket();
+
+    await host.acceptEventWebSocket({
+      afterSeq: SequenceNumber.make(0),
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+      webSocket: webSocket.asWebSocket(),
+    });
+    const hello = JSON.parse(await webSocket.nextMessage()) as { readonly _tag: string };
+    expect(hello._tag).toBe("hello");
+    const sentAfterHello = webSocket.sentCount;
+
+    // The previous implementation parked a subscriber fiber on a 10s heartbeat
+    // timer; advancing fake time by an hour would have produced 360 frames.
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(3_600_000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(webSocket.sentCount).toBe(sentAfterHello);
+    expect(webSocket.closeCode).toBeUndefined();
+  });
+
+  it("answers client pings with a pong without event-socket state", async () => {
+    const storage = new FakeDurableObjectStorage();
+    await Effect.runPromise(EDASessionDurableObjectHost.migrate(storage));
+    const host = makeHost(storage);
+    const webSocket = new TestWebSocket();
+
+    await host.webSocketMessage(webSocket.asWebSocket(), EDA_WEB_SOCKET_PING_MESSAGE);
+
+    expect(await webSocket.nextMessage()).toBe(EDA_WEB_SOCKET_PONG_MESSAGE);
+    expect(webSocket.closeCode).toBeUndefined();
+  });
+
+  it("closes WebSockets with malformed EDA attachments on their first client message", async () => {
     const storage = new FakeDurableObjectStorage();
     await Effect.runPromise(EDASessionDurableObjectHost.migrate(storage));
     const host = makeHost(storage);
     const webSocket = new TestWebSocket();
     webSocket.serializeAttachment({ kind: "eda-events-v1", sessionId: SESSION_ID });
 
-    await host.restoreEventWebSockets([webSocket.asWebSocket()]);
+    await host.webSocketMessage(
+      webSocket.asWebSocket(),
+      JSON.stringify(
+        EDAWebSocketAckFrame.make({
+          _tag: "ack",
+          frameId: FrameId.make(1),
+          durableThroughSeq: SequenceNumber.make(1),
+        }),
+      ),
+    );
 
     expect(webSocket.closeCode).toBe(EDA_WS_CLOSE_PROTOCOL_ERROR);
-    expect(webSocket.closeReason).toBe("attachment");
+    expect(webSocket.closeReason).toBe("protocol");
+  });
+
+  it("resumes delivery from the persisted cursor after isolate eviction", async () => {
+    const storage = new FakeDurableObjectStorage();
+    await Effect.runPromise(EDASessionDurableObjectHost.migrate(storage));
+    const webSocket = new TestWebSocket();
+
+    const firstHost = makeHost(storage);
+    await firstHost.acceptEventWebSocket({
+      afterSeq: SequenceNumber.make(0),
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+      webSocket: webSocket.asWebSocket(),
+    });
+    const firstEvents = collectAckedEventsUntil(
+      firstHost,
+      webSocket,
+      (event) => event.event.type === "CommandCompleted",
+    );
+    await firstHost.submit({
+      command: makeCommand(),
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+    });
+    await firstEvents;
+    await firstHost.dispose();
+    const attachment = EDAWebSocketAttachment.make(webSocket.deserializeAttachment());
+    expect(attachment.lastAckedSeq).toBeGreaterThan(0);
+
+    // Simulate isolate eviction: a fresh host with no in-memory socket state,
+    // discovering the still-open socket only through getWebSockets().
+    const secondHost = makeHost(storage, { getWebSockets: () => [webSocket.asWebSocket()] });
+    const secondEvents = collectAckedEventsUntil(
+      secondHost,
+      webSocket,
+      (event) => event.event.type === "CommandCompleted",
+    );
+    await secondHost.submit({
+      command: makeCommand("018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a"),
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+    });
+    const events = await secondEvents;
+
+    const durableSeqs = events
+      .filter((event) => event.position.subSeq === 0)
+      .map((event) => event.position.seq);
+    expect(durableSeqs.length).toBeGreaterThan(0);
+    expect(Math.min(...durableSeqs)).toBeGreaterThan(attachment.lastAckedSeq);
+    expect(events.map((event) => event.event.type)).toContain("CommandCompleted");
+
+    // A late duplicate ACK from before eviction must be tolerated, not protocol-closed.
+    await secondHost.webSocketMessage(
+      webSocket.asWebSocket(),
+      JSON.stringify(
+        EDAWebSocketAckFrame.make({
+          _tag: "ack",
+          frameId: FrameId.make(1),
+          durableThroughSeq: SequenceNumber.make(1),
+        }),
+      ),
+    );
+    expect(webSocket.closeCode).toBeUndefined();
   });
 
   it("runs startup recovery before a cold alarm returns", async () => {
@@ -463,6 +580,7 @@ class TestWebSocket {
   private readonly waiters: Array<(message: string) => void> = [];
   closeCode: number | undefined;
   closeReason: string | undefined;
+  sentCount = 0;
   readonly readyState = 1;
 
   asWebSocket(): WebSocket {
@@ -476,6 +594,7 @@ class TestWebSocket {
     if (typeof message !== "string") {
       throw new Error("Expected text WebSocket frame");
     }
+    this.sentCount += 1;
     const waiter = this.waiters.shift();
     if (waiter !== undefined) {
       waiter(message);
@@ -507,15 +626,18 @@ class TestWebSocket {
   }
 }
 
-const collectWebSocketEventsUntil = async (
+interface CollectedTestEvent {
+  readonly event: { readonly type: string };
+  readonly position: { readonly seq: number; readonly subSeq: number };
+}
+
+/** ACK every events frame like a live client, without closing the socket afterwards. */
+const collectAckedEventsUntil = async (
   host: EDASessionDurableObjectHost,
   webSocket: TestWebSocket,
-  predicate: (event: { readonly event: { readonly type: string } }) => boolean,
+  predicate: (event: CollectedTestEvent) => boolean,
 ) => {
-  const events: Array<{
-    readonly event: { readonly type: string };
-    readonly position: { readonly seq: number };
-  }> = [];
+  const events: CollectedTestEvent[] = [];
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => reject(new Error("Timed out waiting for WebSocket event")), 10_000);
@@ -525,13 +647,10 @@ const collectWebSocketEventsUntil = async (
       const frame = JSON.parse(await webSocket.nextMessage()) as {
         readonly _tag: string;
         readonly durableThroughSeq?: number;
-        readonly events?: Array<{
-          readonly event: { readonly type: string };
-          readonly position: { readonly seq: number };
-        }>;
+        readonly events?: Array<CollectedTestEvent>;
         readonly frameId?: number;
       };
-      if (frame._tag === "hello" || frame._tag === "heartbeat") {
+      if (frame._tag === "hello" || frame._tag === "heartbeat" || frame._tag === "pong") {
         continue;
       }
       if (frame._tag !== "events" || frame.events === undefined || frame.frameId === undefined) {
@@ -559,6 +678,17 @@ const collectWebSocketEventsUntil = async (
     if (timeout !== undefined) {
       clearTimeout(timeout);
     }
+  }
+};
+
+const collectWebSocketEventsUntil = async (
+  host: EDASessionDurableObjectHost,
+  webSocket: TestWebSocket,
+  predicate: (event: CollectedTestEvent) => boolean,
+) => {
+  try {
+    return await collectAckedEventsUntil(host, webSocket, predicate);
+  } finally {
     webSocket.close(1000, "test complete");
     await host.webSocketClose(webSocket.asWebSocket());
   }
