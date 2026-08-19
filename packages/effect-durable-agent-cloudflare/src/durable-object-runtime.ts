@@ -676,7 +676,11 @@ export class EDASessionDurableObjectHost {
     event: PositionedEvent,
   ): Promise<void> {
     if (event.event.durability !== "durable") {
-      this.applyDeliveryResult(webSocket, state, onEphemeralEvent(state.delivery, event, Date.now()));
+      this.applyDeliveryResult(
+        webSocket,
+        state,
+        onEphemeralEvent(state.delivery, event, Date.now()),
+      );
       return;
     }
 

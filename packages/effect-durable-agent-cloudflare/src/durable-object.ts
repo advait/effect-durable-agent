@@ -248,7 +248,6 @@ export abstract class EDASessionDurableObject<
   private sessionIdFromObjectName(): SessionId | undefined {
     return this.ctx.id.name === undefined ? undefined : SessionId.make(this.ctx.id.name);
   }
-
 }
 
 const toEDASessionStorage = (storage: DurableObjectStorage): EDASessionDurableObjectStorage => {
