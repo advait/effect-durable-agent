@@ -37,17 +37,21 @@
       "types": "./dist/durable-object.d.ts",
       "import": "./dist/durable-object.js"
     },
-    "./durable-object-runtime": {
-      "types": "./dist/durable-object-runtime.d.ts",
-      "import": "./dist/durable-object-runtime.js"
+    "./openai": {
+      "types": "./dist/openai.d.ts",
+      "import": "./dist/openai.js"
     },
-    "./durable-object-storage": {
-      "types": "./dist/durable-object-storage.d.ts",
-      "import": "./dist/durable-object-storage.js"
+    "./rpc": {
+      "types": "./dist/rpc.d.ts",
+      "import": "./dist/rpc.js"
     },
-    "./websocket-protocol": {
-      "types": "./dist/websocket-protocol.d.ts",
-      "import": "./dist/websocket-protocol.js"
+    "./session-controller": {
+      "types": "./dist/session-controller.d.ts",
+      "import": "./dist/session-controller.js"
+    },
+    "./storage": {
+      "types": "./dist/storage.d.ts",
+      "import": "./dist/storage.js"
     },
     "./package.json": "./package.json"
   },

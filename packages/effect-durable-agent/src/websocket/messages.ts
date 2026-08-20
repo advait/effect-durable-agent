@@ -15,13 +15,12 @@ import {
   EDAWebSocketWirePongFrame,
   edaFrameworkWebSocketWireProtocol,
   type EDAWebSocketServerFrameEncoder,
-} from "./websocket-wire";
+} from "./protocol";
 
 export { EDA_WEB_SOCKET_PING_MESSAGE, EDA_WEB_SOCKET_PONG_MESSAGE };
 
-import { SequenceNumber, SessionId } from "../types/core";
+import { SequenceNumber } from "../types/core";
 import { PositionedEvent, UnixEpochMillis } from "../types/events";
-import { EDATraceMetadata } from "../types/tracing";
 
 /** Current EDA live-event WebSocket protocol version. */
 export const EDA_WEB_SOCKET_PROTOCOL_VERSION = EDA_WEB_SOCKET_WIRE_PROTOCOL_VERSION;
@@ -140,27 +139,11 @@ export type EDAWebSocketAckFrame = typeof EDAWebSocketAckFrame.Type;
 export const EDAWebSocketClientFrame = Schema.Union([EDAWebSocketAckFrame, EDAWebSocketPingFrame]);
 export type EDAWebSocketClientFrame = typeof EDAWebSocketClientFrame.Type;
 
-/** Small attachment persisted by hibernation-capable WebSocket hosts. */
-export const EDAWebSocketAttachment = Schema.Struct({
-  kind: Schema.Literal("eda-events-v1"),
-  sessionId: SessionId,
-  subscriberId: SubscriberId,
-  lastAckedSeq: SequenceNumber,
-  trace: EDATraceMetadata,
-});
-export type EDAWebSocketAttachment = typeof EDAWebSocketAttachment.Type;
-
 /** Serialize a server frame for a text WebSocket message. */
 export const encodeEDAWebSocketServerFrame = (
   frame: EDAWebSocketServerFrame,
   protocol?: EDAWebSocketServerFrameEncoder,
 ): string => (protocol ?? edaFrameworkWebSocketWireProtocol.host).encodeServerFrame(frame);
-
-/** Decode an unknown attachment value from host WebSocket hibernation storage. */
-export const decodeEDAWebSocketAttachment = (
-  input: unknown,
-): Effect.Effect<EDAWebSocketAttachment, unknown> =>
-  Schema.decodeUnknownEffect(EDAWebSocketAttachment)(input);
 
 /** Decode an inbound text WebSocket message at the host boundary. */
 export const decodeEDAWebSocketClientMessage = (

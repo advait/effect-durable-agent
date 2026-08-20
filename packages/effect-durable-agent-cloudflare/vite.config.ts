@@ -14,9 +14,10 @@ export default defineConfig({
     entry: {
       index: "src/index.ts",
       "durable-object": "src/durable-object.ts",
-      "durable-object-runtime": "src/durable-object-runtime.ts",
-      "durable-object-storage": "src/durable-object-storage.ts",
-      "websocket-protocol": "src/websocket-protocol.ts",
+      openai: "src/providers/openai.ts",
+      rpc: "src/rpc-codec.ts",
+      "session-controller": "src/session-controller.ts",
+      storage: "src/durable-object-storage.ts",
     },
     platform: "neutral",
     publint: true,

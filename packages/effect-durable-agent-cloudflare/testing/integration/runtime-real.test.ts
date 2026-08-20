@@ -9,9 +9,11 @@ import * as Tool from "effect/unstable/ai/Tool";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import { describe, expect, it } from "vite-plus/test";
 
-import { EDASessionDurableObjectHost } from "../../src/durable-object-runtime";
-import type { EDASessionDurableObjectStorage } from "../../src/durable-object-runtime";
-import { EDAWebSocketAckFrame, FrameId } from "../../src/websocket-protocol";
+import {
+  EDASessionController,
+  type EDASessionDurableObjectStorage,
+} from "../../src/session-controller";
+import { EDAWebSocketAckFrame, FrameId } from "effect-durable-agent/websocket";
 import { SubmitMessageCommand } from "effect-durable-agent/types/commands";
 import { CommandId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
 import { sequentialUuidV7 } from "effect-durable-agent/services/id-generator";
@@ -194,7 +196,7 @@ describeRealIntegration("EDA Durable Object host real local integration", () => 
     const host = makeRealIntegrationHost(apiKey, context.storage);
 
     try {
-      await Effect.runPromise(EDASessionDurableObjectHost.migrate(context.storage));
+      await Effect.runPromise(EDASessionController.migrate(context.storage));
       let afterSeq = SequenceNumber.make(0);
       const results: PromptResult[] = [];
 
@@ -255,14 +257,14 @@ describeRealIntegration("EDA Durable Object host real local integration", () => 
 const makeRealIntegrationHost = (
   apiKey: string,
   storage: EDASessionDurableObjectStorage,
-): EDASessionDurableObjectHost => {
+): EDASessionController => {
   const client = OpenAiClient.layer({
     apiKey: Redacted.make(apiKey),
     ...(process.env.OPENAI_API_URL === undefined ? {} : { apiUrl: process.env.OPENAI_API_URL }),
   }).pipe(Layer.provide(FetchHttpClient.layer));
   const modelLayer = OpenAiLanguageModel.layer({ model: modelId }).pipe(Layer.provide(client));
 
-  return new EDASessionDurableObjectHost({
+  return new EDASessionController({
     config: {
       modelSelection: { provider: "openai", modelId },
       systemPrompt:
@@ -275,7 +277,7 @@ const makeRealIntegrationHost = (
 };
 
 const runOnePrompt = async (
-  host: EDASessionDurableObjectHost,
+  host: EDASessionController,
   promptCase: RealPromptCase,
   afterSeq: SequenceNumber,
 ): Promise<ReadonlyArray<PositionedEvent>> => {
@@ -298,7 +300,7 @@ const runOnePrompt = async (
 };
 
 const collectWebSocketEventsUntil = async (
-  host: EDASessionDurableObjectHost,
+  host: EDASessionController,
   webSocket: TestWebSocket,
   predicate: (event: PositionedEvent) => boolean,
 ): Promise<ReadonlyArray<PositionedEvent>> => {

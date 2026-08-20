@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, expectTypeOf, it } from "vitest";
 
-import { edaFrameworkWebSocketWireProtocol, makeEDAWebSocketWireProtocol } from "./websocket-wire";
+import { edaFrameworkWebSocketWireProtocol, makeEDAWebSocketWireProtocol } from "./protocol";
 import { DurableEventEnvelope } from "../types/events";
 
 const CounterIncrementedEvent = Schema.Struct({

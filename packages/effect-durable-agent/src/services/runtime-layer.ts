@@ -13,6 +13,7 @@ import { EDAPromptProjector } from "./prompt-projector";
 import { EDAReducerRegistry } from "./reducer-registry";
 import { EDARuntime, type EDARuntimeConfig } from "./runtime";
 import { SessionContext } from "./session-context";
+import { SessionEventObserver } from "./session-event-observer";
 import { EDASessionQuery } from "./session-query";
 import { EDASessionStore, EDASessionStoreError } from "./session-store";
 import { SessionState, type SessionCommandAdmissionError } from "./session-state";
@@ -41,6 +42,7 @@ export interface EDARuntimeLayerOptions {
   readonly promptProjectorLayer?: Layer.Layer<EDAPromptProjector>;
   readonly reducerRegistryLayer?: Layer.Layer<EDAReducerRegistry>;
   readonly sessionId: SessionId;
+  readonly sessionEventObserverLayer?: Layer.Layer<SessionEventObserver>;
   readonly sessionStoreLayer: Layer.Layer<EDASessionStore, EDASessionStoreError>;
   readonly sinkCheckpointStoreLayer: Layer.Layer<SinkCheckpointStore, EDASessionStoreError>;
   readonly sinks?: ReadonlyArray<EDASink>;
@@ -59,6 +61,7 @@ export const makeEDARuntimeLayer = ({
   promptProjectorLayer,
   reducerRegistryLayer,
   sessionId,
+  sessionEventObserverLayer,
   sessionStoreLayer,
   sinkCheckpointStoreLayer,
   sinks,
@@ -67,7 +70,8 @@ export const makeEDARuntimeLayer = ({
   tracer,
 }: EDARuntimeLayerOptions): Layer.Layer<EDARuntime, SessionCommandAdmissionError> => {
   const Store = sessionStoreLayer;
-  const Bus = LiveEventBus.Live;
+  const EventObserver = sessionEventObserverLayer ?? SessionEventObserver.Noop;
+  const Bus = LiveEventBus.Live.pipe(Layer.provide(EventObserver));
   const KeepAlive = keepAliveLayer ?? EDAKeepAlive.Noop;
   const Ids = IdGenerator.Live;
   const Session = SessionContext.Live(sessionId);

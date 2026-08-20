@@ -21,7 +21,7 @@ Examples and documentation scenarios are not a seventh archetype. They should re
 - Service contracts own typed error, interruption, retry, and resource semantics.
 - `session-state-control.model.test.ts` owns generated command/control lifecycle invariants.
 - `session-state-crash-simulation.test.ts` owns recovery from every durable batch prefix. Do not replace these prefix sweeps with a few named regressions.
-- `packages/effect-durable-agent-cloudflare/src/durable-object-runtime.test.ts` owns the canned-model host journey through admission, streaming, SQLite persistence, reducer checkpoints, cold-start replay, and transcript hydration.
+- `packages/effect-durable-agent-cloudflare/src/session-controller.test.ts` owns the canned-model host journey through admission, streaming, SQLite persistence, reducer checkpoints, hibernation restoration, cold-start replay, and transcript hydration.
 - `packages/effect-durable-agent-cloudflare/src/durable-object-store.test.ts` owns the semantic store contract plus Durable Object SQLite paging, transaction, sidecar, and migration behavior.
 - `packages/effect-durable-agent/testing/offline-trace/offline-trace.test.ts` owns multi-turn prompt continuity, tool continuation, parallel tool ordering, and trace artifacts.
 - `packages/effect-durable-agent-cloudflare/testing/integration/host-conformance.test.ts` and `packages/effect-durable-agent-celld/testing/integration/host-conformance.test.ts` register the same `testing/host-conformance/suite.ts` against real workerd and celld processes. The shared suite owns persistence, WebSocket resume/ACK, restart idempotency, in-flight hard-crash recovery, and warm/cold destruction semantics.

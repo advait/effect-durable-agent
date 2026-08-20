@@ -14,6 +14,7 @@ import {
   turnStartedEventType,
   turnStoppedEventType,
 } from "../types/events";
+import { SessionEventObserver, type SessionEventObserverShape } from "./session-event-observer";
 
 /** Conservative raw-delta cap for one open turn's live-only reconnect replay. */
 export const activeTurnEphemeralReplayCapacity = 4_096;
@@ -24,16 +25,6 @@ export interface ActiveTurnEphemeralReplay {
   readonly events: ReadonlyArray<PositionedEvent>;
   readonly overflowed: boolean;
 }
-
-/**
- * Push-delivery listener invoked inline as each event is published.
- *
- * Listeners let hibernation-capable hosts fan events out to accepted
- * WebSockets during the already-active turn instead of parking a resident
- * subscriber fiber on the pub/sub. Listeners must not fail; defects are
- * logged and never interrupt the publishing turn.
- */
-export type LiveDeliveryListener = (event: PositionedEvent) => Effect.Effect<void>;
 
 /** In-memory live fanout plus active-turn replay source for reconnect streams. */
 export interface LiveEventBusShape {
@@ -46,8 +37,6 @@ export interface LiveEventBusShape {
   >;
   /** Snapshot raw live-only events retained for the currently open turn. */
   readonly activeTurnReplay: () => Effect.Effect<ActiveTurnEphemeralReplay>;
-  /** Register one push-delivery listener invoked inline on every published event. */
-  readonly registerDeliveryListener: (listener: LiveDeliveryListener) => Effect.Effect<void>;
 }
 
 /** Unbounded in-memory fanout plus bounded active-turn ephemeral replay. */
@@ -65,50 +54,33 @@ export class LiveEventBus extends Context.Service<LiveEventBus, LiveEventBusShap
         events: [],
         overflowed: false,
       });
-      const listeners = yield* Ref.make<ReadonlyArray<LiveDeliveryListener>>([]);
-      return makeLiveBus(pubsub, activeTurnReplay, listeners);
+      const observer = yield* SessionEventObserver;
+      return makeLiveBus(pubsub, activeTurnReplay, observer);
     }),
   );
+
+  /** Live bus for hosts that do not install an append-driven observer. */
+  static readonly Noop = LiveEventBus.Live.pipe(Layer.provide(SessionEventObserver.Noop));
 }
 
 const makeLiveBus = (
   pubsub: PubSub.PubSub<PositionedEvent>,
   activeTurnReplay: Ref.Ref<ActiveTurnEphemeralReplay>,
-  listeners: Ref.Ref<ReadonlyArray<LiveDeliveryListener>>,
+  observer: SessionEventObserverShape,
 ): LiveEventBusShape => ({
   publish: (event) =>
-    updateActiveTurnReplay(activeTurnReplay, event).pipe(
-      Effect.andThen(notifyDeliveryListeners(listeners, event)),
-      Effect.andThen(PubSub.publish(pubsub, event)),
-    ),
+    Effect.gen(function* () {
+      yield* updateActiveTurnReplay(activeTurnReplay, event);
+      yield* observer.onEvent(event);
+      return yield* PubSub.publish(pubsub, event);
+    }),
   subscribeQueue: () => PubSub.subscribe(pubsub),
   subscribe: () =>
     Effect.map(PubSub.subscribe(pubsub), (subscription) =>
       Stream.fromEffectRepeat(PubSub.take(subscription)),
     ),
   activeTurnReplay: () => Ref.get(activeTurnReplay),
-  registerDeliveryListener: (listener) =>
-    Ref.update(listeners, (current) => [...current, listener]),
 });
-
-const notifyDeliveryListeners = (
-  listeners: Ref.Ref<ReadonlyArray<LiveDeliveryListener>>,
-  event: PositionedEvent,
-): Effect.Effect<void> =>
-  Ref.get(listeners).pipe(
-    Effect.flatMap((current) =>
-      Effect.forEach(
-        current,
-        (listener) =>
-          listener(event).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("EDA live delivery listener defected", cause),
-            ),
-          ),
-        { discard: true },
-      ),
-    ),
-  );
 
 const updateActiveTurnReplay = (
   ref: Ref.Ref<ActiveTurnEphemeralReplay>,

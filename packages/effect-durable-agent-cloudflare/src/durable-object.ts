@@ -3,7 +3,11 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import type { DurableTranscriptMessage } from "effect-durable-agent/domain/message-transcript";
-import { encodeEdaRpcDurableEvent } from "./rpc-codec";
+import {
+  decodeEdaRpcCommand,
+  decodeEdaRpcSubmittables,
+  encodeEdaRpcDurableEvent,
+} from "./rpc-codec";
 import type { EDASessionSnapshot } from "effect-durable-agent/services/session-query";
 import type { CommittedDurableEvent as CommittedDurableEventValue } from "effect-durable-agent/services/session-store";
 import type {
@@ -23,13 +27,14 @@ import {
   parseEDATraceparent,
 } from "effect-durable-agent/types/tracing";
 import {
-  decodeEdaRpcCommand,
-  decodeEdaRpcSubmittables,
-  EDASessionDurableObjectHost,
-  type EDASessionDurableObjectHostOptions,
+  EDASessionController,
+  type EDASessionControllerOptions,
   type EDASessionDurableObjectStorage,
-} from "./durable-object-runtime";
-import { EDA_WEB_SOCKET_PING_MESSAGE, EDA_WEB_SOCKET_PONG_MESSAGE } from "./websocket-protocol";
+} from "./session-controller";
+import {
+  EDA_WEB_SOCKET_PING_MESSAGE,
+  EDA_WEB_SOCKET_PONG_MESSAGE,
+} from "effect-durable-agent/websocket";
 
 /** Raw RPC shape decoded before admitting one session command. */
 export interface EDASessionCommandRpcInput {
@@ -68,7 +73,7 @@ export interface EDASessionBlockOnCommandRpcInput {
 
 /** Constructor options for concrete app subclasses of the EDA Durable Object base. */
 export type EDASessionDurableObjectOptions = Omit<
-  EDASessionDurableObjectHostOptions,
+  EDASessionControllerOptions,
   "background" | "getWebSockets" | "storage"
 >;
 
@@ -89,7 +94,7 @@ export const getEDASessionDurableObjectByName = <T extends EDASessionDurableObje
 export abstract class EDASessionDurableObject<
   EnvType extends object = object,
 > extends DurableObject<EnvType> {
-  readonly #host: EDASessionDurableObjectHost;
+  readonly #controller: EDASessionController;
 
   protected constructor(
     ctx: DurableObjectState,
@@ -98,7 +103,7 @@ export abstract class EDASessionDurableObject<
   ) {
     super(ctx, env);
     const storage = toEDASessionStorage(this.ctx.storage);
-    this.#host = new EDASessionDurableObjectHost({
+    this.#controller = new EDASessionController({
       ...options,
       background: this.ctx,
       getWebSockets: () => this.ctx.getWebSockets(),
@@ -112,7 +117,7 @@ export abstract class EDASessionDurableObject<
     );
 
     this.ctx.blockConcurrencyWhile(async () => {
-      await Effect.runPromise(EDASessionDurableObjectHost.migrate(storage));
+      await Effect.runPromise(EDASessionController.migrate(storage));
     });
   }
 
@@ -136,7 +141,7 @@ export abstract class EDASessionDurableObject<
     const client = pair[0];
     const server = pair[1];
     this.ctx.acceptWebSocket(server);
-    await this.#host.acceptEventWebSocket({
+    await this.#controller.acceptEventWebSocket({
       afterSeq: SequenceNumber.make(afterSeq),
       sessionId: this.parseSessionId(sessionIdRaw),
       trace: traceMetadataFromRequest(request),
@@ -146,7 +151,7 @@ export abstract class EDASessionDurableObject<
   }
 
   async submit(input: EDASessionCommandRpcInput): Promise<CommittedDurableEventValue> {
-    const committed = await this.#host.submit({
+    const committed = await this.#controller.submit({
       command: await decodeCommand(input.command),
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
@@ -157,7 +162,7 @@ export abstract class EDASessionDurableObject<
   async submitBatch(
     input: EDASessionSubmitBatchRpcInput,
   ): Promise<ReadonlyArray<CommittedDurableEventValue>> {
-    const committed = await this.#host.submitBatch({
+    const committed = await this.#controller.submitBatch({
       items: await decodeSubmittables(input.items),
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
@@ -166,7 +171,7 @@ export abstract class EDASessionDurableObject<
   }
 
   async submitAndBlock(input: EDASessionCommandRpcInput): Promise<CommittedCommandTerminalEvent> {
-    const committed = await this.#host.submitAndBlock({
+    const committed = await this.#controller.submitAndBlock({
       command: await decodeCommand(input.command),
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
@@ -177,7 +182,7 @@ export abstract class EDASessionDurableObject<
   async blockOnCommand(
     input: EDASessionBlockOnCommandRpcInput,
   ): Promise<CommittedCommandTerminalEvent> {
-    const committed = await this.#host.blockOnCommand({
+    const committed = await this.#controller.blockOnCommand({
       ...(input.afterSeq === undefined ? {} : { afterSeq: SequenceNumber.make(input.afterSeq) }),
       commandId: CommandId.make(input.commandId),
       sessionId: this.parseSessionId(input.sessionId),
@@ -187,7 +192,7 @@ export abstract class EDASessionDurableObject<
   }
 
   async snapshot(input: EDASessionScopedRpcInput): Promise<EDASessionSnapshot> {
-    const snapshot = await this.#host.snapshot({
+    const snapshot = await this.#controller.snapshot({
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
     });
@@ -197,14 +202,14 @@ export abstract class EDASessionDurableObject<
   async messages(
     input: EDASessionScopedRpcInput,
   ): Promise<ReadonlyArray<DurableTranscriptMessage>> {
-    return await this.#host.messages({
+    return await this.#controller.messages({
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
     });
   }
 
   async webSocketMessage(webSocket: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    await this.#host.webSocketMessage(webSocket, message);
+    await this.#controller.webSocketMessage(webSocket, message);
   }
 
   async webSocketClose(
@@ -213,15 +218,15 @@ export abstract class EDASessionDurableObject<
     _reason: string,
     _wasClean: boolean,
   ): Promise<void> {
-    await this.#host.webSocketClose(webSocket);
+    this.#controller.webSocketClose(webSocket);
   }
 
   async webSocketError(webSocket: WebSocket, _error: unknown): Promise<void> {
-    await this.#host.webSocketError(webSocket);
+    this.#controller.webSocketError(webSocket);
   }
 
   async destroySession(input: EDASessionScopedRpcInput): Promise<void> {
-    await this.#host.destroy({
+    await this.#controller.destroy({
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
     });
@@ -231,7 +236,7 @@ export abstract class EDASessionDurableObject<
 
   async alarm(): Promise<void> {
     const sessionId = this.sessionIdFromObjectName();
-    await this.#host.alarm(
+    await this.#controller.alarm(
       sessionId === undefined ? undefined : { sessionId, trace: makeRootEDATraceMetadata() },
     );
   }
