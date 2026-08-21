@@ -7,6 +7,7 @@ const packagePaths = [
   "packages/effect-durable-agent",
   "packages/effect-durable-agent-cloudflare",
   "packages/effect-durable-agent-celld",
+  "packages/effect-durable-agent-rivet",
 ];
 const packages = packagePaths.map((path) => ({
   path,

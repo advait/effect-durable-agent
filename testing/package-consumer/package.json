@@ -4,15 +4,18 @@
   "type": "module",
   "scripts": {
     "bundle": "wrangler deploy --dry-run --outdir .wrangler-dist",
+    "check:rivet": "tsc -p tsconfig.rivet.json --noEmit",
     "check:tooling": "node tooling.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@effect/ai-openai": "4.0.0-beta.102",
-    "effect": "4.0.0-beta.102"
+    "effect": "4.0.0-beta.102",
+    "rivetkit": "2.3.10"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260813.1",
+    "@types/node": "^25.7.0",
     "typescript": "^6.0.3",
     "wrangler": "4.114.0"
   }

@@ -24,7 +24,10 @@ Examples and documentation scenarios are not a seventh archetype. They should re
 - `packages/effect-durable-agent-cloudflare/src/durable-object-runtime.test.ts` owns the canned-model host journey through admission, streaming, SQLite persistence, reducer checkpoints, cold-start replay, and transcript hydration.
 - `packages/effect-durable-agent-cloudflare/src/durable-object-store.test.ts` owns the semantic store contract plus Durable Object SQLite paging, transaction, sidecar, and migration behavior.
 - `packages/effect-durable-agent/testing/offline-trace/offline-trace.test.ts` owns multi-turn prompt continuity, tool continuation, parallel tool ordering, and trace artifacts.
-- `packages/effect-durable-agent-cloudflare/testing/integration/host-conformance.test.ts` and `packages/effect-durable-agent-celld/testing/integration/host-conformance.test.ts` register the same `testing/host-conformance/suite.ts` against real workerd and celld processes. The shared suite owns persistence, WebSocket resume/ACK, restart idempotency, in-flight hard-crash recovery, and warm/cold destruction semantics.
+- The Cloudflare, celld, and Rivet package-local `testing/integration/host-conformance.test.ts`
+  entries register the same `testing/host-conformance/suite.ts` against real workerd, celld, and
+  Rivet Engine processes. The shared suite owns persistence, WebSocket resume/ACK, restart
+  idempotency, in-flight hard-crash recovery, and warm/cold destruction semantics.
 - `packages/effect-durable-agent/src/services/runtime.openai-smoke.test.ts` and `packages/effect-durable-agent-cloudflare/testing/integration/runtime-real.test.ts` are opt-in provider smokes. The default suite must never need a network or provider key.
 
 Before adding a regression test, identify which owner failed. Extend an existing table, generator, crash scenario, or journey when possible. Add a standalone named regression only when the input represents a distinct business rule or failure boundary.
