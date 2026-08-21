@@ -69,6 +69,9 @@ export interface EDAExportedSpan {
   readonly traceId: string;
 }
 
+/** Maximum primitive attributes copied from one native Effect span or link. */
+const MAX_EXPORTED_SPAN_ATTRIBUTES = 256;
+
 interface EventLike {
   readonly event?: { readonly type?: unknown; readonly durability?: unknown };
   readonly type?: unknown;
@@ -95,12 +98,36 @@ export const compactSpanAttributes = (
 const compactUnknownAttributes = (
   attributes: Readonly<Record<string, unknown>> | ReadonlyMap<string, unknown>,
 ): Record<string, string | number | boolean> => {
-  const entries = attributes instanceof Map ? attributes.entries() : Object.entries(attributes);
   const compacted: Record<string, string | number | boolean> = {};
-  for (const [key, value] of entries) {
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      compacted[key] = value;
+  try {
+    if (attributes instanceof Map) {
+      let count = 0;
+      for (const [key, value] of attributes) {
+        if (count >= MAX_EXPORTED_SPAN_ATTRIBUTES) {
+          break;
+        }
+        count += 1;
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+          compacted[key] = value;
+        }
+      }
+      return compacted;
     }
+
+    const keys = Object.keys(attributes).slice(0, MAX_EXPORTED_SPAN_ATTRIBUTES);
+    for (const key of keys) {
+      let value: unknown;
+      try {
+        value = Reflect.get(attributes, key);
+      } catch {
+        continue;
+      }
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        compacted[key] = value;
+      }
+    }
+  } catch {
+    // Tracing diagnostics must not replace the operation whose span is ending.
   }
   return compacted;
 };
