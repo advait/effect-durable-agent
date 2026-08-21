@@ -84,6 +84,37 @@ describe("makeEdaExportingTracer", () => {
     }
   });
 
+  it("keeps native span and link export total for hostile Maps", () => {
+    const hostileMap = new Proxy(new Map<string, unknown>(), {
+      get(_target, property) {
+        if (property === Symbol.iterator) {
+          throw new Error("MAP_ITERATOR_SENTINEL");
+        }
+        throw new Error("MAP_GETTER_SENTINEL");
+      },
+    });
+    const spans: Array<EDAExportedSpan> = [];
+    const span = makeSpan(1_000n, spans);
+    Object.defineProperty(span, "attributes", { value: hostileMap });
+    const link = {
+      attributes: {},
+      span: Tracer.externalSpan({
+        sampled: true,
+        spanId: "1111111111111111",
+        traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    };
+    Object.defineProperty(link, "attributes", { value: hostileMap });
+    span.addLinks([link]);
+
+    expect(() => span.end(2_000n, Exit.succeed(undefined))).not.toThrow();
+    expect(spans).toHaveLength(1);
+    expect(spans[0]).toMatchObject({
+      attributes: {},
+      links: [{ attributes: {} }],
+    });
+  });
+
   it("bounds native attribute snapshots", () => {
     const spans: Array<EDAExportedSpan> = [];
     const span = makeSpan(1_000n, spans);
