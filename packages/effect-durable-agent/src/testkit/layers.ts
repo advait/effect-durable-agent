@@ -200,7 +200,7 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
             return options.wrapStore!(inner);
           }),
         ).pipe(Layer.provide(BaseStore));
-  const Bus = LiveEventBus.Live;
+  const Bus = LiveEventBus.Noop;
   const KeepAlive = options.keepAliveLayer ?? EDAKeepAlive.Noop;
   const SinkCheckpoints = SinkCheckpointStore.InMemory;
   const Ids =

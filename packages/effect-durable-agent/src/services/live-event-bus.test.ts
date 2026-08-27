@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -30,6 +31,7 @@ import {
   UnixEpochMillis,
 } from "../types/events";
 import { LiveEventBus } from "./live-event-bus";
+import { SessionEventObserver } from "./session-event-observer";
 
 const SESSION_ID = "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a";
 const EVENT_IDS = [
@@ -131,7 +133,7 @@ describe("LiveEventBus", () => {
 
         return { accepted, firstEvents, secondEvents };
       }),
-    ).pipe(Effect.provide(LiveEventBus.Live));
+    ).pipe(Effect.provide(LiveEventBus.Noop));
 
     const result = await Effect.runPromise(program);
 
@@ -159,12 +161,37 @@ describe("LiveEventBus", () => {
 
         return yield* Fiber.join(collectedFiber);
       }),
-    ).pipe(Effect.provide(LiveEventBus.Live));
+    ).pipe(Effect.provide(LiveEventBus.Noop));
 
     const received = await Effect.runPromise(program);
 
     expect(received).toEqual(events);
     expect(received.map((event) => event.position.seq)).toEqual([1, 2, 3]);
+  });
+
+  it("notifies the injected host observer in publish order", async () => {
+    const observed: PositionedEvent[] = [];
+    const events = [positionedEventAt(1), positionedEventAt(2), positionedEventAt(3)];
+    const busLayer = LiveEventBus.Live.pipe(
+      Layer.provide(
+        SessionEventObserver.FromHandler((event) =>
+          Effect.sync(() => {
+            observed.push(event);
+          }),
+        ),
+      ),
+    );
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const bus = yield* LiveEventBus;
+          for (const event of events) yield* bus.publish(event);
+        }),
+      ).pipe(Effect.provide(busLayer)),
+    );
+
+    expect(observed).toEqual(events);
   });
 
   it("keeps subscriber backlogs isolated from each other", async () => {
@@ -189,7 +216,7 @@ describe("LiveEventBus", () => {
         const slowSecond = yield* PubSub.take(slowQueue);
         return { fastEvents, slowEvents: [slowFirst, slowSecond] };
       }),
-    ).pipe(Effect.provide(LiveEventBus.Live));
+    ).pipe(Effect.provide(LiveEventBus.Noop));
 
     const result = await Effect.runPromise(program);
 
@@ -209,7 +236,7 @@ describe("LiveEventBus", () => {
         const afterLivePublish = yield* PubSub.take(subscription);
         return { beforeLivePublish, afterLivePublish, liveEvent };
       }),
-    ).pipe(Effect.provide(LiveEventBus.Live));
+    ).pipe(Effect.provide(LiveEventBus.Noop));
 
     const result = await Effect.runPromise(program);
 
@@ -229,7 +256,7 @@ describe("LiveEventBus", () => {
 
         return yield* bus.publish(positionedEvent);
       }),
-    ).pipe(Effect.provide(LiveEventBus.Live));
+    ).pipe(Effect.provide(LiveEventBus.Noop));
 
     await expect(Effect.runPromise(program)).resolves.toBe(true);
   });
@@ -248,7 +275,7 @@ describe("LiveEventBus", () => {
         const completed = yield* bus.activeTurnReplay();
         return { active, completed };
       }),
-    ).pipe(Effect.provide(LiveEventBus.Live));
+    ).pipe(Effect.provide(LiveEventBus.Noop));
 
     const result = await Effect.runPromise(program);
 

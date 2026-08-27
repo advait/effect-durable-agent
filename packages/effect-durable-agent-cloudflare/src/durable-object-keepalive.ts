@@ -11,7 +11,11 @@ export interface DurableObjectAlarmStorage {
   readonly deleteAlarm: () => void | Promise<void>;
 }
 
-/** Optional host hook for background alarm writes started from synchronous observers. */
+/**
+ * Optional host hook for background alarm writes started from synchronous observers.
+ * Durable Objects already track their own async work; this hook does not keep an
+ * accepted WebSocket active or prevent WebSocket hibernation.
+ */
 export interface DurableObjectBackgroundWaiter {
   readonly waitUntil: (promise: Promise<unknown>) => void;
 }

@@ -33,7 +33,7 @@ export {
   encodeEdaRpcCommand,
   encodeEdaRpcSubmittables,
   makeEDADurableObjectOpenAiModelLayer as makeEDACelldOpenAiModelLayer,
-  EDASessionDurableObjectHost as EDASessionCellHost,
+  EDASessionController as EDASessionCellController,
   type EDASessionDurableObjectOptions as EDASessionCellOptions,
   type EDASessionDurableObjectStorage as EDASessionCellStorage,
 } from "effect-durable-agent-cloudflare";

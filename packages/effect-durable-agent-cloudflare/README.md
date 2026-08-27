@@ -18,9 +18,17 @@ export class AgentSession extends EDASessionDurableObject<Env> {
 }
 ```
 
-The host maps one session to one SQLite-backed Durable Object and owns alarms,
-hibernatable WebSockets, RPC decoding, recovery, and sink checkpoints. Register
-only the concrete application subclass in `wrangler.jsonc`.
+The adapter maps one session to one SQLite-backed Durable Object. Ownership is
+split deliberately:
+
+- `EDASessionDurableObject` maps Cloudflare callbacks and object identity.
+- `EDASessionController` coordinates the session use cases.
+- `EDASessionRuntime` owns the disposable Effect runtime and keep-alive.
+- `EDAWebSocketConnectionManager` owns accepted sockets and hibernation state.
+
+Idle sockets use `ctx.acceptWebSocket`, Effect Schema attachments, and
+automatic ping responses. They own no timer or resident subscriber fiber.
+Register only the concrete application subclass in `wrangler.jsonc`.
 
 Durable Object RPC uses structured clone. Encode Schema class instances before
 passing commands or batches across the Worker-to-object boundary with
@@ -28,3 +36,7 @@ passing commands or batches across the Worker-to-object boundary with
 
 The core and host packages are published in lockstep and must use the same
 version.
+
+Public subpaths are `/durable-object`, `/session-controller`, `/openai`,
+`/rpc`, and `/storage`. The WebSocket protocol and pure delivery machine
+are exported from `effect-durable-agent/websocket`.

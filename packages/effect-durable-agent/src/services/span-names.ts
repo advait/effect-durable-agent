@@ -31,7 +31,7 @@ export const SpanNames = defineSpanNames([
   "agent.command.wait",
   "agent.compaction",
   "agent.events.follow",
-  "agent.events.slice",
+  "agent.events.page",
   "agent.events.stream",
   "agent.inference",
   "agent.messages.list",

@@ -20,8 +20,6 @@ import type {
   CommandFailedEvent,
   PositionedEvent,
 } from "../types/events";
-import { LiveEventBus } from "./live-event-bus";
-import type { LiveDeliveryListener, LiveEventBusShape } from "./live-event-bus";
 import { SessionState } from "./session-state";
 import type { EDASubmittable, SessionCommandAdmissionError } from "./session-state";
 import { CommittedDurableEvent } from "./session-store";
@@ -81,10 +79,8 @@ export interface EDARuntimeShape {
   readonly messages: EDASessionQueryShape["messages"];
   /** Backfill durable events after a committed sequence, then follow live events. */
   readonly eventsAfter: EDASessionQueryShape["eventsAfter"];
-  /** Read one bounded committed durable slice plus the committed head. */
-  readonly eventsSlice: EDASessionQueryShape["eventsSlice"];
-  /** Register one push-delivery listener invoked inline on every published event. */
-  readonly registerDeliveryListener: LiveEventBusShape["registerDeliveryListener"];
+  /** Read one bounded page of committed durable events plus the committed head. */
+  readonly readEventPage: EDASessionQueryShape["readEventPage"];
 }
 
 /** Top-level public facade for one effect-durable-agent session runtime. */
@@ -99,7 +95,6 @@ const makeLiveRuntime = (config: EDARuntimeConfig) =>
   Effect.gen(function* () {
     const sessionState = yield* SessionState;
     const query = yield* EDASessionQuery;
-    const liveBus = yield* LiveEventBus;
 
     const runInput = {
       modelSelection: config.modelSelection,
@@ -160,9 +155,8 @@ const makeLiveRuntime = (config: EDARuntimeConfig) =>
       snapshot: () => query.snapshot(),
       messages: () => query.messages(),
       eventsAfter: (afterSeq: SequenceNumber) => query.eventsAfter(afterSeq),
-      eventsSlice: (afterSeq: SequenceNumber, limit: number) => query.eventsSlice(afterSeq, limit),
-      registerDeliveryListener: (listener: LiveDeliveryListener) =>
-        liveBus.registerDeliveryListener(listener),
+      readEventPage: (afterSeq: SequenceNumber, limit: number) =>
+        query.readEventPage(afterSeq, limit),
     };
   });
 

@@ -41,14 +41,14 @@ export interface EDASessionQueryShape {
     Scope.Scope
   >;
   /** Read one bounded committed durable slice after `afterSeq` plus the committed head. */
-  readonly eventsSlice: (
+  readonly readEventPage: (
     afterSeq: SequenceNumber,
     limit: number,
-  ) => Effect.Effect<EDASessionEventsSlice, EDASessionStoreError>;
+  ) => Effect.Effect<EDASessionEventPage, EDASessionStoreError>;
 }
 
-/** Bounded committed durable replay slice for pull-based delivery. */
-export interface EDASessionEventsSlice {
+/** Bounded committed durable event page for pull-based host delivery. */
+export interface EDASessionEventPage {
   readonly events: ReadonlyArray<PositionedEvent>;
   readonly head: SequenceNumber;
 }
@@ -115,11 +115,11 @@ export class EDASessionQuery extends Context.Service<EDASessionQuery, EDASession
               attributes: { "eda.seq.after": afterSeq },
             }),
           ),
-        eventsSlice: (afterSeq: SequenceNumber, limit: number) =>
+        readEventPage: (afterSeq: SequenceNumber, limit: number) =>
           Effect.gen(function* () {
             const head = (yield* sessionState.snapshot()).lastSeq;
             if (limit <= 0 || afterSeq >= head) {
-              return { events: [], head } satisfies EDASessionEventsSlice;
+              return { events: [], head } satisfies EDASessionEventPage;
             }
             const events = yield* store.eventsAfter(afterSeq).pipe(
               Stream.filter((entry) => entry.position.seq <= head),
@@ -130,10 +130,10 @@ export class EDASessionQuery extends Context.Service<EDASessionQuery, EDASession
               Stream.runCollect,
               Effect.map((events) => Array.from(events)),
             );
-            return { events, head } satisfies EDASessionEventsSlice;
+            return { events, head } satisfies EDASessionEventPage;
           }).pipe(
-            Effect.withSpan("agent.events.slice", {
-              attributes: { "eda.seq.after": afterSeq, "eda.slice.limit": limit },
+            Effect.withSpan("agent.events.page", {
+              attributes: { "eda.seq.after": afterSeq, "eda.page.limit": limit },
             }),
           ),
       };

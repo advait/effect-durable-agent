@@ -87,12 +87,12 @@ ManagedRuntime<Effect services> for one session
 | Durable store port + Cloudflare/celld implementation | `packages/effect-durable-agent/src/services/session-store.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-storage.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-store.ts` |
 | Session authority | `packages/effect-durable-agent/src/services/session-state.ts` |
 | Query/read APIs | `packages/effect-durable-agent/src/services/session-query.ts` |
-| Live stream/WebSocket | `packages/effect-durable-agent/src/services/live-event-bus.ts`, `packages/effect-durable-agent/src/services/websocket-subscriber.ts`, `packages/effect-durable-agent/src/host/websocket-wire.ts`, `packages/effect-durable-agent/src/host/websocket-protocol.ts` |
+| Live stream/WebSocket | `packages/effect-durable-agent/src/services/live-event-bus.ts`, `packages/effect-durable-agent/src/services/session-event-observer.ts`, `packages/effect-durable-agent/src/websocket/`, `packages/effect-durable-agent-cloudflare/src/websocket/` |
 | Pure reducers/policies | `packages/effect-durable-agent/src/domain/reduced-state.ts`, `packages/effect-durable-agent/src/domain/command-queues.ts`, `packages/effect-durable-agent/src/domain/dispatch-policy.ts`, `packages/effect-durable-agent/src/domain/run-continuation-policy.ts`, `packages/effect-durable-agent/src/domain/inference-state.ts` |
 | Model/turn/tool execution | `packages/effect-durable-agent/src/services/turn-runner.ts`, `packages/effect-durable-agent/src/services/inference-runner.ts`, `packages/effect-durable-agent/src/services/tool-executor.ts`, `packages/effect-durable-agent/src/services/tool-registry.ts` |
 | Extension points | `packages/effect-durable-agent/src/services/reducer-registry.ts`, `packages/effect-durable-agent/src/services/sink-registry.ts` |
 | Compaction | `packages/effect-durable-agent/src/services/compaction.ts`, `packages/effect-durable-agent/src/domain/context-projection.ts` |
-| Cloudflare/celld host adapters | `packages/effect-durable-agent-cloudflare/src/durable-object-runtime.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-keepalive.ts`, `packages/effect-durable-agent-cloudflare/src/durable-object-sink-checkpoints.ts` |
+| Cloudflare/celld host adapters | `packages/effect-durable-agent-cloudflare/src/durable-object.ts`, `packages/effect-durable-agent-cloudflare/src/session-controller.ts`, `packages/effect-durable-agent-cloudflare/src/runtime/`, `packages/effect-durable-agent-cloudflare/src/websocket/` |
 | Examples | `examples/` |
 
 ---
@@ -378,10 +378,11 @@ The current WebSocket transport is described in detail in `docs/websocket-protoc
 
 - Server frames are versioned and batch-capable; current sender emits one event per frame.
 - Clients ACK `events` frames after applying them.
-- Heartbeats are not ACKed.
-- Each subscriber has a bounded buffer and ACK-gated sender.
+- Servers schedule no heartbeats or timers; Cloudflare auto-responds to application pings.
+- Each subscriber has a bounded live-only ephemeral buffer and ACK-gated sender.
 - Slow subscribers are closed independently; they do not backpressure `SessionState`, the durable append path, model streams, tools, sinks, or other subscribers.
-- Cloudflare WebSocket attachment stores the last ACKed durable `seq` for hibernation restore.
+- Cloudflare WebSocket attachments store the full delivery checkpoint, including in-flight frame
+  receipts, so ACK validation remains strict after hibernation.
 
 ### Active-turn ephemeral replay
 
@@ -688,13 +689,19 @@ Current production host:
 - one Durable Object instance/database stores one session;
 - host startup runs EDA schema migrations via `ctx.blockConcurrencyWhile(...)`;
 - host entrypoints expose RPC methods for submit, submitBatch, submitAndBlock, blockOnCommand, snapshot, messages, backup/destroy, alarm, and WebSocket events;
-- `EDASessionDurableObjectHost` owns the scoped `ManagedRuntime` for the session;
+- `EDASessionDurableObject` owns only Cloudflare callbacks, upgrade wiring, and object identity;
+- `EDASessionController` coordinates public session use cases without owning platform state;
+- `EDASessionRuntime` owns lazy `ManagedRuntime` construction, disposal, and keep-alive;
+- `EDAWebSocketConnectionManager` owns accepted sockets, attachment persistence, restoration,
+  and interpretation of core delivery actions;
 - runtime construction retries after a failed hydration/build instead of pinning the warm isolate to a rejected promise;
 - `EDAKeepAlive` integrates with Durable Object alarms/leases so active control/model/sink work can keep the object awake enough to finish or reschedule;
 - session destruction shuts down in-memory keep-alive state and deletes the Durable Object alarm before deleting storage;
-- WebSocket hibernation restores subscribers from serialized attachment state.
+- WebSocket hibernation restores exact ACK-window state from an Effect Schema attachment.
 
-The Cloudflare host imports Cloudflare APIs. Core domain/runtime code depends on services such as `EDASessionStore`, `SessionContext`, `IdGenerator`, `EDAKeepAlive`, model/tool layers, and live subscriber abstractions.
+Core publishes through the infallible `SessionEventObserver` port supplied at layer construction.
+The Cloudflare observer logs and contains platform failures. Core has no Cloudflare types, callback
+registry, or public listener-registration API.
 
 The host boundary supports multiple deployments. The Cloudflare and celld packages provide the same semantics: one ordered durable session log, atomic append, per-session coordination, resumable live delivery, durable sink checkpoints, clock/id services, and wakeup/keep-alive hooks.
 
@@ -772,7 +779,7 @@ EDA currently does **not** provide:
 ## 19. Adjacent documents
 
 - `docs/message-steering.md` — current durable message queue and steering semantics.
-- `docs/websocket-protocol.md` — current WebSocket protocol plus marked future hardening notes.
+- `docs/websocket-protocol.md` — current WebSocket protocol, hibernation contract, and ownership.
 - `docs/testing.md` — test archetypes and fidelity ownership.
 - `docs/ui-projection.md` — future generic UI projection proposal, not current runtime behavior.
 - `docs/subagents.md` — future EDA/Gia subagent proposal, not current runtime behavior.

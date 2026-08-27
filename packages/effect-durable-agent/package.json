@@ -51,13 +51,9 @@
       "types": "./dist/domain/reduced-state-schema.d.ts",
       "import": "./dist/domain/reduced-state-schema.js"
     },
-    "./host/websocket-wire": {
-      "types": "./dist/host/websocket-wire.d.ts",
-      "import": "./dist/host/websocket-wire.js"
-    },
-    "./host/websocket-protocol": {
-      "types": "./dist/host/websocket-protocol.d.ts",
-      "import": "./dist/host/websocket-protocol.js"
+    "./websocket": {
+      "types": "./dist/websocket.d.ts",
+      "import": "./dist/websocket.js"
     },
     "./services/keep-alive": {
       "types": "./dist/services/keep-alive.d.ts",
@@ -91,6 +87,10 @@
       "types": "./dist/services/session-query.d.ts",
       "import": "./dist/services/session-query.js"
     },
+    "./services/session-event-observer": {
+      "types": "./dist/services/session-event-observer.d.ts",
+      "import": "./dist/services/session-event-observer.js"
+    },
     "./services/session-store": {
       "types": "./dist/services/session-store.d.ts",
       "import": "./dist/services/session-store.js"
@@ -118,10 +118,6 @@
     "./services/tracing": {
       "types": "./dist/services/tracing.d.ts",
       "import": "./dist/services/tracing.js"
-    },
-    "./services/websocket-delivery": {
-      "types": "./dist/services/websocket-delivery.d.ts",
-      "import": "./dist/services/websocket-delivery.js"
     },
     "./domain/context-projection": {
       "types": "./dist/domain/context-projection.d.ts",
