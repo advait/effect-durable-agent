@@ -434,6 +434,23 @@ describe("EDASessionController", () => {
     expect(webSocket.closeReason).toBe("protocol");
   });
 
+  it("closes malformed restored WebSockets discovered during event fanout", async () => {
+    const storage = new FakeDurableObjectStorage();
+    await Effect.runPromise(EDASessionController.migrate(storage));
+    const webSocket = new TestWebSocket();
+    webSocket.serializeAttachment({ kind: "eda-events-v1", sessionId: SESSION_ID });
+    const host = makeHost(storage, { getWebSockets: () => [webSocket.asWebSocket()] });
+
+    await host.submitAndBlock({
+      command: makeCommand(),
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+    });
+
+    expect(webSocket.closeCode).toBe(EDA_WS_CLOSE_PROTOCOL_ERROR);
+    expect(webSocket.closeReason).toBe("protocol");
+  });
+
   it("resumes delivery from the persisted cursor after isolate eviction", async () => {
     const storage = new FakeDurableObjectStorage();
     await Effect.runPromise(EDASessionController.migrate(storage));

@@ -173,7 +173,10 @@ export class EDAWebSocketConnectionManager {
     const existing = this.sockets.get(webSocket);
     if (existing !== undefined) return existing;
     const decoded = await decodeWebSocketAttachment(webSocket.deserializeAttachment());
-    if (decoded._tag !== "Decoded") return undefined;
+    if (decoded._tag !== "Decoded") {
+      this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
+      return undefined;
+    }
     const attachment = decoded.attachment;
     const state: EventWebSocketState = {
       sessionId: attachment.sessionId,
