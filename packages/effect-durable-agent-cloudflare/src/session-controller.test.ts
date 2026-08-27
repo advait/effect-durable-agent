@@ -26,7 +26,7 @@ import {
 import { EDAWebSocketAttachment } from "./websocket/attachment";
 import { CompactionExecutor, CompactionPolicy } from "effect-durable-agent/services/compaction";
 import { frameworkReducedStateReducerName } from "effect-durable-agent/domain/reduced-state";
-import type { EDAReducer } from "effect-durable-agent/services/reducer-registry";
+import { EDAReducer } from "effect-durable-agent/services/reducer-registry";
 import type { DurableObjectSqlCursor } from "./durable-object-storage";
 import { makeLanguageModelLayer, type TestModelParts } from "effect-durable-agent/testkit/layers";
 import {
@@ -110,7 +110,7 @@ const makeHost = (
     readonly keepAlive?: DurableObjectKeepAlive;
     readonly modelLayer?: EDASessionControllerOptions["modelLayer"];
     readonly parts?: TestModelParts;
-    readonly reducers?: ReadonlyArray<EDAReducer<any>>;
+    readonly reducers?: ReadonlyArray<EDAReducer>;
     readonly summary?: string;
   } = {},
 ) =>
@@ -514,6 +514,45 @@ describe("EDASessionController", () => {
     expect(webSocket.closeCode).toBeUndefined();
   });
 
+  it("completes cold WebSocket catch-up while startup recovery publishes repair events", async () => {
+    const storage = new FakeDurableObjectStorage();
+    await Effect.runPromise(EDASessionController.migrate(storage));
+    const activeStream = Stream.make(
+      Response.makePart("text-delta", { id: "text-1", delta: "partial" }),
+    ).pipe(Stream.concat(Stream.never));
+    const firstHost = makeHost(storage, { parts: activeStream });
+
+    await firstHost.submit({ command: makeCommand(), sessionId: SessionId.make(SESSION_ID) });
+    await waitForEventType(storage, "TurnStarted");
+    await firstHost.dispose();
+
+    const webSocket = new TestWebSocket();
+    const recoveredHost = makeHost(storage);
+    await completeWithin(
+      recoveredHost.acceptEventWebSocket({
+        afterSeq: SequenceNumber.make(0),
+        sessionId: SessionId.make(SESSION_ID),
+        trace: TRACE,
+        webSocket: webSocket.asWebSocket(),
+      }),
+    );
+
+    const hello = JSON.parse(await completeWithin(webSocket.nextMessage())) as {
+      readonly _tag: string;
+    };
+    const events = JSON.parse(await completeWithin(webSocket.nextMessage())) as {
+      readonly _tag: string;
+      readonly events?: ReadonlyArray<CollectedTestEvent>;
+    };
+    expect(hello._tag).toBe("hello");
+    expect(events._tag).toBe("events");
+    expect(events.events?.length).toBeGreaterThan(0);
+    expect(storage.eventRows.map((row) => row.type)).toEqual(
+      expect.arrayContaining(["TurnFailed", "RunFailed", "RunStarted", "TurnStarted"]),
+    );
+    expect(webSocket.closeCode).toBeUndefined();
+  });
+
   it("runs startup recovery before a cold alarm returns", async () => {
     const storage = new FakeDurableObjectStorage();
     await Effect.runPromise(EDASessionController.migrate(storage));
@@ -581,7 +620,7 @@ describe("EDASessionController", () => {
 
   it("hydrates app reducer state from checkpoint plus tail when the host is recreated", async () => {
     const storage = new FakeDurableObjectStorage();
-    const reducer: EDAReducer<{ readonly seen: ReadonlyArray<string> }> = {
+    const reducer = EDAReducer.make<{ readonly seen: ReadonlyArray<string> }>({
       name: "test.app-events",
       schemaVersion: 1,
       initial: { seen: [] },
@@ -590,7 +629,7 @@ describe("EDASessionController", () => {
         event.event.type === EventType.make("ExternalFact")
           ? { seen: [...state.seen, String((event.event.payload as { value: string }).value)] }
           : state,
-    };
+    });
     await Effect.runPromise(EDASessionController.migrate(storage));
     const firstHost = makeHost(storage, { reducers: [reducer] });
 
@@ -768,6 +807,18 @@ const waitForEventType = async (
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   throw new Error(`Timed out waiting for ${type}`);
+};
+
+const completeWithin = async <A>(promise: Promise<A>, timeoutMs = 2_000): Promise<A> => {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error("Timed out waiting for operation")), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
 };
 
 interface FakeEventRow {

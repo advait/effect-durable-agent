@@ -33,6 +33,8 @@ import {
 
 export interface EDAWebSocketConnectionManagerOptions {
   readonly getWebSockets?: () => ReadonlyArray<WebSocket>;
+  readonly isSessionReady: (sessionId: SessionId) => boolean;
+  readonly prepareSession: (sessionId: SessionId) => Promise<void>;
   readonly readEventPage: (input: {
     readonly afterSeq: SequenceNumber;
     readonly limit: number;
@@ -48,6 +50,7 @@ interface EventWebSocketState {
   readonly subscriberId: SubscriberId;
   readonly trace: EDATraceMetadata;
   delivery: EDAWebSocketDeliveryState;
+  catchUpDeferred: boolean;
   head: SequenceNumber;
   queue: Promise<void>;
 }
@@ -86,6 +89,7 @@ export class EDAWebSocketConnectionManager {
       subscriberId,
       trace: input.trace,
       delivery,
+      catchUpDeferred: false,
       head: input.afterSeq,
       queue: Promise.resolve(),
     };
@@ -93,6 +97,9 @@ export class EDAWebSocketConnectionManager {
     await this.enqueue(input.webSocket, state, async () => {
       if (!this.persist(input.webSocket, state)) return;
       if (!this.send(input.webSocket, state, [deliveryHelloFrame(delivery)])) return;
+    });
+    if (!(await this.prepare(input.webSocket, state))) return;
+    await this.enqueue(input.webSocket, state, async () => {
       await this.readAndDeliver(input.webSocket, state, input.afterSeq);
     });
   }
@@ -127,6 +134,7 @@ export class EDAWebSocketConnectionManager {
       this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
       return;
     }
+    if (!(await this.prepare(webSocket, state))) return;
     await this.enqueue(webSocket, state, async () => {
       await this.interpret(webSocket, state, onClientAck(state.delivery, clientFrame, Date.now()));
     });
@@ -134,6 +142,21 @@ export class EDAWebSocketConnectionManager {
 
   closed(webSocket: WebSocket): void {
     this.sockets.delete(webSocket);
+  }
+
+  async flushDeferredCatchUp(sessionId: SessionId): Promise<void> {
+    const deliveries: Promise<void>[] = [];
+    for (const [webSocket, state] of this.sockets) {
+      if (state.sessionId !== sessionId || !state.catchUpDeferred) continue;
+      deliveries.push(
+        this.enqueue(webSocket, state, async () => {
+          if (!state.catchUpDeferred) return;
+          state.catchUpDeferred = false;
+          await this.readAndDeliver(webSocket, state, state.delivery.sentDurableThroughSeq);
+        }),
+      );
+    }
+    await Promise.all(deliveries);
   }
 
   private async fanoutPublishedEvent(event: PositionedEvent): Promise<void> {
@@ -162,6 +185,10 @@ export class EDAWebSocketConnectionManager {
             );
             return;
           }
+          if (!this.options.isSessionReady(state.sessionId)) {
+            state.catchUpDeferred = true;
+            return;
+          }
           await this.readAndDeliver(webSocket, state, state.delivery.sentDurableThroughSeq);
         }),
       );
@@ -187,11 +214,28 @@ export class EDAWebSocketConnectionManager {
         policy: defaultEDAWebSocketFlowControl,
         checkpoint: attachment.delivery,
       }),
+      catchUpDeferred: false,
       head: attachment.delivery.sentDurableThroughSeq,
       queue: Promise.resolve(),
     };
     this.sockets.set(webSocket, state);
     return state;
+  }
+
+  private async prepare(webSocket: WebSocket, state: EventWebSocketState): Promise<boolean> {
+    try {
+      await this.options.prepareSession(state.sessionId);
+      return this.sockets.get(webSocket) === state;
+    } catch (error) {
+      await Effect.runPromise(
+        Effect.logError("EDA WebSocket session preparation failed", {
+          error,
+          subscriberId: state.subscriberId,
+        }),
+      );
+      this.close(webSocket, EDA_WS_CLOSE_SEND_FAILED, "subscriber-failed");
+      return false;
+    }
   }
 
   private async interpret(

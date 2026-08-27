@@ -73,6 +73,8 @@ export class EDASessionController {
   constructor(options: EDASessionControllerOptions) {
     this.webSockets = new EDAWebSocketConnectionManager({
       getWebSockets: options.getWebSockets,
+      isSessionReady: (sessionId) => this.runtime.isReady(sessionId),
+      prepareSession: (sessionId) => this.prepareSession(sessionId),
       readEventPage: async ({ afterSeq, limit, sessionId, subscriberId, trace }) =>
         await this.runtime.run(sessionId, (eda) =>
           eda.readEventPage(afterSeq, limit).pipe(
@@ -98,7 +100,7 @@ export class EDASessionController {
 
   submit(input: EDASessionSubmitInput): Promise<CommittedDurableEvent> {
     const trace = input.trace ?? makeRootEDATraceMetadata();
-    return this.runtime.run(input.sessionId, (eda) =>
+    return this.run(input.sessionId, (eda) =>
       eda.submit(input.command).pipe(
         Effect.withSpan(
           "agent.command.submit",
@@ -114,7 +116,7 @@ export class EDASessionController {
 
   submitBatch(input: EDASessionSubmitBatchInput): Promise<ReadonlyArray<CommittedDurableEvent>> {
     const trace = input.trace ?? makeRootEDATraceMetadata();
-    return this.runtime.run(input.sessionId, (eda) =>
+    return this.run(input.sessionId, (eda) =>
       eda.submit(input.items).pipe(
         Effect.withSpan(
           "agent.command.submit",
@@ -129,7 +131,7 @@ export class EDASessionController {
 
   submitAndBlock(input: EDASessionSubmitInput): Promise<CommittedCommandTerminalEvent> {
     const trace = input.trace ?? makeRootEDATraceMetadata();
-    return this.runtime.run(input.sessionId, (eda) =>
+    return this.run(input.sessionId, (eda) =>
       eda.submitAndBlock(input.command).pipe(
         Effect.withSpan(
           "agent.command.submit.wait",
@@ -145,7 +147,7 @@ export class EDASessionController {
 
   blockOnCommand(input: EDASessionBlockOnCommandInput): Promise<CommittedCommandTerminalEvent> {
     const trace = input.trace ?? makeRootEDATraceMetadata();
-    return this.runtime.run(input.sessionId, (eda) =>
+    return this.run(input.sessionId, (eda) =>
       eda.blockOnCommand(input.commandId, input.afterSeq ?? SequenceNumber.make(0)).pipe(
         Effect.withSpan(
           "agent.command.wait",
@@ -194,8 +196,9 @@ export class EDASessionController {
     await this.runtime.destroy();
   }
 
-  alarm(input?: EDASessionScopedInput): Promise<void> {
-    return this.runtime.alarm(input?.sessionId);
+  async alarm(input?: EDASessionScopedInput): Promise<void> {
+    if (input !== undefined) await this.prepareSession(input.sessionId);
+    await this.runtime.alarm(input?.sessionId);
   }
 
   dispose(): Promise<void> {
@@ -208,11 +211,24 @@ export class EDASessionController {
     spanName: string,
   ): Promise<A> {
     const trace = input.trace ?? makeRootEDATraceMetadata();
-    return this.runtime.run(input.sessionId, (eda) =>
+    return this.run(input.sessionId, (eda) =>
       operation(eda).pipe(
         Effect.withSpan(spanName, hostSpanOptions(trace, { "eda.session.id": input.sessionId })),
       ),
     );
+  }
+
+  private async prepareSession(sessionId: SessionId): Promise<void> {
+    await this.runtime.prepare(sessionId);
+    await this.webSockets.flushDeferredCatchUp(sessionId);
+  }
+
+  private async run<A>(
+    sessionId: SessionId,
+    operation: (runtime: EDARuntimeShape) => Effect.Effect<A, unknown>,
+  ): Promise<A> {
+    await this.prepareSession(sessionId);
+    return await this.runtime.run(sessionId, operation);
   }
 }
 

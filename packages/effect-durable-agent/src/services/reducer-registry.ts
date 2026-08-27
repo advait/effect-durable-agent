@@ -4,8 +4,8 @@ import * as Schema from "effect/Schema";
 
 import type { CommittedDurableEvent } from "./session-store";
 
-/** App-specific pure reducer over the durable session event log. */
-export interface EDAReducer<State = unknown, Name extends string = string> {
+/** Input accepted by the reducer constructor before schema codecs are materialized. */
+export interface EDAReducerDefinition<State, Name extends string = string> {
   readonly name: Name;
   readonly initial: State;
   readonly stateSchema: Schema.Codec<State, unknown, never, never>;
@@ -15,11 +15,26 @@ export interface EDAReducer<State = unknown, Name extends string = string> {
   reduce(state: State, event: CommittedDurableEvent): State;
 }
 
+/** App-specific pure reducer over the durable session event log. */
+export interface EDAReducer<State = unknown, Name extends string = string> {
+  readonly name: Name;
+  readonly initial: State;
+  readonly stateSchema: Schema.Codec<State, unknown, never, never>;
+  readonly schemaVersion?: number;
+  encode(state: State): unknown;
+  decode(payload: unknown): State;
+  reduce(state: State, event: CommittedDurableEvent): State;
+}
+
 /** Convenience constructor preserving a reducer's literal name and schema-derived state type. */
 export const EDAReducer = {
   make: <State, const Name extends string = string>(
-    reducer: EDAReducer<State, Name>,
-  ): EDAReducer<State, Name> => reducer,
+    reducer: EDAReducerDefinition<State, Name>,
+  ): EDAReducer<State, Name> => ({
+    ...reducer,
+    encode: reducer.encode ?? ((state) => Schema.encodeUnknownSync(reducer.stateSchema)(state)),
+    decode: reducer.decode ?? ((payload) => Schema.decodeUnknownSync(reducer.stateSchema)(payload)),
+  }),
 };
 
 /** Snapshot of all app reducer states, keyed by reducer name. */
@@ -99,19 +114,13 @@ export const reducerSchemaVersion = (reducer: EDAReducer): number => reducer.sch
 export const encodeReducerState = <State, Name extends string>(
   reducer: EDAReducer<State, Name>,
   state: State,
-): unknown =>
-  reducer.encode === undefined
-    ? Schema.encodeUnknownSync(reducer.stateSchema)(state)
-    : reducer.encode(state);
+): unknown => reducer.encode(state);
 
 /** Decode one reducer state from durable checkpoint storage. */
 export const decodeReducerState = <State, Name extends string>(
   reducer: EDAReducer<State, Name>,
   payload: unknown,
-): State =>
-  reducer.decode === undefined
-    ? Schema.decodeUnknownSync(reducer.stateSchema)(payload)
-    : reducer.decode(payload);
+): State => reducer.decode(payload);
 
 /** Registry for app-specific durable metadata reducers. */
 export class EDAReducerRegistry extends Context.Service<

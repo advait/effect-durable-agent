@@ -53,7 +53,7 @@ export interface EDASessionRuntimeOptions {
   readonly keepAlive?: DurableObjectKeepAlive;
   readonly modelLayer: Layer.Layer<LanguageModel.LanguageModel>;
   readonly promptProjectorLayer?: Layer.Layer<EDAPromptProjector>;
-  readonly reducers?: ReadonlyArray<EDAReducer<any>>;
+  readonly reducers?: ReadonlyArray<EDAReducer>;
   readonly sessionEventObserverLayer: Layer.Layer<SessionEventObserver>;
   readonly sinks?: ReadonlyArray<EDASink>;
   readonly storage: EDASessionDurableObjectStorage;
@@ -88,6 +88,14 @@ export class EDASessionRuntime {
       yield* DurableObjectSessionStore.migrate(storage);
       yield* DurableObjectSinkCheckpointStore.migrate(storage);
     });
+
+  isReady(sessionId: SessionId): boolean {
+    return this.state?.sessionId === sessionId;
+  }
+
+  async prepare(sessionId: SessionId): Promise<void> {
+    await this.get(sessionId);
+  }
 
   async run<A>(
     sessionId: SessionId,

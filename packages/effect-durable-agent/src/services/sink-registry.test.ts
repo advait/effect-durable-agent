@@ -21,7 +21,7 @@ import {
 import { EDARuntime, type EDARuntimeShape } from "./runtime";
 import { sequentialUuidV7 } from "./id-generator";
 import { EDAKeepAlive } from "./keep-alive";
-import { getEDAReducerState, type EDAReducer } from "./reducer-registry";
+import { EDAReducer, getEDAReducerState } from "./reducer-registry";
 import type { EDASink } from "./sink-registry";
 import { EDASinkName, SinkCheckpointStore } from "./sink-checkpoint-store";
 import { makeEdaTestLayer } from "../testkit/layers";
@@ -148,7 +148,7 @@ describe("EDASinkRegistry", () => {
     type InboundReducerState = {
       readonly externalMessageByCommandId: ReadonlyMap<string, string>;
     };
-    const inboundReducer: EDAReducer<InboundReducerState> = {
+    const inboundReducer = EDAReducer.make<InboundReducerState>({
       name: "example.inbox",
       initial: { externalMessageByCommandId: new Map() },
       stateSchema: Schema.Struct({
@@ -169,7 +169,7 @@ describe("EDASinkRegistry", () => {
           ),
         };
       },
-    };
+    });
     const observed: Array<string | undefined> = [];
     const sink: EDASink = {
       name: "test.reducer-reader",

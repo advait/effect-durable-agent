@@ -43,7 +43,7 @@ export interface EDADurableObjectRuntimeLayerOptions {
   readonly keepAlive?: DurableObjectKeepAlive;
   readonly modelLayer: Layer.Layer<LanguageModel.LanguageModel>;
   readonly promptProjectorLayer?: Layer.Layer<EDAPromptProjector>;
-  readonly reducers?: ReadonlyArray<EDAReducer<any>>;
+  readonly reducers?: ReadonlyArray<EDAReducer>;
   readonly sessionEventObserverLayer?: Layer.Layer<SessionEventObserver>;
   readonly sessionId: SessionId;
   readonly sinks?: ReadonlyArray<EDASink>;
