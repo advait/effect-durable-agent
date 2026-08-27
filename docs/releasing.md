@@ -8,9 +8,10 @@ their published manifests.
 
 ## Current public baseline
 
-The current lockstep baseline is `0.1.0-alpha.4`. Both the `alpha` and `latest` npm dist-tags resolve
-to that version for core, Cloudflare, and celld. Consumers should still name the exact lockstep
-version so dependency updates remain deliberate.
+The current lockstep release target is `0.1.0-alpha.6`. The `alpha` npm dist-tag should resolve to
+that version for core, Cloudflare, and celld after publication. Keep `latest` at
+`0.1.0-alpha.4` until the new alpha has been verified and deliberately promoted. Consumers should
+name the exact lockstep version so dependency updates remain deliberate.
 
 Do not reuse a published version or create a GitHub release for an older tag: publishing that
 release would run the npm workflow against an immutable registry version. The Git tag alone does
@@ -57,9 +58,9 @@ If an alpha has been verified and should also become the default for unqualified
 authenticated maintainer can move `latest` explicitly:
 
 ```bash
-npm dist-tag add effect-durable-agent@0.1.0-alpha.4 latest
-npm dist-tag add effect-durable-agent-cloudflare@0.1.0-alpha.4 latest
-npm dist-tag add effect-durable-agent-celld@0.1.0-alpha.4 latest
+npm dist-tag add effect-durable-agent@0.1.0-alpha.6 latest
+npm dist-tag add effect-durable-agent-cloudflare@0.1.0-alpha.6 latest
+npm dist-tag add effect-durable-agent-celld@0.1.0-alpha.6 latest
 ```
 
 Trusted publishing authorizes `npm publish`, not `npm dist-tag`, so changing a dist-tag is an
@@ -88,14 +89,14 @@ reason to move or remove it.
 
 5. Merge the version PR and confirm `CI` passes on `master`.
 6. Create a GitHub release targeting the merged commit. Its tag must be exactly
-   `v<package version>`; for example, `v0.1.0-alpha.4`.
+   `v<package version>`; for example, `v0.1.0-alpha.6`.
 7. Wait for the `Publish to npm` workflow to pass. The workflow independently reruns the full
    release check and rejects a tag that does not match the core package manifest.
 8. Verify the registry metadata and dist-tags:
 
    ```bash
    for package_name in effect-durable-agent effect-durable-agent-cloudflare effect-durable-agent-celld; do
-     npm view "$package_name@0.1.0-alpha.4" name version repository.url dist.integrity --json
+     npm view "$package_name@0.1.0-alpha.6" name version repository.url dist.integrity --json
      npm dist-tag ls "$package_name"
    done
    ```
