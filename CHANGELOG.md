@@ -4,6 +4,27 @@ All notable changes to Effect Durable Agent will be documented in this file.
 
 ## Unreleased
 
+## 0.1.0-alpha.6
+
+- Reorganize the host boundary around a platform-neutral session runtime and focused Cloudflare
+  controller, provider, RPC, and storage adapters
+- Persist complete WebSocket delivery checkpoints as versioned Effect Schema attachments and
+  restore strict ACK validation after Durable Object hibernation
+- Keep idle WebSockets hibernation-eligible by using append-driven fanout, Cloudflare automatic
+  ping responses, and no resident subscriber fiber or heartbeat timer
+- Avoid cold-start recovery deadlocks by preparing the session runtime outside per-socket queues
+  and flushing deferred durable catch-up after startup repair completes
+- Make reducer host configuration heterogeneous and fully typed without `any`, with schema-backed
+  codecs materialized by `EDAReducer.make`
+- Make native tracing attribute export total for hostile maps and values
+
+## 0.1.0-alpha.5
+
+- Make WebSocket delivery hibernation-native and persist durable resume cursors
+- Patch Effect-aware lint plugin loading in the npm publish workflow
+- Publish only the core package; Cloudflare and celld remained at `0.1.0-alpha.4` pending their
+  first authenticated maintainer publish
+
 ## 0.1.0-alpha.4
 
 - Let applications project instruction and data messages from current reducer state into each model prompt
