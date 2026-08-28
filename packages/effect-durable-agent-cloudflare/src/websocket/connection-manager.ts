@@ -411,7 +411,7 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
       if (followUpActions.length > 0) {
         return await this.interpret(webSocket, state, {
           state: state.delivery,
-          actions: followUpActions,
+          actions: coalesceFollowUpActions(followUpActions),
         });
       }
       return true;
@@ -472,3 +472,20 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
     return decoded._tag === "Some" ? decoded.value : undefined;
   }
 }
+
+const coalesceFollowUpActions = (
+  actions: ReadonlyArray<EDAWebSocketDeliveryAction>,
+): ReadonlyArray<EDAWebSocketDeliveryAction> => {
+  let readAfterSeq: SequenceNumber | undefined;
+  const retained: EDAWebSocketDeliveryAction[] = [];
+  for (const action of actions) {
+    if (action._tag !== "ReadEventPage") {
+      retained.push(action);
+      continue;
+    }
+    readAfterSeq = SequenceNumber.make(Math.max(readAfterSeq ?? 0, action.afterSeq));
+  }
+  return readAfterSeq === undefined
+    ? retained
+    : [...retained, { _tag: "ReadEventPage", afterSeq: readAfterSeq }];
+};
