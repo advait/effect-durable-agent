@@ -4,6 +4,17 @@ All notable changes to Effect Durable Agent will be documented in this file.
 
 ## Unreleased
 
+## 0.1.0-alpha.7
+
+- Let Cloudflare hosts project application WebSocket protocols inside the EDA Durable Object while
+  preserving hibernation, strict delivery acknowledgements, and cold recovery
+- Persist Effect Schema-encoded application projection state in backward-compatible WebSocket
+  attachments
+- Preserve client-visible ACK ordering when projections suppress internal frames and compact long
+  suppressed runs within Cloudflare attachment limits
+- Validate projection selection before accepting sockets and preserve concrete application RPC
+  methods on typed Durable Object stubs
+
 ## 0.1.0-alpha.6
 
 - Reorganize the host boundary around a platform-neutral session runtime and focused Cloudflare
