@@ -1,6 +1,6 @@
 {
   "name": "effect-durable-agent",
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0-alpha.7",
   "description": "A host-independent, event-sourced durable state-management and execution layer for agentic applications.",
   "keywords": [
     "agents",
