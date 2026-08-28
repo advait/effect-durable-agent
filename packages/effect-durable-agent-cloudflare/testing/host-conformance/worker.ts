@@ -2,7 +2,11 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { EDAWebSocketClientFrame } from "effect-durable-agent/websocket";
-import { EDASessionDurableObject, type EDAWebSocketProjection } from "../../dist/index.js";
+import {
+  EDASessionDurableObject,
+  EDAWebSocketProjectionId,
+  type EDAWebSocketProjection,
+} from "../../dist/index.js";
 
 import {
   conformanceHostOptions,
@@ -19,7 +23,7 @@ const ProjectedAck = Schema.Struct({
 });
 
 const conformanceProjection: EDAWebSocketProjection<ProjectionState> = {
-  id: "conformance-projection-v1",
+  id: EDAWebSocketProjectionId.make("conformance-projection-v1"),
   decodeClientMessage: (message) =>
     Effect.try({
       try: () => JSON.parse(message) as unknown,

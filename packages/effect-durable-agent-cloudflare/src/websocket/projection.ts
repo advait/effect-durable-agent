@@ -1,4 +1,5 @@
 import type * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import type { EDASessionSnapshot } from "effect-durable-agent/services/session-query";
 import type {
@@ -6,6 +7,12 @@ import type {
   EDAWebSocketServerFrameInput,
 } from "effect-durable-agent/websocket";
 import type { SequenceNumber } from "effect-durable-agent/types/core";
+
+/** Stable non-empty identity persisted with an app WebSocket projection. */
+export const EDAWebSocketProjectionId = Schema.NonEmptyString.pipe(
+  Schema.brand("EDAWebSocketProjectionId"),
+);
+export type EDAWebSocketProjectionId = typeof EDAWebSocketProjectionId.Type;
 
 /** Initial state and cursor selected when an app-projected WebSocket is accepted. */
 export interface EDAWebSocketProjectionInitial<State extends object> {
@@ -35,7 +42,7 @@ export type EDAWebSocketProjectionResult<State extends object> =
  */
 export interface EDAWebSocketProjection<State extends object> {
   /** Stable identifier persisted in WebSocket attachments. */
-  readonly id: string;
+  readonly id: EDAWebSocketProjectionId;
   /** Decode one app-protocol client message into EDA's delivery ACK protocol. */
   readonly decodeClientMessage: (
     message: string,

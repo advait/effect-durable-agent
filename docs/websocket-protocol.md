@@ -101,7 +101,8 @@ Effect Schema:
     lastSentFrameId,
     nextFrameId,
     sentDurableThroughSeq,
-    inFlight: [{ frameId, durableThroughSeq, sentAtMs }]
+    inFlight: [{ frameId, durableThroughSeq, sentAtMs }],
+    suppressed?: [{ fromFrameId, throughFrameId, durableThroughSeq }]
   },
   projection?: { id, state }
 }
@@ -212,9 +213,11 @@ Projection initialization and any cold-start recovery complete before the host
 calls `ctx.acceptWebSocket`. Immediately after acceptance, the connection
 manager registers the socket and serializes its attachment before its first
 await. This prevents recovery fanout from observing an accepted socket with no
-attachment. A projection may return `SuppressAndAck` for an internal-only
-events frame; the host advances and persists the delivery window without
-emitting an empty client frame.
+attachment. Projection ids are schema-backed non-empty brands. A projection
+may return `SuppressAndAck` for an internal-only events frame; the host removes
+only that exact receipt from window capacity and persists it separately until
+all earlier client-visible frames are ACKed. It never uses a cumulative client
+ACK on the app's behalf.
 
 ## Client obligations
 

@@ -5,6 +5,7 @@ import { EDAWebSocketDeliveryCheckpoint } from "effect-durable-agent/websocket";
 import { SubscriberId } from "effect-durable-agent/websocket";
 import { SessionId } from "effect-durable-agent/types/core";
 import { EDATraceMetadata } from "effect-durable-agent/types/tracing";
+import { EDAWebSocketProjectionId } from "./projection";
 
 /** Versioned state required to resume strict delivery after Durable Object hibernation. */
 export const EDAWebSocketAttachment = Schema.Struct({
@@ -15,7 +16,7 @@ export const EDAWebSocketAttachment = Schema.Struct({
   delivery: EDAWebSocketDeliveryCheckpoint,
   projection: Schema.optionalKey(
     Schema.Struct({
-      id: Schema.NonEmptyString,
+      id: EDAWebSocketProjectionId,
       state: Schema.Unknown,
     }),
   ),

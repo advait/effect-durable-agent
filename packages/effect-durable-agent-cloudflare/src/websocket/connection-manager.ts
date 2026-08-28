@@ -20,6 +20,7 @@ import {
   onClientAck,
   onDurableEvents,
   onEphemeralEvent,
+  onHostSuppressedFrame,
   restoreWebSocketDeliveryState,
   type EDAWebSocketDeliveryResult,
   type EDAWebSocketDeliveryAction,
@@ -377,10 +378,9 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
             return false;
           }
           state.projectionState = projected.state;
-          const acknowledged = onClientAck(
+          const acknowledged = onHostSuppressedFrame(
             state.delivery,
             {
-              _tag: "ack",
               durableThroughSeq: frame.durableThroughSeq,
               frameId: frame.frameId,
             },

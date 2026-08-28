@@ -25,7 +25,7 @@ import {
   FrameId,
 } from "effect-durable-agent/websocket";
 import { EDAWebSocketAttachment } from "./websocket/attachment";
-import type { EDAWebSocketProjection } from "./websocket/projection";
+import { EDAWebSocketProjectionId, type EDAWebSocketProjection } from "./websocket/projection";
 import { CompactionExecutor, CompactionPolicy } from "effect-durable-agent/services/compaction";
 import { frameworkReducedStateReducerName } from "effect-durable-agent/domain/reduced-state";
 import { EDAReducer } from "effect-durable-agent/services/reducer-registry";
@@ -161,7 +161,7 @@ const ProjectedAck = Schema.Struct({
 });
 
 const testWebSocketProjection: EDAWebSocketProjection<ProjectedWebSocketState> = {
-  id: "test-projection-v1",
+  id: EDAWebSocketProjectionId.make("test-projection-v1"),
   decodeClientMessage: (message) =>
     Effect.try({
       try: () => JSON.parse(message) as unknown,
@@ -198,9 +198,9 @@ const testWebSocketProjection: EDAWebSocketProjection<ProjectedWebSocketState> =
 
 const suppressingWebSocketProjection: EDAWebSocketProjection<ProjectedWebSocketState> = {
   ...testWebSocketProjection,
-  id: "test-suppressing-projection-v1",
+  id: EDAWebSocketProjectionId.make("test-suppressing-projection-v1"),
   encodeServerFrame: (frame, state) =>
-    frame._tag === "events" && frame.events.every((event) => event.event.type === "CommandAdmitted")
+    frame._tag === "events" && frame.events.every((event) => event.event.type === "RunStarted")
       ? {
           _tag: "SuppressAndAck",
           state: { projectedFrameCount: state.projectedFrameCount + 1 },
@@ -460,6 +460,11 @@ describe("EDASessionController", () => {
     await Effect.runPromise(EDASessionController.migrate(storage));
     const host = makeHost(storage, { webSocketProjection: suppressingWebSocketProjection });
     const webSocket = new TestWebSocket();
+    await host.submitAndBlock({
+      command: makeCommand(),
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+    });
 
     await host.acceptEventWebSocket({
       afterSeq: SequenceNumber.make(0),
@@ -469,13 +474,7 @@ describe("EDASessionController", () => {
       webSocket: webSocket.asWebSocket(),
     });
     await webSocket.nextMessage();
-    const completed = collectProjectedEventsUntil(host, webSocket, "CommandCompleted");
-    await host.submit({
-      command: makeCommand(),
-      sessionId: SessionId.make(SESSION_ID),
-      trace: TRACE,
-    });
-    await completed;
+    await collectProjectedEventsUntil(host, webSocket, "CommandCompleted");
 
     const attachment = EDAWebSocketAttachment.make(webSocket.deserializeAttachment());
     expect(attachment.delivery.lastAckedSeq).toBeGreaterThan(0);
