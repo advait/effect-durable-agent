@@ -81,7 +81,7 @@ export type EDASessionDurableObjectOptions<ProjectionState extends object = neve
 >;
 
 /** Resolve a concrete EDA session Durable Object binding by domain session id. */
-export const getEDASessionDurableObjectByName = <T extends EDASessionDurableObject<object>>(
+export const getEDASessionDurableObjectByName = <T extends Rpc.DurableObjectBranded>(
   namespace: DurableObjectNamespace<T>,
   sessionId: string,
 ): DurableObjectStub<T> => namespace.getByName(sessionId);
@@ -148,16 +148,22 @@ export abstract class EDASessionDurableObject<
       return new Response("Unsupported WebSocket projection.", { status: 400 });
     }
 
+    const sessionId = this.parseSessionId(sessionIdRaw);
+    const trace = traceMetadataFromRequest(request);
+    const prepared = await this.#controller.prepareEventWebSocket({
+      ...(afterSeq === undefined ? {} : { afterSeq: SequenceNumber.make(afterSeq) }),
+      sessionId,
+      trace,
+      ...(projectionId === undefined ? {} : { projectionId }),
+    });
+
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     this.ctx.acceptWebSocket(server);
-    await this.#controller.acceptEventWebSocket({
-      ...(afterSeq === undefined ? {} : { afterSeq: SequenceNumber.make(afterSeq) }),
-      sessionId: this.parseSessionId(sessionIdRaw),
-      trace: traceMetadataFromRequest(request),
+    await this.#controller.acceptPreparedEventWebSocket({
+      ...prepared,
       webSocket: server,
-      ...(projectionId === undefined ? {} : { projectionId }),
     });
     return new Response(null, { status: 101, webSocket: client });
   }

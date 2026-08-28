@@ -76,7 +76,11 @@ export const conformanceWorker = {
       const eventsUrl = new URL("https://eda.invalid/events");
       eventsUrl.searchParams.set("sessionId", sessionId);
       eventsUrl.searchParams.set("afterSeq", url.searchParams.get("afterSeq") ?? "0");
-      return session.fetch(new Request(eventsUrl, request));
+      const eventsRequest = new Request(eventsUrl, request);
+      if (url.searchParams.get("projection") === "conformance") {
+        eventsRequest.headers.set("x-eda-websocket-projection", "conformance-projection-v1");
+      }
+      return session.fetch(eventsRequest);
     }
 
     if (operation === "destroy") {

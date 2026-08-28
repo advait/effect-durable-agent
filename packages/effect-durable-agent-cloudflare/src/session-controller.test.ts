@@ -179,6 +179,7 @@ const testWebSocketProjection: EDAWebSocketProjection<ProjectedWebSocketState> =
   decodeState: Schema.decodeUnknownEffect(ProjectedWebSocketState),
   encodeState: Schema.encodeUnknownSync(ProjectedWebSocketState),
   encodeServerFrame: (frame, state) => ({
+    _tag: "Send",
     frame: JSON.stringify({
       durableThroughSeq: "durableThroughSeq" in frame ? frame.durableThroughSeq : undefined,
       events: frame._tag === "events" ? frame.events : undefined,
@@ -193,6 +194,18 @@ const testWebSocketProjection: EDAWebSocketProjection<ProjectedWebSocketState> =
     afterSeq: requestedAfterSeq ?? snapshot.state.lastSeq,
     state: { projectedFrameCount: 0 },
   }),
+};
+
+const suppressingWebSocketProjection: EDAWebSocketProjection<ProjectedWebSocketState> = {
+  ...testWebSocketProjection,
+  id: "test-suppressing-projection-v1",
+  encodeServerFrame: (frame, state) =>
+    frame._tag === "events" && frame.events.every((event) => event.event.type === "CommandAdmitted")
+      ? {
+          _tag: "SuppressAndAck",
+          state: { projectedFrameCount: state.projectedFrameCount + 1 },
+        }
+      : testWebSocketProjection.encodeServerFrame(frame, state),
 };
 
 const waitForReducerCheckpointRow = async (
@@ -439,6 +452,33 @@ describe("EDASessionController", () => {
     const restoredFrameCount = await secondEvents;
 
     expect(restoredFrameCount).toBeGreaterThan(firstProjectionState.projectedFrameCount);
+    expect(webSocket.closeCode).toBeUndefined();
+  });
+
+  it("ACKs app-suppressed internal event frames without consuming the delivery window", async () => {
+    const storage = new FakeDurableObjectStorage();
+    await Effect.runPromise(EDASessionController.migrate(storage));
+    const host = makeHost(storage, { webSocketProjection: suppressingWebSocketProjection });
+    const webSocket = new TestWebSocket();
+
+    await host.acceptEventWebSocket({
+      afterSeq: SequenceNumber.make(0),
+      projectionId: suppressingWebSocketProjection.id,
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+      webSocket: webSocket.asWebSocket(),
+    });
+    await webSocket.nextMessage();
+    const completed = collectProjectedEventsUntil(host, webSocket, "CommandCompleted");
+    await host.submit({
+      command: makeCommand(),
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+    });
+    await completed;
+
+    const attachment = EDAWebSocketAttachment.make(webSocket.deserializeAttachment());
+    expect(attachment.delivery.lastAckedSeq).toBeGreaterThan(0);
     expect(webSocket.closeCode).toBeUndefined();
   });
 

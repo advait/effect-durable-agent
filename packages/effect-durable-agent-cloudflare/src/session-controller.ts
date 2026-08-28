@@ -62,6 +62,14 @@ export interface EDASessionEventsInput {
   readonly trace?: EDATraceMetadata;
 }
 
+/** Prepared acceptance state created before a Cloudflare socket is registered. */
+export interface EDAPreparedEventWebSocket<ProjectionState extends object = never> {
+  readonly afterSeq: SequenceNumber;
+  readonly sessionId: SessionId;
+  readonly trace: EDATraceMetadata;
+  readonly projectionState?: ProjectionState;
+}
+
 /**
  * Public application-facing use cases for one EDA session.
  *
@@ -178,15 +186,22 @@ export class EDASessionController<ProjectionState extends object = never> {
       readonly webSocket: WebSocket;
     },
   ): Promise<void> {
-    return this.acceptEventWebSocketPrepared(input);
+    return this.acceptEventWebSocketUnhosted(input);
   }
 
-  private async acceptEventWebSocketPrepared(
+  private async acceptEventWebSocketUnhosted(
     input: EDASessionEventsInput & {
       readonly projectionId?: string;
       readonly webSocket: WebSocket;
     },
   ): Promise<void> {
+    const prepared = await this.prepareEventWebSocket(input);
+    await this.acceptPreparedEventWebSocket({ ...prepared, webSocket: input.webSocket });
+  }
+
+  async prepareEventWebSocket(
+    input: EDASessionEventsInput & { readonly projectionId?: string },
+  ): Promise<EDAPreparedEventWebSocket<ProjectionState>> {
     const projection = this.webSockets.resolveProjection(input.projectionId);
     if (input.projectionId !== undefined && projection === undefined) {
       throw new Error(`Unsupported EDA WebSocket projection: ${input.projectionId}`);
@@ -198,13 +213,18 @@ export class EDASessionController<ProjectionState extends object = never> {
             ...(input.afterSeq === undefined ? {} : { requestedAfterSeq: input.afterSeq }),
             snapshot: await this.snapshot({ sessionId: input.sessionId, trace: input.trace }),
           });
-    await this.webSockets.accept({
+    return {
       afterSeq: initialized?.afterSeq ?? input.afterSeq ?? SequenceNumber.make(0),
       sessionId: input.sessionId,
       trace: input.trace ?? makeRootEDATraceMetadata(),
-      webSocket: input.webSocket,
       ...(initialized === undefined ? {} : { projectionState: initialized.state }),
-    });
+    };
+  }
+
+  acceptPreparedEventWebSocket(
+    input: EDAPreparedEventWebSocket<ProjectionState> & { readonly webSocket: WebSocket },
+  ): Promise<void> {
+    return this.webSockets.accept(input);
   }
 
   webSocketMessage(webSocket: WebSocket, message: string | ArrayBuffer): Promise<void> {

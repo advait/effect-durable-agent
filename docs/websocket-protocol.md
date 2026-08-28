@@ -208,6 +208,14 @@ acceptance, replay, flow control, attachment persistence, auto-response, and
 hibernation restoration. Raw EDA clients remain the default when the internal
 selection header is absent.
 
+Projection initialization and any cold-start recovery complete before the host
+calls `ctx.acceptWebSocket`. Immediately after acceptance, the connection
+manager registers the socket and serializes its attachment before its first
+await. This prevents recovery fanout from observing an accepted socket with no
+attachment. A projection may return `SuppressAndAck` for an internal-only
+events frame; the host advances and persists the delivery window without
+emitting an empty client frame.
+
 ## Client obligations
 
 1. Authenticate before upgrade and connect with

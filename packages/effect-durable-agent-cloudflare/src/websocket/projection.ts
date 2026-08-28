@@ -13,11 +13,18 @@ export interface EDAWebSocketProjectionInitial<State extends object> {
   readonly state: State;
 }
 
-/** One encoded app frame and the projection state that produced it. */
-export interface EDAWebSocketProjectionEncoded<State extends object> {
-  readonly frame: string;
-  readonly state: State;
-}
+/** App projection decision for one EDA delivery frame. */
+export type EDAWebSocketProjectionResult<State extends object> =
+  | {
+      readonly _tag: "Send";
+      readonly frame: string;
+      readonly state: State;
+    }
+  | {
+      /** Suppress an internal-only events frame and advance its ACK in the host. */
+      readonly _tag: "SuppressAndAck";
+      readonly state: State;
+    };
 
 /**
  * App-owned wire projection hosted directly by the EDA Durable Object.
@@ -41,7 +48,7 @@ export interface EDAWebSocketProjection<State extends object> {
   readonly encodeServerFrame: (
     frame: EDAWebSocketServerFrameInput,
     state: State,
-  ) => EDAWebSocketProjectionEncoded<State>;
+  ) => EDAWebSocketProjectionResult<State>;
   /** Seed the projection and select its default replay cursor from a durable snapshot. */
   readonly initialize: (input: {
     readonly requestedAfterSeq?: SequenceNumber;

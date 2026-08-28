@@ -22,6 +22,7 @@ import {
   onEphemeralEvent,
   restoreWebSocketDeliveryState,
   type EDAWebSocketDeliveryResult,
+  type EDAWebSocketDeliveryAction,
   type EDAWebSocketDeliveryState,
   type EDAWebSocketClientFrame,
   type EDAWebSocketServerFrame,
@@ -107,10 +108,11 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
       ...(input.projectionState === undefined ? {} : { projectionState: input.projectionState }),
     };
     this.sockets.set(input.webSocket, state);
-    await this.enqueue(input.webSocket, state, async () => {
-      if (!this.persist(input.webSocket, state)) return;
-      if (!this.send(input.webSocket, state, [deliveryHelloFrame(delivery)])) return;
-    });
+    // The Durable Object calls this immediately after ctx.acceptWebSocket().
+    // Register and attach synchronously before the first await so no platform
+    // callback can observe an accepted socket without recovery state.
+    if (!this.persist(input.webSocket, state)) return;
+    if (!(await this.send(input.webSocket, state, [deliveryHelloFrame(delivery)]))) return;
     if (!(await this.prepare(input.webSocket, state))) return;
     await this.enqueue(input.webSocket, state, async () => {
       await this.readAndDeliver(input.webSocket, state, input.afterSeq);
@@ -279,7 +281,7 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
           if (!this.persist(webSocket, state)) return false;
           break;
         case "Send":
-          if (!this.send(webSocket, state, action.frames)) return false;
+          if (!(await this.send(webSocket, state, action.frames))) return false;
           break;
         case "ReadEventPage":
           if (!(await this.readAndDeliver(webSocket, state, action.afterSeq))) return false;
@@ -348,9 +350,18 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
     webSocket: WebSocket,
     state: EventWebSocketState<ProjectionState>,
     frames: ReadonlyArray<EDAWebSocketServerFrame>,
-  ): boolean {
+  ): Promise<boolean> {
+    return this.sendPrepared(webSocket, state, frames);
+  }
+
+  private async sendPrepared(
+    webSocket: WebSocket,
+    state: EventWebSocketState<ProjectionState>,
+    frames: ReadonlyArray<EDAWebSocketServerFrame>,
+  ): Promise<boolean> {
     try {
       const encodedFrames: string[] = [];
+      const followUpActions: EDAWebSocketDeliveryAction[] = [];
       for (const frame of frames) {
         const projected =
           state.projectionState === undefined
@@ -360,9 +371,32 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
           this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
           return false;
         }
+        if (projected?._tag === "SuppressAndAck") {
+          if (frame._tag !== "events") {
+            this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
+            return false;
+          }
+          state.projectionState = projected.state;
+          const acknowledged = onClientAck(
+            state.delivery,
+            {
+              _tag: "ack",
+              durableThroughSeq: frame.durableThroughSeq,
+              frameId: frame.frameId,
+            },
+            Date.now(),
+          );
+          state.delivery = acknowledged.state;
+          followUpActions.push(
+            ...acknowledged.actions.filter((action) => action._tag !== "Persist"),
+          );
+          continue;
+        }
         if (projected !== undefined) state.projectionState = projected.state;
         const encoded =
-          projected?.frame ?? encodeEDAWebSocketServerFrame(frame, this.options.webSocketProtocol);
+          projected?._tag === "Send"
+            ? projected.frame
+            : encodeEDAWebSocketServerFrame(frame, this.options.webSocketProtocol);
         if (new TextEncoder().encode(encoded).byteLength > state.delivery.policy.maxFrameBytes) {
           this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "frame-too-large");
           return false;
@@ -374,6 +408,12 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
       // back behind the client-visible stream.
       if (state.projectionState !== undefined && !this.persist(webSocket, state)) return false;
       for (const encoded of encodedFrames) webSocket.send(encoded);
+      if (followUpActions.length > 0) {
+        return await this.interpret(webSocket, state, {
+          state: state.delivery,
+          actions: followUpActions,
+        });
+      }
       return true;
     } catch {
       this.close(webSocket, EDA_WS_CLOSE_SEND_FAILED, "send-failed");
