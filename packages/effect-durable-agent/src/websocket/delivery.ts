@@ -30,6 +30,14 @@ export const EDAWebSocketInFlightFrame = Schema.Struct({
 });
 export type EDAWebSocketInFlightFrame = typeof EDAWebSocketInFlightFrame.Type;
 
+/** Compact consecutive host-suppressed receipts blocked by a visible ACK. */
+export const EDAWebSocketSuppressedRange = Schema.Struct({
+  fromFrameId: FrameId,
+  throughFrameId: FrameId,
+  durableThroughSeq: SequenceNumber,
+});
+export type EDAWebSocketSuppressedRange = typeof EDAWebSocketSuppressedRange.Type;
+
 /** Complete delivery bookkeeping persisted in the WebSocket attachment. */
 export const EDAWebSocketDeliveryCheckpoint = Schema.Struct({
   lastAckedSeq: SequenceNumber,
@@ -38,6 +46,8 @@ export const EDAWebSocketDeliveryCheckpoint = Schema.Struct({
   nextFrameId: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
   sentDurableThroughSeq: SequenceNumber,
   inFlight: Schema.Array(EDAWebSocketInFlightFrame),
+  /** Host-projected receipts waiting behind an earlier client-visible ACK. */
+  suppressed: Schema.optionalKey(Schema.Array(EDAWebSocketSuppressedRange)),
 });
 export type EDAWebSocketDeliveryCheckpoint = typeof EDAWebSocketDeliveryCheckpoint.Type;
 
@@ -47,6 +57,7 @@ export interface EDAWebSocketDeliveryState extends EDAWebSocketDeliveryCheckpoin
   readonly policy: EDAWebSocketFlowControl;
   /** Ephemeral events are live-only and intentionally absent from the attachment. */
   readonly pendingEphemeral: ReadonlyArray<PositionedEvent>;
+  readonly suppressed: ReadonlyArray<EDAWebSocketSuppressedRange>;
 }
 
 /** Explicit instructions emitted by the pure delivery state machine. */
@@ -80,6 +91,7 @@ export const makeWebSocketDeliveryState = (
   nextFrameId: 1,
   sentDurableThroughSeq: input.resumeSeq,
   inFlight: [],
+  suppressed: [],
   pendingEphemeral: [],
 });
 
@@ -93,6 +105,7 @@ export const restoreWebSocketDeliveryState = (input: {
   policy: input.policy,
   ...input.checkpoint,
   pendingEphemeral: [],
+  suppressed: input.checkpoint.suppressed ?? [],
 });
 
 /** Project in-memory delivery state into the attachment-safe checkpoint. */
@@ -105,6 +118,7 @@ export const checkpointWebSocketDeliveryState = (
   nextFrameId: state.nextFrameId,
   sentDurableThroughSeq: state.sentDurableThroughSeq,
   inFlight: state.inFlight,
+  ...(state.suppressed.length === 0 ? {} : { suppressed: state.suppressed }),
 });
 
 /** First frame for a freshly accepted connection. Restores never re-send hello. */
@@ -189,7 +203,35 @@ export const onClientAck = (
   if (validated._tag === "close") return validated.result;
   if (validated._tag === "ignore") return { state, actions: [] };
 
-  let next = validated.state;
+  return reopenDeliveryWindow(validated.state, nowMs);
+};
+
+/**
+ * Apply one exact host-suppressed receipt without cumulatively ACKing any
+ * earlier client-visible frame.
+ */
+export const onHostSuppressedFrame = (
+  state: EDAWebSocketDeliveryState,
+  frame: Pick<EDAWebSocketEventsFrame, "durableThroughSeq" | "frameId">,
+  nowMs: number,
+): EDAWebSocketDeliveryResult => {
+  const receipt = state.inFlight.find((candidate) => candidate.frameId === frame.frameId);
+  if (receipt === undefined || receipt.durableThroughSeq !== frame.durableThroughSeq) {
+    return protocolClose(state, "Host suppressed an unknown frame receipt").result;
+  }
+  const next = advanceSuppressedReceipts({
+    ...state,
+    inFlight: state.inFlight.filter((candidate) => candidate.frameId !== frame.frameId),
+    suppressed: insertSuppressedReceipt(state.suppressed, receipt),
+  });
+  return reopenDeliveryWindow(next, nowMs);
+};
+
+const reopenDeliveryWindow = (
+  state: EDAWebSocketDeliveryState,
+  nowMs: number,
+): EDAWebSocketDeliveryResult => {
+  let next = state;
   const frames: EDAWebSocketServerFrame[] = [];
   while (next.pendingEphemeral.length > 0 && windowCapacity(next) > 0) {
     const [head, ...rest] = next.pendingEphemeral;
@@ -229,13 +271,24 @@ const applyAck = (state: EDAWebSocketDeliveryState, ack: EDAWebSocketAckFrame): 
   if (ack.durableThroughSeq < state.lastAckedSeq) {
     return protocolClose(state, "ACK durable seq moved backwards");
   }
-  const acknowledged = state.inFlight.filter((frame) => frame.frameId <= ack.frameId);
-  if (acknowledged.length === 0) {
+  const acknowledgedVisible = state.inFlight.filter((frame) => frame.frameId <= ack.frameId);
+  if (acknowledgedVisible.length === 0) {
     return protocolClose(state, "ACK referenced no in-flight frames");
   }
+  if (
+    state.suppressed.some(
+      (range) => range.fromFrameId <= ack.frameId && ack.frameId <= range.throughFrameId,
+    )
+  ) {
+    return protocolClose(state, "ACK referenced a host-suppressed frame");
+  }
+  const acknowledgedSuppressed = state.suppressed.filter(
+    (range) => range.throughFrameId <= ack.frameId,
+  );
+  const acknowledged = [...acknowledgedVisible, ...acknowledgedSuppressed];
   const allowedDurableSeq = SequenceNumber.make(
     acknowledged.reduce<number>(
-      (max, frame) => Math.max(max, frame.durableThroughSeq),
+      (max, receipt) => Math.max(max, receipt.durableThroughSeq),
       state.lastAckedSeq,
     ),
   );
@@ -244,13 +297,64 @@ const applyAck = (state: EDAWebSocketDeliveryState, ack: EDAWebSocketAckFrame): 
   }
   return {
     _tag: "apply",
-    state: {
+    state: advanceSuppressedReceipts({
       ...state,
       inFlight: state.inFlight.filter((frame) => frame.frameId > ack.frameId),
       lastAckedFrameId: ack.frameId,
       lastAckedSeq: ack.durableThroughSeq,
-    },
+      suppressed: state.suppressed.filter((range) => range.throughFrameId > ack.frameId),
+    }),
   };
+};
+
+const advanceSuppressedReceipts = (state: EDAWebSocketDeliveryState): EDAWebSocketDeliveryState => {
+  let lastAckedFrameId = state.lastAckedFrameId;
+  let lastAckedSeq = state.lastAckedSeq;
+  let consumed = 0;
+  for (const range of state.suppressed) {
+    if (range.fromFrameId !== lastAckedFrameId + 1) break;
+    lastAckedFrameId = range.throughFrameId;
+    lastAckedSeq = SequenceNumber.make(Math.max(lastAckedSeq, range.durableThroughSeq));
+    consumed += 1;
+  }
+  return consumed === 0
+    ? state
+    : {
+        ...state,
+        lastAckedFrameId,
+        lastAckedSeq,
+        suppressed: state.suppressed.slice(consumed),
+      };
+};
+
+const insertSuppressedReceipt = (
+  ranges: ReadonlyArray<EDAWebSocketSuppressedRange>,
+  receipt: EDAWebSocketInFlightFrame,
+): ReadonlyArray<EDAWebSocketSuppressedRange> => {
+  const inserted = [
+    ...ranges,
+    EDAWebSocketSuppressedRange.make({
+      fromFrameId: receipt.frameId,
+      throughFrameId: receipt.frameId,
+      durableThroughSeq: receipt.durableThroughSeq,
+    }),
+  ].sort((left, right) => left.fromFrameId - right.fromFrameId);
+  const compacted: EDAWebSocketSuppressedRange[] = [];
+  for (const range of inserted) {
+    const previous = compacted.at(-1);
+    if (previous === undefined || range.fromFrameId > previous.throughFrameId + 1) {
+      compacted.push(range);
+      continue;
+    }
+    compacted[compacted.length - 1] = EDAWebSocketSuppressedRange.make({
+      fromFrameId: previous.fromFrameId,
+      throughFrameId: FrameId.make(Math.max(previous.throughFrameId, range.throughFrameId)),
+      durableThroughSeq: SequenceNumber.make(
+        Math.max(previous.durableThroughSeq, range.durableThroughSeq),
+      ),
+    });
+  }
+  return compacted;
 };
 
 const windowCapacity = (state: EDAWebSocketDeliveryState): number =>

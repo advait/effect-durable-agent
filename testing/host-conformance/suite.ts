@@ -315,10 +315,16 @@ class EventSocket {
     });
   }
 
-  static async open(host: HostProcess, sessionId: string, afterSeq: number): Promise<EventSocket> {
+  static async open(
+    host: HostProcess,
+    sessionId: string,
+    afterSeq: number,
+    options: { readonly projected?: boolean } = {},
+  ): Promise<EventSocket> {
     const url = new URL(`${host.baseUrl}/sessions/${sessionId}/events`);
     url.protocol = "ws:";
     url.searchParams.set("afterSeq", String(afterSeq));
+    if (options.projected === true) url.searchParams.set("projection", "conformance");
     const socket = new WebSocket(url);
     const eventSocket = new EventSocket(socket);
     await new Promise<void>((resolveOpen, reject) => {
@@ -327,8 +333,12 @@ class EventSocket {
         once: true,
       });
     });
-    const hello = JSON.parse(await eventSocket.nextMessage()) as { readonly _tag?: string };
-    expect(hello._tag).toBe("hello");
+    const hello = JSON.parse(await eventSocket.nextMessage()) as {
+      readonly _tag?: string;
+      readonly type?: string;
+    };
+    expect(options.projected === true ? hello.type : hello._tag).toBe("hello");
+    eventSocket.projected = options.projected === true;
     return eventSocket;
   }
 
@@ -338,17 +348,20 @@ class EventSocket {
     while (Date.now() < deadline) {
       const frame = JSON.parse(await this.nextMessage()) as
         | EventsFrame
-        | { readonly _tag: "heartbeat" };
-      if (frame._tag === "heartbeat") {
+        | (Omit<EventsFrame, "_tag"> & { readonly type: "events" })
+        | { readonly _tag?: "heartbeat"; readonly type?: "heartbeat" };
+      const frameType = "type" in frame ? frame.type : frame._tag;
+      if (frameType === "heartbeat") {
         continue;
       }
-      expect(frame._tag).toBe("events");
+      expect(frameType).toBe("events");
+      if (!("events" in frame)) continue;
       collected.push(...frame.events);
       this.#socket.send(
         JSON.stringify({
-          _tag: "ack",
           durableThroughSeq: frame.durableThroughSeq,
           frameId: frame.frameId,
+          ...(this.projected ? { type: "ack" } : { _tag: "ack" }),
         }),
       );
       if (frame.events.some((event) => event.event.type === eventType)) {
@@ -361,6 +374,8 @@ class EventSocket {
   close(): void {
     this.#socket.close(1000, "conformance step complete");
   }
+
+  private projected = false;
 
   private async nextMessage(): Promise<string> {
     const existing = this.#messages.shift();
@@ -455,6 +470,10 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         recoverySocket.close();
 
         await host.restart({ hard: true });
+        const projectedRecoverySocket =
+          kind === "cloudflare"
+            ? await EventSocket.open(host, sessionId, second.snapshot.lastSeq, { projected: true })
+            : undefined;
         await interruptedSubmission;
         const recovered = await submitMessage(host, sessionId, {
           idempotencyKey: "conformance:crash-recovery",
@@ -470,6 +489,14 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
           "Assistant",
         ]);
         expect(recovered.messages[5]?.content?.text).toBe("pong");
+        if (projectedRecoverySocket !== undefined) {
+          const projectedRecoveryEvents =
+            await projectedRecoverySocket.eventsUntil("CommandCompleted");
+          expect(
+            projectedRecoveryEvents.some((event) => event.event.type === "CommandCompleted"),
+          ).toBe(true);
+          projectedRecoverySocket.close();
+        }
 
         const destroyResponse = await fetch(`${host.baseUrl}/sessions/${sessionId}/destroy`, {
           method: "DELETE",

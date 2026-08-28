@@ -6,6 +6,7 @@ import { SequenceNumber, type SessionId } from "effect-durable-agent/types/core"
 import type { PositionedEvent } from "effect-durable-agent/types/events";
 import type { EDATraceMetadata } from "effect-durable-agent/types/tracing";
 import {
+  EDA_WEB_SOCKET_PING_MESSAGE,
   EDA_WEB_SOCKET_PONG_MESSAGE,
   EDA_WS_CLOSE_PROTOCOL_ERROR,
   EDA_WS_CLOSE_SEND_FAILED,
@@ -19,9 +20,12 @@ import {
   onClientAck,
   onDurableEvents,
   onEphemeralEvent,
+  onHostSuppressedFrame,
   restoreWebSocketDeliveryState,
   type EDAWebSocketDeliveryResult,
+  type EDAWebSocketDeliveryAction,
   type EDAWebSocketDeliveryState,
+  type EDAWebSocketClientFrame,
   type EDAWebSocketServerFrame,
   type EDAWebSocketServerFrameEncoder,
 } from "effect-durable-agent/websocket";
@@ -30,8 +34,9 @@ import {
   decodeWebSocketAttachment,
   encodeWebSocketAttachment,
 } from "./attachment";
+import type { EDAWebSocketProjection } from "./projection";
 
-export interface EDAWebSocketConnectionManagerOptions {
+export interface EDAWebSocketConnectionManagerOptions<ProjectionState extends object = never> {
   readonly getWebSockets?: () => ReadonlyArray<WebSocket>;
   readonly isSessionReady: (sessionId: SessionId) => boolean;
   readonly prepareSession: (sessionId: SessionId) => Promise<void>;
@@ -42,10 +47,11 @@ export interface EDAWebSocketConnectionManagerOptions {
     readonly subscriberId: SubscriberId;
     readonly trace: EDATraceMetadata;
   }) => Promise<EDASessionEventPage>;
+  readonly webSocketProjection?: EDAWebSocketProjection<ProjectionState>;
   readonly webSocketProtocol?: EDAWebSocketServerFrameEncoder;
 }
 
-interface EventWebSocketState {
+interface EventWebSocketState<ProjectionState extends object> {
   readonly sessionId: SessionId;
   readonly subscriberId: SubscriberId;
   readonly trace: EDATraceMetadata;
@@ -53,13 +59,14 @@ interface EventWebSocketState {
   catchUpDeferred: boolean;
   head: SequenceNumber;
   queue: Promise<void>;
+  projectionState?: ProjectionState;
 }
 
 /**
  * Owns Cloudflare WebSockets, hibernation attachments, and interpretation of
  * the platform-neutral delivery state machine.
  */
-export class EDAWebSocketConnectionManager {
+export class EDAWebSocketConnectionManager<ProjectionState extends object = never> {
   readonly observerLayer = SessionEventObserver.FromHandler((event) =>
     Effect.tryPromise(() => this.fanoutPublishedEvent(event)).pipe(
       Effect.catchCause((cause) =>
@@ -68,15 +75,22 @@ export class EDAWebSocketConnectionManager {
     ),
   );
 
-  private readonly sockets = new Map<WebSocket, EventWebSocketState>();
+  private readonly sockets = new Map<WebSocket, EventWebSocketState<ProjectionState>>();
 
-  constructor(private readonly options: EDAWebSocketConnectionManagerOptions) {}
+  constructor(private readonly options: EDAWebSocketConnectionManagerOptions<ProjectionState>) {}
+
+  resolveProjection(id: string | undefined): EDAWebSocketProjection<ProjectionState> | undefined {
+    if (id === undefined) return undefined;
+    if (this.options.webSocketProjection?.id === id) return this.options.webSocketProjection;
+    return undefined;
+  }
 
   async accept(input: {
     readonly afterSeq: SequenceNumber;
     readonly sessionId: SessionId;
     readonly trace: EDATraceMetadata;
     readonly webSocket: WebSocket;
+    readonly projectionState?: ProjectionState;
   }): Promise<void> {
     const subscriberId = SubscriberId.make(crypto.randomUUID());
     const delivery = makeWebSocketDeliveryState({
@@ -84,7 +98,7 @@ export class EDAWebSocketConnectionManager {
       resumeSeq: input.afterSeq,
       policy: defaultEDAWebSocketFlowControl,
     });
-    const state: EventWebSocketState = {
+    const state: EventWebSocketState<ProjectionState> = {
       sessionId: input.sessionId,
       subscriberId,
       trace: input.trace,
@@ -92,12 +106,14 @@ export class EDAWebSocketConnectionManager {
       catchUpDeferred: false,
       head: input.afterSeq,
       queue: Promise.resolve(),
+      ...(input.projectionState === undefined ? {} : { projectionState: input.projectionState }),
     };
     this.sockets.set(input.webSocket, state);
-    await this.enqueue(input.webSocket, state, async () => {
-      if (!this.persist(input.webSocket, state)) return;
-      if (!this.send(input.webSocket, state, [deliveryHelloFrame(delivery)])) return;
-    });
+    // The Durable Object calls this immediately after ctx.acceptWebSocket().
+    // Register and attach synchronously before the first await so no platform
+    // callback can observe an accepted socket without recovery state.
+    if (!this.persist(input.webSocket, state)) return;
+    if (!(await this.send(input.webSocket, state, [deliveryHelloFrame(delivery)]))) return;
     if (!(await this.prepare(input.webSocket, state))) return;
     await this.enqueue(input.webSocket, state, async () => {
       await this.readAndDeliver(input.webSocket, state, input.afterSeq);
@@ -109,18 +125,10 @@ export class EDAWebSocketConnectionManager {
       this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "binary");
       return;
     }
-
-    const frame = await Effect.runPromise(
-      decodeEDAWebSocketClientMessage(message).pipe(Effect.option),
-    );
-    if (frame._tag === "None") {
-      this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
-      return;
-    }
-    const clientFrame = frame.value;
-    if (clientFrame._tag === "ping") {
-      // Auto-response handles this without waking a hibernated object. This is
-      // only the fallback for non-Cloudflare hosts and direct unit tests.
+    if (message === EDA_WEB_SOCKET_PING_MESSAGE) {
+      // Cloudflare auto-response normally intercepts this without waking the
+      // object. Keep the fallback independent of attachment recovery for
+      // direct controller hosts and unit tests.
       try {
         webSocket.send(EDA_WEB_SOCKET_PONG_MESSAGE);
       } catch {
@@ -134,6 +142,16 @@ export class EDAWebSocketConnectionManager {
       this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
       return;
     }
+    const frame = await Effect.runPromise(
+      this.decodeClientMessage(message, state).pipe(Effect.option),
+    );
+    if (frame._tag === "None") {
+      this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
+      return;
+    }
+    const clientFrame = frame.value;
+    if (clientFrame._tag === "ping") return;
+
     if (!(await this.prepare(webSocket, state))) return;
     await this.enqueue(webSocket, state, async () => {
       await this.interpret(webSocket, state, onClientAck(state.delivery, clientFrame, Date.now()));
@@ -196,7 +214,9 @@ export class EDAWebSocketConnectionManager {
     await Promise.all(deliveries);
   }
 
-  private async restore(webSocket: WebSocket): Promise<EventWebSocketState | undefined> {
+  private async restore(
+    webSocket: WebSocket,
+  ): Promise<EventWebSocketState<ProjectionState> | undefined> {
     const existing = this.sockets.get(webSocket);
     if (existing !== undefined) return existing;
     const decoded = await decodeWebSocketAttachment(webSocket.deserializeAttachment());
@@ -205,7 +225,15 @@ export class EDAWebSocketConnectionManager {
       return undefined;
     }
     const attachment = decoded.attachment;
-    const state: EventWebSocketState = {
+    const projectionState =
+      attachment.projection === undefined
+        ? undefined
+        : await this.decodeProjectionState(attachment.projection.id, attachment.projection.state);
+    if (attachment.projection !== undefined && projectionState === undefined) {
+      this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
+      return undefined;
+    }
+    const state: EventWebSocketState<ProjectionState> = {
       sessionId: attachment.sessionId,
       subscriberId: attachment.subscriberId,
       trace: attachment.trace,
@@ -217,12 +245,16 @@ export class EDAWebSocketConnectionManager {
       catchUpDeferred: false,
       head: attachment.delivery.sentDurableThroughSeq,
       queue: Promise.resolve(),
+      ...(projectionState === undefined ? {} : { projectionState }),
     };
     this.sockets.set(webSocket, state);
     return state;
   }
 
-  private async prepare(webSocket: WebSocket, state: EventWebSocketState): Promise<boolean> {
+  private async prepare(
+    webSocket: WebSocket,
+    state: EventWebSocketState<ProjectionState>,
+  ): Promise<boolean> {
     try {
       await this.options.prepareSession(state.sessionId);
       return this.sockets.get(webSocket) === state;
@@ -240,7 +272,7 @@ export class EDAWebSocketConnectionManager {
 
   private async interpret(
     webSocket: WebSocket,
-    state: EventWebSocketState,
+    state: EventWebSocketState<ProjectionState>,
     result: EDAWebSocketDeliveryResult,
   ): Promise<boolean> {
     state.delivery = result.state;
@@ -250,7 +282,7 @@ export class EDAWebSocketConnectionManager {
           if (!this.persist(webSocket, state)) return false;
           break;
         case "Send":
-          if (!this.send(webSocket, state, action.frames)) return false;
+          if (!(await this.send(webSocket, state, action.frames))) return false;
           break;
         case "ReadEventPage":
           if (!(await this.readAndDeliver(webSocket, state, action.afterSeq))) return false;
@@ -265,7 +297,7 @@ export class EDAWebSocketConnectionManager {
 
   private async readAndDeliver(
     webSocket: WebSocket,
-    state: EventWebSocketState,
+    state: EventWebSocketState<ProjectionState>,
     afterSeq: SequenceNumber,
   ): Promise<boolean> {
     const page = await this.options.readEventPage({
@@ -284,14 +316,28 @@ export class EDAWebSocketConnectionManager {
     );
   }
 
-  private persist(webSocket: WebSocket, state: EventWebSocketState): boolean {
+  private persist(webSocket: WebSocket, state: EventWebSocketState<ProjectionState>): boolean {
     try {
+      const projection =
+        state.projectionState === undefined ? undefined : this.options.webSocketProjection;
+      if (state.projectionState !== undefined && projection === undefined) {
+        this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
+        return false;
+      }
       const attachment = EDAWebSocketAttachment.make({
         kind: "eda-events-v2",
         sessionId: state.sessionId,
         subscriberId: state.subscriberId,
         trace: state.trace,
         delivery: checkpointWebSocketDeliveryState(state.delivery),
+        ...(state.projectionState === undefined || projection === undefined
+          ? {}
+          : {
+              projection: {
+                id: projection.id,
+                state: projection.encodeState(state.projectionState),
+              },
+            }),
       });
       webSocket.serializeAttachment(encodeWebSocketAttachment(attachment));
       return true;
@@ -303,17 +349,70 @@ export class EDAWebSocketConnectionManager {
 
   private send(
     webSocket: WebSocket,
-    state: EventWebSocketState,
+    state: EventWebSocketState<ProjectionState>,
     frames: ReadonlyArray<EDAWebSocketServerFrame>,
-  ): boolean {
+  ): Promise<boolean> {
+    return this.sendPrepared(webSocket, state, frames);
+  }
+
+  private async sendPrepared(
+    webSocket: WebSocket,
+    state: EventWebSocketState<ProjectionState>,
+    frames: ReadonlyArray<EDAWebSocketServerFrame>,
+  ): Promise<boolean> {
     try {
+      const encodedFrames: string[] = [];
+      const followUpActions: EDAWebSocketDeliveryAction[] = [];
       for (const frame of frames) {
-        const encoded = encodeEDAWebSocketServerFrame(frame, this.options.webSocketProtocol);
+        const projected =
+          state.projectionState === undefined
+            ? undefined
+            : this.options.webSocketProjection?.encodeServerFrame(frame, state.projectionState);
+        if (state.projectionState !== undefined && projected === undefined) {
+          this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
+          return false;
+        }
+        if (projected?._tag === "SuppressAndAck") {
+          if (frame._tag !== "events") {
+            this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
+            return false;
+          }
+          state.projectionState = projected.state;
+          const acknowledged = onHostSuppressedFrame(
+            state.delivery,
+            {
+              durableThroughSeq: frame.durableThroughSeq,
+              frameId: frame.frameId,
+            },
+            Date.now(),
+          );
+          state.delivery = acknowledged.state;
+          followUpActions.push(
+            ...acknowledged.actions.filter((action) => action._tag !== "Persist"),
+          );
+          continue;
+        }
+        if (projected !== undefined) state.projectionState = projected.state;
+        const encoded =
+          projected?._tag === "Send"
+            ? projected.frame
+            : encodeEDAWebSocketServerFrame(frame, this.options.webSocketProtocol);
         if (new TextEncoder().encode(encoded).byteLength > state.delivery.policy.maxFrameBytes) {
           this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "frame-too-large");
           return false;
         }
-        webSocket.send(encoded);
+        encodedFrames.push(encoded);
+      }
+      // Projection encoders may update app-owned state. Persist that state
+      // before publishing any frame so eviction cannot roll the projection
+      // back behind the client-visible stream.
+      if (state.projectionState !== undefined && !this.persist(webSocket, state)) return false;
+      for (const encoded of encodedFrames) webSocket.send(encoded);
+      if (followUpActions.length > 0) {
+        return await this.interpret(webSocket, state, {
+          state: state.delivery,
+          actions: coalesceFollowUpActions(followUpActions),
+        });
       }
       return true;
     } catch {
@@ -324,7 +423,7 @@ export class EDAWebSocketConnectionManager {
 
   private enqueue(
     webSocket: WebSocket,
-    state: EventWebSocketState,
+    state: EventWebSocketState<ProjectionState>,
     operation: () => Promise<void>,
   ): Promise<void> {
     const run = async (): Promise<void> => {
@@ -353,4 +452,40 @@ export class EDAWebSocketConnectionManager {
       // Closing and already-closed sockets can still be returned by getWebSockets().
     }
   }
+
+  private decodeClientMessage(
+    message: string,
+    state: EventWebSocketState<ProjectionState>,
+  ): Effect.Effect<EDAWebSocketClientFrame, unknown> {
+    return state.projectionState === undefined
+      ? decodeEDAWebSocketClientMessage(message)
+      : (this.options.webSocketProjection?.decodeClientMessage(message) ?? Effect.fail("protocol"));
+  }
+
+  private async decodeProjectionState(
+    id: string,
+    encoded: unknown,
+  ): Promise<ProjectionState | undefined> {
+    const projection = this.resolveProjection(id);
+    if (projection === undefined) return undefined;
+    const decoded = await Effect.runPromise(projection.decodeState(encoded).pipe(Effect.option));
+    return decoded._tag === "Some" ? decoded.value : undefined;
+  }
 }
+
+const coalesceFollowUpActions = (
+  actions: ReadonlyArray<EDAWebSocketDeliveryAction>,
+): ReadonlyArray<EDAWebSocketDeliveryAction> => {
+  let readAfterSeq: SequenceNumber | undefined;
+  const retained: EDAWebSocketDeliveryAction[] = [];
+  for (const action of actions) {
+    if (action._tag !== "ReadEventPage") {
+      retained.push(action);
+      continue;
+    }
+    readAfterSeq = SequenceNumber.make(Math.max(readAfterSeq ?? 0, action.afterSeq));
+  }
+  return readAfterSeq === undefined
+    ? retained
+    : [...retained, { _tag: "ReadEventPage", afterSeq: readAfterSeq }];
+};

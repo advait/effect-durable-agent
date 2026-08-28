@@ -35,6 +35,9 @@ import {
   EDA_WEB_SOCKET_PING_MESSAGE,
   EDA_WEB_SOCKET_PONG_MESSAGE,
 } from "effect-durable-agent/websocket";
+export type { EDAWebSocketProjection } from "./websocket/projection";
+/** Internal Worker-to-object header selecting an app-owned WebSocket projection. */
+export const EDA_WEB_SOCKET_PROJECTION_HEADER = "x-eda-websocket-projection";
 
 /** Raw RPC shape decoded before admitting one session command. */
 export interface EDASessionCommandRpcInput {
@@ -71,14 +74,35 @@ export interface EDASessionBlockOnCommandRpcInput {
   readonly trace: unknown;
 }
 
+/** EDA RPC methods required by the session namespace helper. */
+export interface EDASessionRpcSurface {
+  readonly submit: (input: EDASessionCommandRpcInput) => Promise<CommittedDurableEventValue>;
+  readonly submitBatch: (
+    input: EDASessionSubmitBatchRpcInput,
+  ) => Promise<ReadonlyArray<CommittedDurableEventValue>>;
+  readonly submitAndBlock: (
+    input: EDASessionCommandRpcInput,
+  ) => Promise<CommittedCommandTerminalEvent>;
+  readonly blockOnCommand: (
+    input: EDASessionBlockOnCommandRpcInput,
+  ) => Promise<CommittedCommandTerminalEvent>;
+  readonly snapshot: (input: EDASessionScopedRpcInput) => Promise<EDASessionSnapshot>;
+  readonly messages: (
+    input: EDASessionScopedRpcInput,
+  ) => Promise<ReadonlyArray<DurableTranscriptMessage>>;
+  readonly destroySession: (input: EDASessionScopedRpcInput) => Promise<void>;
+}
+
 /** Constructor options for concrete app subclasses of the EDA Durable Object base. */
-export type EDASessionDurableObjectOptions = Omit<
-  EDASessionControllerOptions,
+export type EDASessionDurableObjectOptions<ProjectionState extends object = never> = Omit<
+  EDASessionControllerOptions<ProjectionState>,
   "background" | "getWebSockets" | "storage"
 >;
 
 /** Resolve a concrete EDA session Durable Object binding by domain session id. */
-export const getEDASessionDurableObjectByName = <T extends EDASessionDurableObject<object>>(
+export const getEDASessionDurableObjectByName = <
+  T extends Rpc.DurableObjectBranded & EDASessionRpcSurface,
+>(
   namespace: DurableObjectNamespace<T>,
   sessionId: string,
 ): DurableObjectStub<T> => namespace.getByName(sessionId);
@@ -93,15 +117,18 @@ export const getEDASessionDurableObjectByName = <T extends EDASessionDurableObje
  */
 export abstract class EDASessionDurableObject<
   EnvType extends object = object,
+  ProjectionState extends object = never,
 > extends DurableObject<EnvType> {
-  readonly #controller: EDASessionController;
+  readonly #controller: EDASessionController<ProjectionState>;
+  readonly #webSocketProjectionId: string | undefined;
 
   protected constructor(
     ctx: DurableObjectState,
     env: EnvType,
-    options: EDASessionDurableObjectOptions,
+    options: EDASessionDurableObjectOptions<ProjectionState>,
   ) {
     super(ctx, env);
+    this.#webSocketProjectionId = options.webSocketProjection?.id;
     const storage = toEDASessionStorage(this.ctx.storage);
     this.#controller = new EDASessionController({
       ...options,
@@ -132,19 +159,31 @@ export abstract class EDASessionDurableObject<
     if (sessionIdRaw === null) {
       return new Response("Missing sessionId.", { status: 400 });
     }
-    const afterSeq = Number(url.searchParams.get("afterSeq") ?? "0");
-    if (!Number.isInteger(afterSeq) || afterSeq < 0) {
+    const afterSeqRaw = url.searchParams.get("afterSeq");
+    const afterSeq = afterSeqRaw === null ? undefined : Number(afterSeqRaw);
+    if (afterSeq !== undefined && (!Number.isInteger(afterSeq) || afterSeq < 0)) {
       return new Response("Invalid afterSeq.", { status: 400 });
     }
+    const projectionId = request.headers.get(EDA_WEB_SOCKET_PROJECTION_HEADER) ?? undefined;
+    if (projectionId !== undefined && projectionId !== this.#webSocketProjectionId) {
+      return new Response("Unsupported WebSocket projection.", { status: 400 });
+    }
+
+    const sessionId = this.parseSessionId(sessionIdRaw);
+    const trace = traceMetadataFromRequest(request);
+    const prepared = await this.#controller.prepareEventWebSocket({
+      ...(afterSeq === undefined ? {} : { afterSeq: SequenceNumber.make(afterSeq) }),
+      sessionId,
+      trace,
+      ...(projectionId === undefined ? {} : { projectionId }),
+    });
 
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     this.ctx.acceptWebSocket(server);
-    await this.#controller.acceptEventWebSocket({
-      afterSeq: SequenceNumber.make(afterSeq),
-      sessionId: this.parseSessionId(sessionIdRaw),
-      trace: traceMetadataFromRequest(request),
+    await this.#controller.acceptPreparedEventWebSocket({
+      ...prepared,
       webSocket: server,
     });
     return new Response(null, { status: 101, webSocket: client });

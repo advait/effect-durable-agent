@@ -7,6 +7,7 @@ import {
   onClientAck,
   onDurableEvents,
   onEphemeralEvent,
+  onHostSuppressedFrame,
   restoreWebSocketDeliveryState,
   type EDAWebSocketDeliveryState,
 } from "./delivery";
@@ -194,6 +195,64 @@ describe("websocket-delivery", () => {
     const acked = onClientAck(sent.state, ackFrame(1, 1), NOW_MS + 5);
 
     expect(catchUpAction(acked)).toMatchObject({ afterSeq: 1 });
+  });
+
+  it("persists an exact suppressed receipt behind an earlier visible frame", () => {
+    const sent = onDurableEvents(
+      freshState(),
+      [durableEventAt(1), durableEventAt(2)],
+      seq(2),
+      NOW_MS,
+    );
+    const eventsFrames = sentFrames(sent).filter((frame) => frame._tag === "events");
+    const suppressedFrame = eventsFrames[1];
+    expect(suppressedFrame).toBeDefined();
+    if (suppressedFrame === undefined) return;
+
+    const suppressed = onHostSuppressedFrame(sent.state, suppressedFrame, NOW_MS + 1);
+    expect(suppressed.state.inFlight.map((receipt) => receipt.frameId)).toEqual([1]);
+    expect(suppressed.state.suppressed).toEqual([
+      { durableThroughSeq: 2, fromFrameId: 2, throughFrameId: 2 },
+    ]);
+    expect(suppressed.state.lastAckedFrameId).toBe(0);
+    expect(suppressed.state.lastAckedSeq).toBe(0);
+
+    const restored = restoreWebSocketDeliveryState({
+      subscriberId: SUBSCRIBER_ID,
+      policy: defaultEDAWebSocketFlowControl,
+      checkpoint: checkpointWebSocketDeliveryState(suppressed.state),
+    });
+    const clientAckedVisible = onClientAck(restored, ackFrame(1, 1), NOW_MS + 2);
+
+    expect(closeAction(clientAckedVisible)).toBeUndefined();
+    expect(clientAckedVisible.state.inFlight).toEqual([]);
+    expect(clientAckedVisible.state.suppressed).toEqual([]);
+    expect(clientAckedVisible.state.lastAckedFrameId).toBe(2);
+    expect(clientAckedVisible.state.lastAckedSeq).toBe(2);
+  });
+
+  it("compacts long suppressed runs while one visible frame remains unacknowledged", () => {
+    let state = freshState();
+    for (let start = 1; start <= 100; start += 15) {
+      const events = Array.from(
+        { length: Math.min(100 - start + 1, start === 1 ? 16 : 15) },
+        (_, index) => durableEventAt(start + index),
+      );
+      const delivered = onDurableEvents(state, events, seq(100), NOW_MS + start);
+      const frames = sentFrames(delivered).filter((frame) => frame._tag === "events");
+      state = delivered.state;
+      for (const frame of frames.slice(start === 1 ? 1 : 0)) {
+        state = onHostSuppressedFrame(state, frame, NOW_MS + start).state;
+      }
+    }
+
+    expect(state.inFlight.map((receipt) => receipt.frameId)).toEqual([1]);
+    expect(state.suppressed).toEqual([
+      { durableThroughSeq: 100, fromFrameId: 2, throughFrameId: 100 },
+    ]);
+    expect(
+      new TextEncoder().encode(JSON.stringify(checkpointWebSocketDeliveryState(state))).byteLength,
+    ).toBeLessThan(1_024);
   });
 
   it.each([

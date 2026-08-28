@@ -30,6 +30,12 @@ Idle sockets use `ctx.acceptWebSocket`, Effect Schema attachments, and
 automatic ping responses. They own no timer or resident subscriber fiber.
 Register only the concrete application subclass in `wrangler.jsonc`.
 
+Apps with an existing client wire contract may register one
+`EDAWebSocketProjection`. An authenticated Worker selects it on the internal
+request with `EDA_WEB_SOCKET_PROJECTION_HEADER`; the Durable Object still owns
+the accepted socket and persists the app projection state through hibernation.
+Do not build a Worker-side WebSocket bridge for protocol translation.
+
 Durable Object RPC uses structured clone. Encode Schema class instances before
 passing commands or batches across the Worker-to-object boundary with
 `encodeEdaRpcCommand` or `encodeEdaRpcSubmittables`.
