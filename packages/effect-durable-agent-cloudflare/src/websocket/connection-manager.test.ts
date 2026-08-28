@@ -62,13 +62,13 @@ const fullySuppressingProjection: EDAWebSocketProjection<ProjectionState> = {
 describe("EDAWebSocketConnectionManager", () => {
   it("coalesces catch-up reads reopened by a batch of suppressed frames", async () => {
     const events = Array.from({ length: 16 }, (_, index) => durableEventAt(index + 1));
-    let readCalls = 0;
+    const readCursors: number[] = [];
     const manager = new EDAWebSocketConnectionManager({
       isSessionReady: () => true,
       prepareSession: async () => undefined,
-      readEventPage: async () => {
-        readCalls += 1;
-        return readCalls === 1
+      readEventPage: async ({ afterSeq }) => {
+        readCursors.push(afterSeq);
+        return readCursors.length === 1
           ? { events, head: SequenceNumber.make(events.length) }
           : { events: [], head: SequenceNumber.make(events.length) };
       },
@@ -84,7 +84,7 @@ describe("EDAWebSocketConnectionManager", () => {
       webSocket: webSocket.asWebSocket(),
     });
 
-    expect(readCalls).toBe(2);
+    expect(readCursors).toEqual([0, 16]);
     expect(webSocket.sentCount).toBe(1);
     expect(webSocket.closeCode).toBeUndefined();
   });

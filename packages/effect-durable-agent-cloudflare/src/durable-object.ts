@@ -74,6 +74,25 @@ export interface EDASessionBlockOnCommandRpcInput {
   readonly trace: unknown;
 }
 
+/** EDA RPC methods required by the session namespace helper. */
+export interface EDASessionRpcSurface {
+  readonly submit: (input: EDASessionCommandRpcInput) => Promise<CommittedDurableEventValue>;
+  readonly submitBatch: (
+    input: EDASessionSubmitBatchRpcInput,
+  ) => Promise<ReadonlyArray<CommittedDurableEventValue>>;
+  readonly submitAndBlock: (
+    input: EDASessionCommandRpcInput,
+  ) => Promise<CommittedCommandTerminalEvent>;
+  readonly blockOnCommand: (
+    input: EDASessionBlockOnCommandRpcInput,
+  ) => Promise<CommittedCommandTerminalEvent>;
+  readonly snapshot: (input: EDASessionScopedRpcInput) => Promise<EDASessionSnapshot>;
+  readonly messages: (
+    input: EDASessionScopedRpcInput,
+  ) => Promise<ReadonlyArray<DurableTranscriptMessage>>;
+  readonly destroySession: (input: EDASessionScopedRpcInput) => Promise<void>;
+}
+
 /** Constructor options for concrete app subclasses of the EDA Durable Object base. */
 export type EDASessionDurableObjectOptions<ProjectionState extends object = never> = Omit<
   EDASessionControllerOptions<ProjectionState>,
@@ -81,7 +100,9 @@ export type EDASessionDurableObjectOptions<ProjectionState extends object = neve
 >;
 
 /** Resolve a concrete EDA session Durable Object binding by domain session id. */
-export const getEDASessionDurableObjectByName = <T extends Rpc.DurableObjectBranded>(
+export const getEDASessionDurableObjectByName = <
+  T extends Rpc.DurableObjectBranded & EDASessionRpcSurface,
+>(
   namespace: DurableObjectNamespace<T>,
   sessionId: string,
 ): DurableObjectStub<T> => namespace.getByName(sessionId);
