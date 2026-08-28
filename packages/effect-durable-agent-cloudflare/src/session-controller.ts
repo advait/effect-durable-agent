@@ -20,13 +20,15 @@ import { EDASessionRuntime, type EDASessionRuntimeOptions } from "./runtime/sess
 import type { EDASessionDurableObjectStorage } from "./runtime/runtime-layer";
 import { EDAWebSocketConnectionManager } from "./websocket/connection-manager";
 import type { EDAWebSocketServerFrameEncoder } from "effect-durable-agent/websocket";
+import type { EDAWebSocketProjection } from "./websocket/projection";
 
 /** Composition options for the session use cases and Cloudflare adapters. */
-export interface EDASessionControllerOptions extends Omit<
+export interface EDASessionControllerOptions<ProjectionState extends object = never> extends Omit<
   EDASessionRuntimeOptions,
   "sessionEventObserverLayer"
 > {
   readonly getWebSockets?: () => ReadonlyArray<WebSocket>;
+  readonly webSocketProjection?: EDAWebSocketProjection<ProjectionState>;
   readonly webSocketProtocol?: EDAWebSocketServerFrameEncoder;
 }
 
@@ -66,11 +68,11 @@ export interface EDASessionEventsInput {
  * Runtime lifecycle belongs to EDASessionRuntime; WebSocket transport belongs
  * to EDAWebSocketConnectionManager. This class only coordinates them.
  */
-export class EDASessionController {
+export class EDASessionController<ProjectionState extends object = never> {
   private readonly runtime: EDASessionRuntime;
-  private readonly webSockets: EDAWebSocketConnectionManager;
+  private readonly webSockets: EDAWebSocketConnectionManager<ProjectionState>;
 
-  constructor(options: EDASessionControllerOptions) {
+  constructor(options: EDASessionControllerOptions<ProjectionState>) {
     this.webSockets = new EDAWebSocketConnectionManager({
       getWebSockets: options.getWebSockets,
       isSessionReady: (sessionId) => this.runtime.isReady(sessionId),
@@ -88,6 +90,7 @@ export class EDASessionController {
             ),
           ),
         ),
+      webSocketProjection: options.webSocketProjection,
       webSocketProtocol: options.webSocketProtocol,
     });
     this.runtime = new EDASessionRuntime({
@@ -170,13 +173,37 @@ export class EDASessionController {
   }
 
   acceptEventWebSocket(
-    input: EDASessionEventsInput & { readonly webSocket: WebSocket },
+    input: EDASessionEventsInput & {
+      readonly projectionId?: string;
+      readonly webSocket: WebSocket;
+    },
   ): Promise<void> {
-    return this.webSockets.accept({
-      afterSeq: input.afterSeq ?? SequenceNumber.make(0),
+    return this.acceptEventWebSocketPrepared(input);
+  }
+
+  private async acceptEventWebSocketPrepared(
+    input: EDASessionEventsInput & {
+      readonly projectionId?: string;
+      readonly webSocket: WebSocket;
+    },
+  ): Promise<void> {
+    const projection = this.webSockets.resolveProjection(input.projectionId);
+    if (input.projectionId !== undefined && projection === undefined) {
+      throw new Error(`Unsupported EDA WebSocket projection: ${input.projectionId}`);
+    }
+    const initialized =
+      projection === undefined
+        ? undefined
+        : projection.initialize({
+            ...(input.afterSeq === undefined ? {} : { requestedAfterSeq: input.afterSeq }),
+            snapshot: await this.snapshot({ sessionId: input.sessionId, trace: input.trace }),
+          });
+    await this.webSockets.accept({
+      afterSeq: initialized?.afterSeq ?? input.afterSeq ?? SequenceNumber.make(0),
       sessionId: input.sessionId,
       trace: input.trace ?? makeRootEDATraceMetadata(),
       webSocket: input.webSocket,
+      ...(initialized === undefined ? {} : { projectionState: initialized.state }),
     });
   }
 

@@ -13,6 +13,12 @@ export const EDAWebSocketAttachment = Schema.Struct({
   subscriberId: SubscriberId,
   trace: EDATraceMetadata,
   delivery: EDAWebSocketDeliveryCheckpoint,
+  projection: Schema.optionalKey(
+    Schema.Struct({
+      id: Schema.NonEmptyString,
+      state: Schema.Unknown,
+    }),
+  ),
 });
 export type EDAWebSocketAttachment = typeof EDAWebSocketAttachment.Type;
 

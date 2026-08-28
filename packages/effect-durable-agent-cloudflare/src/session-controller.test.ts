@@ -17,6 +17,7 @@ import {
 import { makeEDADurableObjectOpenAiModelLayer } from "./providers/openai";
 import { DurableObjectKeepAlive } from "./durable-object-keepalive";
 import {
+  EDAWebSocketClientFrame,
   EDA_WEB_SOCKET_PING_MESSAGE,
   EDA_WEB_SOCKET_PONG_MESSAGE,
   EDA_WS_CLOSE_PROTOCOL_ERROR,
@@ -24,6 +25,7 @@ import {
   FrameId,
 } from "effect-durable-agent/websocket";
 import { EDAWebSocketAttachment } from "./websocket/attachment";
+import type { EDAWebSocketProjection } from "./websocket/projection";
 import { CompactionExecutor, CompactionPolicy } from "effect-durable-agent/services/compaction";
 import { frameworkReducedStateReducerName } from "effect-durable-agent/domain/reduced-state";
 import { EDAReducer } from "effect-durable-agent/services/reducer-registry";
@@ -102,7 +104,7 @@ const finishedStream = (text: string) =>
     Response.makePart("finish", { reason: "stop", usage: usage(), response: undefined }),
   );
 
-const makeHost = (
+const makeHost = <ProjectionState extends object = never>(
   storage: FakeDurableObjectStorage,
   options: {
     readonly compaction?: boolean;
@@ -112,9 +114,10 @@ const makeHost = (
     readonly parts?: TestModelParts;
     readonly reducers?: ReadonlyArray<EDAReducer>;
     readonly summary?: string;
+    readonly webSocketProjection?: EDAWebSocketProjection<ProjectionState>;
   } = {},
 ) =>
-  new EDASessionController({
+  new EDASessionController<ProjectionState>({
     config: { modelSelection: { provider: "test", modelId: "test-model" } },
     ...(options.compaction === true
       ? {
@@ -141,7 +144,56 @@ const makeHost = (
       }),
     reducers: options.reducers,
     storage,
+    ...(options.webSocketProjection === undefined
+      ? {}
+      : { webSocketProjection: options.webSocketProjection }),
   });
+
+const ProjectedWebSocketState = Schema.Struct({
+  projectedFrameCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+type ProjectedWebSocketState = typeof ProjectedWebSocketState.Type;
+
+const ProjectedAck = Schema.Struct({
+  durableThroughSeq: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  frameId: Schema.Int.check(Schema.isGreaterThan(0)),
+  type: Schema.Literal("ack"),
+});
+
+const testWebSocketProjection: EDAWebSocketProjection<ProjectedWebSocketState> = {
+  id: "test-projection-v1",
+  decodeClientMessage: (message) =>
+    Effect.try({
+      try: () => JSON.parse(message) as unknown,
+      catch: (error) => error,
+    }).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(ProjectedAck)),
+      Effect.flatMap((frame) =>
+        Schema.decodeUnknownEffect(EDAWebSocketClientFrame)({
+          _tag: "ack",
+          durableThroughSeq: frame.durableThroughSeq,
+          frameId: frame.frameId,
+        }),
+      ),
+    ),
+  decodeState: Schema.decodeUnknownEffect(ProjectedWebSocketState),
+  encodeState: Schema.encodeUnknownSync(ProjectedWebSocketState),
+  encodeServerFrame: (frame, state) => ({
+    frame: JSON.stringify({
+      durableThroughSeq: "durableThroughSeq" in frame ? frame.durableThroughSeq : undefined,
+      events: frame._tag === "events" ? frame.events : undefined,
+      frameId: "frameId" in frame ? frame.frameId : undefined,
+      projectedFrameCount: state.projectedFrameCount + 1,
+      resumeSeq: "resumeSeq" in frame ? frame.resumeSeq : undefined,
+      type: frame._tag,
+    }),
+    state: { projectedFrameCount: state.projectedFrameCount + 1 },
+  }),
+  initialize: ({ requestedAfterSeq, snapshot }) => ({
+    afterSeq: requestedAfterSeq ?? snapshot.state.lastSeq,
+    state: { projectedFrameCount: 0 },
+  }),
+};
 
 const waitForReducerCheckpointRow = async (
   storage: FakeDurableObjectStorage,
@@ -325,6 +377,69 @@ describe("EDASessionController", () => {
 
     expect(events.map((event) => event.event.type)).toContain("CommandCompleted");
     expect(attachment.delivery.lastAckedSeq).toBeGreaterThan(0);
+  });
+
+  it("hosts an app projection directly and restores its state after isolate eviction", async () => {
+    const storage = new FakeDurableObjectStorage();
+    await Effect.runPromise(EDASessionController.migrate(storage));
+    const firstHost = makeHost(storage, { webSocketProjection: testWebSocketProjection });
+    await firstHost.submitAndBlock({
+      command: makeCommand(),
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+    });
+    const snapshot = await firstHost.snapshot({
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+    });
+    const webSocket = new TestWebSocket();
+
+    await firstHost.acceptEventWebSocket({
+      projectionId: testWebSocketProjection.id,
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+      webSocket: webSocket.asWebSocket(),
+    });
+    const hello = JSON.parse(await webSocket.nextMessage()) as {
+      readonly projectedFrameCount: number;
+      readonly resumeSeq: number;
+      readonly type: string;
+    };
+    expect(hello).toMatchObject({
+      projectedFrameCount: 1,
+      resumeSeq: snapshot.state.lastSeq,
+      type: "hello",
+    });
+
+    const firstEvents = collectProjectedEventsUntil(firstHost, webSocket, "CommandCompleted");
+    await firstHost.submit({
+      command: makeCommand("018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a"),
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+    });
+    await firstEvents;
+    const firstAttachment = EDAWebSocketAttachment.make(webSocket.deserializeAttachment());
+    const firstProjectionState = Schema.decodeUnknownSync(ProjectedWebSocketState)(
+      firstAttachment.projection?.state,
+    );
+    expect(firstAttachment.projection?.id).toBe(testWebSocketProjection.id);
+    expect(firstProjectionState.projectedFrameCount).toBeGreaterThan(1);
+
+    await firstHost.dispose();
+    const secondHost = makeHost(storage, {
+      getWebSockets: () => [webSocket.asWebSocket()],
+      webSocketProjection: testWebSocketProjection,
+    });
+    const secondEvents = collectProjectedEventsUntil(secondHost, webSocket, "CommandCompleted");
+    await secondHost.submit({
+      command: makeCommand("018f6bd5-2f2a-7b1e-8f1f-1f2e3d4c5b6a"),
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+    });
+    const restoredFrameCount = await secondEvents;
+
+    expect(restoredFrameCount).toBeGreaterThan(firstProjectionState.projectedFrameCount);
+    expect(webSocket.closeCode).toBeUndefined();
   });
 
   it("keeps an idle accepted WebSocket silent: no heartbeats, timers, or frames", async () => {
@@ -730,6 +845,41 @@ interface CollectedTestEvent {
   readonly event: { readonly type: string };
   readonly position: { readonly seq: number; readonly subSeq: number };
 }
+
+const collectProjectedEventsUntil = async (
+  host: EDASessionController<ProjectedWebSocketState>,
+  webSocket: TestWebSocket,
+  terminalType: string,
+): Promise<number> => {
+  let latestProjectedFrameCount = 0;
+  while (true) {
+    const frame = JSON.parse(await webSocket.nextMessage()) as {
+      readonly durableThroughSeq?: number;
+      readonly events?: ReadonlyArray<CollectedTestEvent>;
+      readonly frameId?: number;
+      readonly projectedFrameCount: number;
+      readonly type: string;
+    };
+    latestProjectedFrameCount = frame.projectedFrameCount;
+    if (
+      frame.type === "events" &&
+      frame.frameId !== undefined &&
+      frame.durableThroughSeq !== undefined
+    ) {
+      await host.webSocketMessage(
+        webSocket.asWebSocket(),
+        JSON.stringify({
+          durableThroughSeq: frame.durableThroughSeq,
+          frameId: frame.frameId,
+          type: "ack",
+        }),
+      );
+      if (frame.events?.some((event) => event.event.type === terminalType) === true) {
+        return latestProjectedFrameCount;
+      }
+    }
+  }
+};
 
 /** ACK every events frame like a live client, without closing the socket afterwards. */
 const collectAckedEventsUntil = async (

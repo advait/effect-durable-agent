@@ -5,7 +5,7 @@ Status: current
 Protocol version: 1
 
 Attachment version: 2
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-28
 
 EDA uses a pull-based, ACK-clocked WebSocket protocol. Core owns the wire
 contract and pure delivery state machine. The Cloudflare adapter owns sockets,
@@ -102,7 +102,8 @@ Effect Schema:
     nextFrameId,
     sentDurableThroughSeq,
     inFlight: [{ frameId, durableThroughSeq, sentAtMs }]
-  }
+  },
+  projection?: { id, state }
 }
 ```
 
@@ -111,6 +112,13 @@ every applied ACK. Persistence is an explicit delivery action ordered before
 `Send`; failure closes the socket without sending the corresponding frame.
 Persisting only `lastAckedSeq` is insufficient because a post-hibernation ACK
 could not otherwise be validated against the frames actually sent.
+
+An optional app-owned projection stores its stable id and schema-encoded
+connection state in the same attachment. The host initializes that state from
+the authoritative session snapshot, persists it before projected frames become
+client-visible, and decodes it after hibernation. A missing or unknown
+projection closes the socket instead of silently reverting to the raw EDA wire
+protocol.
 
 An attachment is decoded when a hibernated socket first appears through
 `ctx.getWebSockets()` or sends a message. Missing, malformed, or obsolete
@@ -185,6 +193,20 @@ const options = {
 
 The app event schema is unioned with framework events. An unregistered custom
 event fails outbound encoding rather than degrading to an unknown payload.
+
+## App wire projection
+
+An application that already exposes a stable client protocol can register one
+`EDAWebSocketProjection`. The Worker authenticates the upgrade and sets
+`x-eda-websocket-projection` only on its internal request to the Durable Object.
+The object still accepts and owns the client socket directly; there is no
+Worker-side socket pair or outbound bridge.
+
+The projection owns only app wire concerns: its initial snapshot projection,
+state codec, server-frame encoder, and client-ACK decoder. EDA retains socket
+acceptance, replay, flow control, attachment persistence, auto-response, and
+hibernation restoration. Raw EDA clients remain the default when the internal
+selection header is absent.
 
 ## Client obligations
 

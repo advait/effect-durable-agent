@@ -35,6 +35,9 @@ import {
   EDA_WEB_SOCKET_PING_MESSAGE,
   EDA_WEB_SOCKET_PONG_MESSAGE,
 } from "effect-durable-agent/websocket";
+export type { EDAWebSocketProjection } from "./websocket/projection";
+/** Internal Worker-to-object header selecting an app-owned WebSocket projection. */
+export const EDA_WEB_SOCKET_PROJECTION_HEADER = "x-eda-websocket-projection";
 
 /** Raw RPC shape decoded before admitting one session command. */
 export interface EDASessionCommandRpcInput {
@@ -72,8 +75,8 @@ export interface EDASessionBlockOnCommandRpcInput {
 }
 
 /** Constructor options for concrete app subclasses of the EDA Durable Object base. */
-export type EDASessionDurableObjectOptions = Omit<
-  EDASessionControllerOptions,
+export type EDASessionDurableObjectOptions<ProjectionState extends object = never> = Omit<
+  EDASessionControllerOptions<ProjectionState>,
   "background" | "getWebSockets" | "storage"
 >;
 
@@ -93,15 +96,18 @@ export const getEDASessionDurableObjectByName = <T extends EDASessionDurableObje
  */
 export abstract class EDASessionDurableObject<
   EnvType extends object = object,
+  ProjectionState extends object = never,
 > extends DurableObject<EnvType> {
-  readonly #controller: EDASessionController;
+  readonly #controller: EDASessionController<ProjectionState>;
+  readonly #webSocketProjectionId: string | undefined;
 
   protected constructor(
     ctx: DurableObjectState,
     env: EnvType,
-    options: EDASessionDurableObjectOptions,
+    options: EDASessionDurableObjectOptions<ProjectionState>,
   ) {
     super(ctx, env);
+    this.#webSocketProjectionId = options.webSocketProjection?.id;
     const storage = toEDASessionStorage(this.ctx.storage);
     this.#controller = new EDASessionController({
       ...options,
@@ -132,9 +138,14 @@ export abstract class EDASessionDurableObject<
     if (sessionIdRaw === null) {
       return new Response("Missing sessionId.", { status: 400 });
     }
-    const afterSeq = Number(url.searchParams.get("afterSeq") ?? "0");
-    if (!Number.isInteger(afterSeq) || afterSeq < 0) {
+    const afterSeqRaw = url.searchParams.get("afterSeq");
+    const afterSeq = afterSeqRaw === null ? undefined : Number(afterSeqRaw);
+    if (afterSeq !== undefined && (!Number.isInteger(afterSeq) || afterSeq < 0)) {
       return new Response("Invalid afterSeq.", { status: 400 });
+    }
+    const projectionId = request.headers.get(EDA_WEB_SOCKET_PROJECTION_HEADER) ?? undefined;
+    if (projectionId !== undefined && projectionId !== this.#webSocketProjectionId) {
+      return new Response("Unsupported WebSocket projection.", { status: 400 });
     }
 
     const pair = new WebSocketPair();
@@ -142,10 +153,11 @@ export abstract class EDASessionDurableObject<
     const server = pair[1];
     this.ctx.acceptWebSocket(server);
     await this.#controller.acceptEventWebSocket({
-      afterSeq: SequenceNumber.make(afterSeq),
+      ...(afterSeq === undefined ? {} : { afterSeq: SequenceNumber.make(afterSeq) }),
       sessionId: this.parseSessionId(sessionIdRaw),
       trace: traceMetadataFromRequest(request),
       webSocket: server,
+      ...(projectionId === undefined ? {} : { projectionId }),
     });
     return new Response(null, { status: 101, webSocket: client });
   }
