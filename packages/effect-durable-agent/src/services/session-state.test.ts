@@ -1,4 +1,7 @@
 import * as Deferred from "effect/Deferred";
+import { readFile } from "node:fs/promises";
+import * as Schema from "effect/Schema";
+import { makeMethods } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -18,6 +21,7 @@ import { StopTurnCommand, SubmitMessageCommand } from "../types/commands";
 import { CommandId, EventId, RunId, SequenceNumber, SessionId, TurnId } from "../types/core";
 import {
   CommandAdmittedEvent,
+  DurableEventEnvelope,
   EventType,
   EphemeralEventEnvelope,
   PositionedEvent,
@@ -489,6 +493,63 @@ describe("SessionState", () => {
       CommandId.make(COMMAND_ID),
     ]);
   });
+
+  makeMethods(it).effect("rebuilds usage from a checkpoint produced by published alpha.7", () =>
+    Effect.gen(function* () {
+      const json = yield* Effect.promise(() =>
+        readFile(new URL("./fixtures/schema-5-model-usage.json", import.meta.url), "utf8"),
+      );
+      const fixture = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(
+          Schema.Struct({
+            schemaVersion: Schema.Literal(5),
+            events: Schema.Array(DurableEventEnvelope),
+            payload: Schema.Unknown,
+          }),
+        ),
+      )(json);
+      const restored = yield* Effect.gen(function* () {
+        const state = yield* SessionState;
+        return yield* state.snapshot();
+      }).pipe(
+        Effect.provide(
+          makeEdaTestLayer({
+            sessionId: SessionId.make("018f6bd5-2f2a-7b1e-8f1a-000000000064"),
+            seedEvents: fixture.events,
+            wrapStore: (store) => ({
+              ...store,
+              loadReducerCheckpoint: (name) =>
+                name === frameworkReducedStateReducerName
+                  ? Effect.succeed({
+                      name,
+                      schemaVersion: fixture.schemaVersion,
+                      throughSeq: SequenceNumber.make(3),
+                      payload: fixture.payload,
+                      updatedAtMs: 1,
+                    })
+                  : store.loadReducerCheckpoint(name),
+            }),
+          }),
+        ),
+      );
+      expect(restored.lastSeq).toBe(3);
+      expect(restored.modelSelection).toEqual({ provider: "openai", modelId: "gpt-5.6-sol" });
+      expect(restored.tokenConsumption.byModel).toEqual([
+        {
+          provider: "openai",
+          modelId: "gpt-5.6-sol",
+          usage: {
+            inputTokens: 1000,
+            cachedInputTokens: 300,
+            cacheWriteInputTokens: 0,
+            outputTokens: 200,
+            reasoningTokens: 125,
+            textTokens: 75,
+          },
+        },
+      ]);
+    }),
+  );
 
   it("replays recovery continuations hidden by a version 3 rollback checkpoint", async () => {
     const LayerWithRollbackCheckpoint = makeEdaTestLayer({

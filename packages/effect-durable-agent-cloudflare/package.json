@@ -1,6 +1,6 @@
 {
   "name": "effect-durable-agent-cloudflare",
-  "version": "0.1.0-alpha.7",
+  "version": "0.1.0-alpha.8",
   "description": "Cloudflare Durable Objects host for effect-durable-agent.",
   "keywords": [
     "agents",
@@ -81,6 +81,7 @@
     "@cloudflare/vitest-pool-workers": "0.18.8",
     "@cloudflare/workers-types": "5.20260813.1",
     "@effect/ai-openai": "4.0.0-beta.102",
+    "@effect/vitest": "4.0.0-beta.102",
     "effect": "4.0.0-beta.102",
     "vite-plus": "^0.1.21",
     "vitest": "^4.1.8"

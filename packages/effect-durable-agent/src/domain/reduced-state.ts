@@ -1,4 +1,6 @@
 import type * as Prompt from "effect/unstable/ai/Prompt";
+import { addModelUsage, TokenConsumptionState } from "./model-usage";
+export { type TokenUsageTotals, TokenConsumptionState } from "./model-usage";
 
 import { assertNever } from "./assert-never";
 import { deriveCommandQueues, emptyCommandQueues, type CommandQueues } from "./command-queues";
@@ -40,6 +42,7 @@ import {
   runFailedEventType,
   runInterruptedEventType,
   runStartedEventType,
+  sessionConfiguredEventType,
   stopTurnAppliedEventType,
   stopTurnRequestedEventType,
   steeringMessageCancelledEventType,
@@ -74,6 +77,7 @@ import type {
   SystemPromptText,
   ToolName,
   UsagePayload,
+  ModelSelectionPayload,
 } from "../types/events";
 import type { CommittedDurableEvent } from "../services/session-store";
 
@@ -114,6 +118,7 @@ export interface LifecycleTiming {
 
 /** Durable run lifecycle projection tying one run to its owning command ids. */
 export interface RunRecord extends LifecycleTiming {
+  readonly modelSelection?: ModelSelectionPayload;
   readonly runId: RunId;
   readonly commandIds: ReadonlyArray<CommandId>;
   readonly startedSeq: SequenceNumber;
@@ -307,20 +312,6 @@ export interface StopRequestRecord {
   readonly appliedInferenceId?: InferenceId;
 }
 
-/** Rolling session totals for provider-reported model token usage. */
-export interface TokenUsageTotals {
-  readonly inputTokens: number;
-  readonly cachedInputTokens: number;
-  readonly outputTokens: number;
-  readonly textTokens: number;
-  readonly reasoningTokens: number;
-}
-
-/** First-party token consumption metadata folded by the framework reducer. */
-export interface TokenConsumptionState {
-  readonly total: TokenUsageTotals;
-}
-
 /** Admitted command that has not yet crossed the `CommandStarted` boundary. */
 export interface PendingCommand {
   /** Lifecycle ID for the admitted command. */
@@ -348,6 +339,8 @@ export type ActiveTurnIdentity = {
 
 /** Canonical durable replay product used by queries, recovery, and scheduling. */
 export interface ReducedState {
+  /** Session execution policy established by configuration or the first historical run. */
+  readonly modelSelection?: ModelSelectionPayload;
   readonly lastSeq: SequenceNumber;
   readonly commands: ReadonlyMap<CommandId, CommandRecord>;
   readonly runs: ReadonlyMap<RunId, RunRecord>;
@@ -383,16 +376,8 @@ export interface RecoverableWork {
   readonly openCompactions: ReadonlyArray<CompactionRecord>;
 }
 
-const emptyTokenUsageTotals: TokenUsageTotals = {
-  inputTokens: 0,
-  cachedInputTokens: 0,
-  outputTokens: 0,
-  textTokens: 0,
-  reasoningTokens: 0,
-};
-
 const emptyTokenConsumptionState: TokenConsumptionState = {
-  total: emptyTokenUsageTotals,
+  byModel: [],
 };
 
 /** Empty durable replay state before any session event has committed. */
@@ -416,7 +401,7 @@ export const initialReducedState: ReducedState = {
 export const frameworkReducedStateReducerName = "_eda.framework.reduced-state";
 
 /** Schema version for the framework-owned `ReducedState` checkpoint payload. */
-export const frameworkReducedStateReducerSchemaVersion = 5;
+export const frameworkReducedStateReducerSchemaVersion = 6;
 
 /** JSON payload stored for the framework-owned reduced-state reducer checkpoint. */
 export type ReducedStateCheckpointCommandRecord = Omit<CommandRecord, "command">;
@@ -456,6 +441,7 @@ export interface ReducedStateCheckpointToolCallRecord extends Omit<
 }
 
 export interface ReducedStateCheckpointPayload {
+  readonly modelSelection?: ModelSelectionPayload;
   readonly lastSeq: SequenceNumber;
   readonly commands: ReadonlyArray<readonly [CommandId, ReducedStateCheckpointCommandRecord]>;
   readonly runs: ReadonlyArray<readonly [RunId, RunRecord]>;
@@ -475,6 +461,7 @@ export const encodeReducedStateCheckpoint = (
   state: ReducedState,
 ): ReducedStateCheckpointPayload => ({
   lastSeq: state.lastSeq,
+  ...(state.modelSelection === undefined ? {} : { modelSelection: state.modelSelection }),
   commands: Array.from(state.commands.entries()).map(([commandId, record]) => [
     commandId,
     encodeCheckpointCommandRecord(record),
@@ -537,6 +524,9 @@ export const decodeReducedStateCheckpoint = (
   const messages = decodeCheckpointMessageRecords(checkpoint.messages ?? [], eventsBySeq);
   return {
     lastSeq: SequenceNumber.make(Number(checkpoint.lastSeq ?? 0)),
+    ...(checkpoint.modelSelection === undefined
+      ? {}
+      : { modelSelection: checkpoint.modelSelection }),
     commands,
     runs,
     recoveryContinuations: new Map(checkpoint.recoveryContinuations ?? []),
@@ -784,15 +774,7 @@ const uniqueSequenceNumbers = (
 
 const decodeTokenConsumptionState = (
   value: TokenConsumptionState | undefined,
-): TokenConsumptionState => ({
-  total: {
-    inputTokens: nonNegativeNumber(value?.total?.inputTokens),
-    cachedInputTokens: nonNegativeNumber(value?.total?.cachedInputTokens),
-    outputTokens: nonNegativeNumber(value?.total?.outputTokens),
-    textTokens: nonNegativeNumber(value?.total?.textTokens),
-    reasoningTokens: nonNegativeNumber(value?.total?.reasoningTokens),
-  },
-});
+): TokenConsumptionState => value ?? emptyTokenConsumptionState;
 
 /** Fold newly committed durable events into the canonical replay state. */
 export const foldReducedState = (
@@ -800,6 +782,7 @@ export const foldReducedState = (
   committed: ReadonlyArray<CommittedDurableEvent>,
 ): ReducedState => {
   let lastSeq = state.lastSeq;
+  let modelSelection = state.modelSelection;
   const commands = new Map(state.commands);
   const runs = new Map(state.runs);
   const recoveryContinuations = new Map(state.recoveryContinuations);
@@ -866,6 +849,7 @@ export const foldReducedState = (
       }
       case runStartedEventType: {
         const { runId, commandIds, trace } = payload;
+        modelSelection ??= payload.modelSelection;
         const terminal = runs.get(runId)?.terminal;
         runs.set(runId, {
           runId,
@@ -873,6 +857,7 @@ export const foldReducedState = (
           startedAtMs: eventCreatedAtMs,
           startedSeq: seq,
           trace,
+          modelSelection: payload.modelSelection,
           ...(terminal === undefined ? {} : { terminal }),
         });
         break;
@@ -979,7 +964,8 @@ export const foldReducedState = (
           } as InferenceTerminal,
         }));
         if (!previouslyCompleted && inferences.get(inferenceId)?.terminal?._tag === "Completed") {
-          tokenConsumption = addTokenUsage(tokenConsumption, usage);
+          const model = runs.get(payload.runId)?.modelSelection;
+          if (model !== undefined) tokenConsumption = addModelUsage(tokenConsumption, model, usage);
         }
         break;
       }
@@ -1324,6 +1310,12 @@ export const foldReducedState = (
       }
       case compactionCompletedEventType: {
         const { compactionId } = payload;
+        if (
+          compactions.get(compactionId)?.terminal?._tag !== "Completed" &&
+          payload.modelSelection !== undefined
+        ) {
+          tokenConsumption = addModelUsage(tokenConsumption, payload.modelSelection, payload.usage);
+        }
         upsert(compactions, compactionId, { compactionId }, (record) => ({
           ...record,
           terminal: { _tag: "Completed", seq } as CompactionTerminal,
@@ -1332,6 +1324,9 @@ export const foldReducedState = (
       }
       case compactionFailedEventType: {
         const { compactionId, error } = payload;
+        if (payload.modelSelection !== undefined) {
+          tokenConsumption = addModelUsage(tokenConsumption, payload.modelSelection, payload.usage);
+        }
         upsert(compactions, compactionId, { compactionId }, (record) => ({
           ...record,
           terminal: { _tag: "Failed", seq, error } as CompactionTerminal,
@@ -1349,6 +1344,9 @@ export const foldReducedState = (
         }
         break;
       }
+      case sessionConfiguredEventType:
+        modelSelection ??= payload.modelSelection;
+        break;
       case baseStateRequestedEventType:
       case baseStateCreatedEventType:
       case baseStateFailedEventType:
@@ -1360,6 +1358,7 @@ export const foldReducedState = (
 
   return {
     lastSeq,
+    ...(modelSelection === undefined ? {} : { modelSelection }),
     commands,
     runs,
     recoveryContinuations,
@@ -1378,29 +1377,6 @@ export const foldReducedState = (
 /** Fold committed events from genesis into a fresh `ReducedState`. */
 export const reduceCommittedEvents = (committed: ReadonlyArray<CommittedDurableEvent>) =>
   foldReducedState(initialReducedState, committed);
-
-const addTokenUsage = (
-  state: TokenConsumptionState,
-  usage: UsagePayload | undefined,
-): TokenConsumptionState => {
-  if (usage === undefined) {
-    return state;
-  }
-  return {
-    total: {
-      inputTokens: state.total.inputTokens + tokenCount(usage.inputTokens),
-      cachedInputTokens: state.total.cachedInputTokens + tokenCount(usage.cachedInputTokens),
-      outputTokens: state.total.outputTokens + tokenCount(usage.outputTokens),
-      textTokens: state.total.textTokens + tokenCount(usage.textTokens),
-      reasoningTokens: state.total.reasoningTokens + tokenCount(usage.reasoningTokens),
-    },
-  };
-};
-
-const tokenCount = (value: number | undefined): number => nonNegativeNumber(value);
-
-const nonNegativeNumber = (value: number | undefined): number =>
-  value === undefined || !Number.isFinite(value) ? 0 : Math.max(0, Math.trunc(value));
 
 interface MutableReplayMaps {
   readonly commands: Map<CommandId, CommandRecord>;

@@ -2,6 +2,8 @@ import { defineConfig } from "vite-plus";
 import { configDefaults } from "vite-plus/test/config";
 
 const publicEntries = {
+  "services/model-resolver": "src/services/model-resolver.ts",
+  "domain/model-usage": "src/domain/model-usage.ts",
   index: "src/index.ts",
   "domain/command-queues": "src/domain/command-queues.ts",
   "domain/context-projection": "src/domain/context-projection.ts",

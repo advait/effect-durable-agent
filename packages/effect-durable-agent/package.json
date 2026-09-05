@@ -1,6 +1,6 @@
 {
   "name": "effect-durable-agent",
-  "version": "0.1.0-alpha.7",
+  "version": "0.1.0-alpha.8",
   "description": "A host-independent, event-sourced durable state-management and execution layer for agentic applications.",
   "keywords": [
     "agents",
@@ -31,6 +31,14 @@
     "tooling/oxlint/rules/*.mjs"
   ],
   "exports": {
+    "./services/model-resolver": {
+      "types": "./dist/services/model-resolver.d.ts",
+      "import": "./dist/services/model-resolver.js"
+    },
+    "./domain/model-usage": {
+      "types": "./dist/domain/model-usage.d.ts",
+      "import": "./dist/domain/model-usage.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -171,6 +179,7 @@
     "@cloudflare/workers-types": "5.20260813.1",
     "@effect/ai-openai": "4.0.0-beta.102",
     "@effect/tsgo": "0.31.0",
+    "@effect/vitest": "4.0.0-beta.102",
     "@types/node": "^25.7.0",
     "effect": "4.0.0-beta.102",
     "esbuild": "^0.28.1",

@@ -1350,6 +1350,10 @@ const makeLiveSessionState = Effect.gen(function* () {
     input: SessionRunInput,
   ) {
     const plan = planSessionRecovery(reduced);
+    input = {
+      ...input,
+      modelSelection: plan.continuation?.run.modelSelection ?? input.modelSelection,
+    };
     yield* annotateEdaSpan({
       "eda.recovery.reason": reason,
       "eda.recovery.open_tool_calls": plan.openToolCalls.length,
@@ -1961,6 +1965,7 @@ const makeLiveSessionState = Effect.gen(function* () {
   const drainOneReadyCommand = Effect.fnUntraced(function* (input: SessionRunInput) {
     const execution = yield* inspectExecutionState();
     const current = yield* currentReduced();
+    input = { ...input, modelSelection: current.modelSelection ?? input.modelSelection };
 
     if (execution?._tag === "FailedTurn") {
       return execution.result;
@@ -2105,6 +2110,7 @@ const makeLiveSessionState = Effect.gen(function* () {
     });
     yield* failIfFatal;
     const initial = yield* currentReduced();
+    input = { ...input, modelSelection: initial.modelSelection ?? input.modelSelection };
     const recovery = yield* withFatalRecording(
       recoverSession(initial, startupRecoveryReason, input),
     );

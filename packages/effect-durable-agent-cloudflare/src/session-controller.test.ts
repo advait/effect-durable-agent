@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import { ModelResolver } from "effect-durable-agent/services/model-resolver";
 import * as Layer from "effect/Layer";
 import * as LanguageModel from "effect/unstable/ai/LanguageModel";
 import * as Prompt from "effect/unstable/ai/Prompt";
@@ -6,15 +7,15 @@ import * as Response from "effect/unstable/ai/Response";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { makeMethods } from "@effect/vitest";
 
 import { SubmitMessageCommand } from "effect-durable-agent/types/commands";
 import { CommandId, EventId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
+import { EDASessionController, type EDASessionDurableObjectStorage } from "./session-controller";
 import {
-  EDASessionController,
-  type EDASessionControllerOptions,
-  type EDASessionDurableObjectStorage,
-} from "./session-controller";
-import { makeEDADurableObjectOpenAiModelLayer } from "./providers/openai";
+  makeEDADurableObjectOpenAiModelLayer,
+  makeEDADurableObjectOpenAiModelResolverLayer,
+} from "./providers/openai";
 import { DurableObjectKeepAlive } from "./durable-object-keepalive";
 import {
   EDAWebSocketClientFrame,
@@ -110,7 +111,7 @@ const makeHost = <ProjectionState extends object = never>(
     readonly compaction?: boolean;
     readonly getWebSockets?: () => ReadonlyArray<WebSocket>;
     readonly keepAlive?: DurableObjectKeepAlive;
-    readonly modelLayer?: EDASessionControllerOptions["modelLayer"];
+    readonly modelLayer?: Layer.Layer<LanguageModel.LanguageModel>;
     readonly parts?: TestModelParts;
     readonly reducers?: ReadonlyArray<EDAReducer>;
     readonly summary?: string;
@@ -136,12 +137,15 @@ const makeHost = <ProjectionState extends object = never>(
       : {}),
     ...(options.getWebSockets === undefined ? {} : { getWebSockets: options.getWebSockets }),
     ...(options.keepAlive === undefined ? {} : { keepAlive: options.keepAlive }),
-    modelLayer:
-      options.modelLayer ??
-      makeLanguageModelLayer({
-        generateText: options.summary,
-        parts: options.parts ?? finishedStream("pong"),
-      }),
+    modelResolverLayer: ModelResolver.Fixed.pipe(
+      Layer.provide(
+        options.modelLayer ??
+          makeLanguageModelLayer({
+            generateText: options.summary,
+            parts: options.parts ?? finishedStream("pong"),
+          }),
+      ),
+    ),
     reducers: options.reducers,
     storage,
     ...(options.webSocketProjection === undefined
@@ -226,6 +230,30 @@ const waitForReducerCheckpointRow = async (
 };
 
 describe("makeEDADurableObjectOpenAiModelLayer", () => {
+  makeMethods(it).effect(
+    "resolves each durable model selection through the actual provider request",
+    () => {
+      const requests: Array<AIGatewayUniversalRequest | AIGatewayUniversalRequest[]> = [];
+      const models = makeEDADurableObjectOpenAiModelResolverLayer({
+        aiGateway: fakeAiGateway((request) => requests.push(request)),
+        resolve: (selection) => ({
+          modelId: selection?.modelId ?? "default-model",
+          config: { reasoning: { effort: "high", summary: "auto" }, store: false },
+        }),
+      });
+      return Effect.gen(function* () {
+        const resolver = yield* ModelResolver;
+        for (const modelId of ["model-a", "model-b"]) {
+          const model = yield* resolver.resolve({ provider: "openai", modelId });
+          yield* model.streamText({ prompt: "hello" }).pipe(Stream.runDrain);
+        }
+        expect(requests).toMatchObject([
+          { query: { model: "model-a", reasoning: { effort: "high" } } },
+          { query: { model: "model-b", reasoning: { effort: "high" } } },
+        ]);
+      }).pipe(Effect.provide(models));
+    },
+  );
   it("allows Cloudflare AI Gateway binding-backed OpenAI calls without a local provider key", () => {
     expect(() =>
       makeEDADurableObjectOpenAiModelLayer({

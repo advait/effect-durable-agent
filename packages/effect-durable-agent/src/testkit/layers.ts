@@ -28,6 +28,7 @@ import { ToolExecutor } from "../services/tool-executor";
 import { EDAToolRegistry } from "../services/tool-registry";
 import type { EDAModelToolkit, ToolParamsSchema } from "../services/tool-registry";
 import { InferenceRunner } from "../services/inference-runner";
+import { ModelResolver } from "../services/model-resolver";
 import type { InferenceRunnerStreamPart } from "../services/inference-runner";
 import { TurnRunner } from "../services/turn-runner";
 
@@ -138,6 +139,8 @@ export interface EdaTestLayerOptions {
   readonly ids?: ReadonlyArray<string>;
   /** Real/alternate provider layer; when absent, the fake stream provider is used. */
   readonly modelLayer?: Layer.Layer<LanguageModel.LanguageModel>;
+  /** Replaces the external model-selection boundary when testing execution policy. */
+  readonly modelResolverLayer?: Layer.Layer<ModelResolver>;
   /** Fake provider stream parts; defaults to an empty stream. Ignored when `modelLayer` is provided. */
   readonly parts?: TestModelParts;
   /** Optional fake generateText output for compaction/summarization tests. */
@@ -167,11 +170,7 @@ export interface EdaTestLayerOptions {
   /** Override compaction policy; defaults to disabled. */
   readonly compactionPolicyLayer?: Layer.Layer<CompactionPolicy>;
   /** Override compaction executor; defaults to disabled. */
-  readonly compactionExecutorLayer?: Layer.Layer<
-    CompactionExecutor,
-    never,
-    LanguageModel.LanguageModel
-  >;
+  readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
   /** App-specific durable metadata reducers. */
   readonly reducers?: ReadonlyArray<EDAReducer<any>>;
   /** Override state-to-LLM context projection. */
@@ -219,6 +218,7 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
       parts: options.parts ?? Stream.empty,
     });
   const CompactionPolicyLayer = options.compactionPolicyLayer ?? CompactionPolicy.Disabled;
+  const Models = options.modelResolverLayer ?? ModelResolver.Fixed.pipe(Layer.provideMerge(Model));
   const CompactionExecutorLayer = options.compactionExecutorLayer ?? CompactionExecutor.Disabled;
   const Compaction = CompactionRunner.Live.pipe(
     Layer.provideMerge(
@@ -227,7 +227,7 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
         Factory,
         Ids,
         KeepAlive,
-        Model,
+        Models,
         CompactionPolicyLayer,
         CompactionExecutorLayer,
       ),
@@ -268,7 +268,7 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
         ? EDAToolRegistry.Empty
         : EDAToolRegistry.FromSchemas(options.toolSchemas);
   const InferenceRunnerLayer = InferenceRunner.Live.pipe(
-    Layer.provideMerge(Layer.mergeAll(Factory, Model, Registry, Ids)),
+    Layer.provideMerge(Layer.mergeAll(Factory, Models, Registry, Ids)),
   );
   const ToolExec = ToolExecutor.Live.pipe(
     Layer.provideMerge(Layer.mergeAll(Factory, Registry, Ids, Session)),

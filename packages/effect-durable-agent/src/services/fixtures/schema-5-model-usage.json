@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 5,
+  "events": [
+    {
+      "namespace": "effect-durable-agent",
+      "type": "RunStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "018f6bd5-2f2a-7b1e-8f1a-000000000001",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000064",
+      "createdAtMs": 1715000000001,
+      "trace": {
+        "span": {
+          "traceId": "b52b20ce8a86b94ea212ae4d35f7511a",
+          "spanId": "dc7139a22a9d436d",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "018f6bd5-2f2a-7b1e-8f1a-00000000000a",
+        "commandIds": [],
+        "modelSelection": {
+          "provider": "openai",
+          "modelId": "gpt-5.6-sol"
+        },
+        "trace": {
+          "root": {
+            "traceId": "43fc70f3ea4d550e765533ef8b30773c",
+            "spanId": "048426fe37c0433e",
+            "sampled": true,
+            "tracestate": null
+          },
+          "links": []
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "InferenceStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "018f6bd5-2f2a-7b1e-8f1a-000000000002",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000064",
+      "createdAtMs": 1715000000002,
+      "trace": {
+        "span": {
+          "traceId": "b37e681013e5054f7b62e7d2f2c7af58",
+          "spanId": "a6d7dcbc0e021562",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "018f6bd5-2f2a-7b1e-8f1a-00000000000a",
+        "turnId": "018f6bd5-2f2a-7b1e-8f1a-00000000000b",
+        "inferenceId": "018f6bd5-2f2a-7b1e-8f1a-00000000000c"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "InferenceCompleted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "018f6bd5-2f2a-7b1e-8f1a-000000000003",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000064",
+      "createdAtMs": 1715000000003,
+      "trace": {
+        "span": {
+          "traceId": "b09135fd476c69266d9b51d649dcd04e",
+          "spanId": "57b28880372536c8",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "018f6bd5-2f2a-7b1e-8f1a-00000000000a",
+        "turnId": "018f6bd5-2f2a-7b1e-8f1a-00000000000b",
+        "inferenceId": "018f6bd5-2f2a-7b1e-8f1a-00000000000c",
+        "usage": {
+          "inputTokens": 1000,
+          "cachedInputTokens": 300,
+          "outputTokens": 200,
+          "textTokens": 75,
+          "reasoningTokens": 125
+        }
+      }
+    }
+  ],
+  "payload": {
+    "lastSeq": 3,
+    "commands": [],
+    "runs": [
+      [
+        "018f6bd5-2f2a-7b1e-8f1a-00000000000a",
+        {
+          "runId": "018f6bd5-2f2a-7b1e-8f1a-00000000000a",
+          "commandIds": [],
+          "startedAtMs": 1715000000001,
+          "startedSeq": 1,
+          "trace": {
+            "root": {
+              "traceId": "43fc70f3ea4d550e765533ef8b30773c",
+              "spanId": "048426fe37c0433e",
+              "sampled": true,
+              "tracestate": null
+            },
+            "links": []
+          }
+        }
+      ]
+    ],
+    "recoveryContinuations": [],
+    "turns": [],
+    "inferences": [
+      [
+        "018f6bd5-2f2a-7b1e-8f1a-00000000000c",
+        {
+          "runId": "018f6bd5-2f2a-7b1e-8f1a-00000000000a",
+          "turnId": "018f6bd5-2f2a-7b1e-8f1a-00000000000b",
+          "inferenceId": "018f6bd5-2f2a-7b1e-8f1a-00000000000c",
+          "startedAtMs": 1715000000002,
+          "startedSeq": 2,
+          "terminalAtMs": 1715000000003,
+          "durationMs": 1,
+          "terminal": {
+            "_tag": "Completed",
+            "seq": 3,
+            "usage": {
+              "inputTokens": 1000,
+              "cachedInputTokens": 300,
+              "outputTokens": 200,
+              "textTokens": 75,
+              "reasoningTokens": 125
+            }
+          }
+        }
+      ]
+    ],
+    "toolCalls": [],
+    "messages": [],
+    "stopRequests": [],
+    "compactions": [],
+    "context": {
+      "version": 0
+    },
+    "tokenConsumption": {
+      "total": {
+        "inputTokens": 1000,
+        "cachedInputTokens": 300,
+        "outputTokens": 200,
+        "textTokens": 75,
+        "reasoningTokens": 125
+      }
+    }
+  }
+}

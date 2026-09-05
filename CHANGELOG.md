@@ -4,6 +4,15 @@ All notable changes to Effect Durable Agent will be documented in this file.
 
 ## Unreleased
 
+## 0.1.0-alpha.8
+
+- Persist creation-time model selection and retain immutable run selections during restart recovery
+- Replace the production `modelLayer` host option with `modelResolverLayer`, including a shared-transport OpenAI resolver
+- Replace aggregate token consumption with per-provider/model buckets and preserve cache-write counters
+- Record compaction usage, including known usage when the summary response contains no text
+- Rebuild schema-5 framework checkpoints from retained history into schema 6; no conversation events are rewritten
+- Keep model usage records compatible with Cloudflare RPC structured cloning
+
 ## 0.1.0-alpha.7
 
 - Let Cloudflare hosts project application WebSocket protocols inside the EDA Durable Object while

@@ -100,6 +100,7 @@ export type FailurePayload = typeof FailurePayload.Type;
 export const UsagePayload = Schema.Struct({
   inputTokens: Schema.optionalKey(NonNegativeInt),
   cachedInputTokens: Schema.optionalKey(NonNegativeInt),
+  cacheWriteInputTokens: Schema.optionalKey(NonNegativeInt),
   outputTokens: Schema.optionalKey(NonNegativeInt),
   textTokens: Schema.optionalKey(NonNegativeInt),
   reasoningTokens: Schema.optionalKey(NonNegativeInt),

@@ -1,4 +1,6 @@
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
+import { ModelResolver } from "effect-durable-agent/services/model-resolver";
+import type { ModelSelectionPayload } from "effect-durable-agent/types/events";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
@@ -11,6 +13,47 @@ import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 
 /** Provider request defaults accepted by EDA's OpenAI Responses model adapter. */
 export type EDAOpenAiModelConfig = Omit<typeof OpenAiLanguageModel.Config.Service, "model">;
+
+/** Resolves each durable selection while sharing the provider transport for the runtime lifetime. */
+export const makeEDADurableObjectOpenAiModelResolverLayer = (options: {
+  readonly aiGateway?: AiGateway;
+  readonly apiKey?: string;
+  readonly apiUrl?: string;
+  readonly resolve: (selection: ModelSelectionPayload | undefined) => {
+    readonly modelId: string;
+    readonly config: EDAOpenAiModelConfig;
+  };
+}): Layer.Layer<ModelResolver> => {
+  const apiKey = optionalNonEmptyString(options.apiKey);
+  if (apiKey === undefined && options.aiGateway === undefined) {
+    throw new Error(
+      "OPENAI_API_KEY is required unless the EDA OpenAI model resolver is backed by a Cloudflare AI Gateway binding.",
+    );
+  }
+  const transport =
+    options.aiGateway === undefined
+      ? FetchHttpClient.layer
+      : Layer.succeed(HttpClient.HttpClient, makeAiGatewayHttpClient(options.aiGateway));
+  const client = OpenAiClient.layer({
+    ...(apiKey === undefined ? {} : { apiKey: Redacted.make(apiKey) }),
+    ...(options.apiUrl === undefined ? {} : { apiUrl: options.apiUrl }),
+  }).pipe(Layer.provide(transport));
+  return Layer.effect(
+    ModelResolver,
+    Effect.gen(function* () {
+      const provider = yield* OpenAiClient.OpenAiClient;
+      return {
+        resolve: Effect.fn("OpenAiModelResolver.resolve")(function* (selection) {
+          const resolved = options.resolve(selection);
+          return yield* OpenAiLanguageModel.make({
+            model: resolved.modelId,
+            config: resolved.config,
+          }).pipe(Effect.provideService(OpenAiClient.OpenAiClient, provider));
+        }),
+      };
+    }),
+  ).pipe(Layer.provide(client));
+};
 
 /** OpenAI-backed Effect AI model layer for a Cloudflare Worker. */
 export const makeEDADurableObjectOpenAiModelLayer = (options: {

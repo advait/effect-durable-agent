@@ -1,6 +1,8 @@
 import * as Prompt from "effect/unstable/ai/Prompt";
 import * as AIResponse from "effect/unstable/ai/Response";
 import * as Stream from "effect/Stream";
+import * as Layer from "effect/Layer";
+import { ModelResolver } from "effect-durable-agent/services/model-resolver";
 
 import { makeLanguageModelLayer } from "effect-durable-agent/testkit/layers";
 import { CommandIdempotencyKey, SubmitMessageCommand } from "effect-durable-agent/types/commands";
@@ -33,8 +35,10 @@ const finishedStream = (text: string) =>
 /** Deterministic model and runtime configuration shared by both real-host fixtures. */
 export const conformanceHostOptions = (): EDASessionDurableObjectOptions => ({
   config: { modelSelection: { provider: "conformance", modelId: "fixed-pong" } },
-  modelLayer: makeLanguageModelLayer(
-    EDA_CONFORMANCE_BLOCK_MODEL ? Stream.never : finishedStream("pong"),
+  modelResolverLayer: ModelResolver.Fixed.pipe(
+    Layer.provide(
+      makeLanguageModelLayer(EDA_CONFORMANCE_BLOCK_MODEL ? Stream.never : finishedStream("pong")),
+    ),
   ),
 });
 

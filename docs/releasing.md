@@ -8,7 +8,7 @@ their published manifests.
 
 ## Current public baseline
 
-The current lockstep release target is `0.1.0-alpha.7`. The `alpha` npm dist-tag should resolve to
+The current lockstep release target is `0.1.0-alpha.8`. The `alpha` npm dist-tag should resolve to
 that version for core, Cloudflare, and celld after publication. Keep `latest` at
 `0.1.0-alpha.4` until the new alpha has been verified and deliberately promoted. Consumers should
 name the exact lockstep version so dependency updates remain deliberate.

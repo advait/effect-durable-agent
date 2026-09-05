@@ -3,7 +3,6 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as Prompt from "effect/unstable/ai/Prompt";
 import * as Response from "effect/unstable/ai/Response";
-import type * as LanguageModel from "effect/unstable/ai/LanguageModel";
 import { describe, expect, it } from "vite-plus/test";
 
 import { SubmitMessageCommand } from "../types/commands";
@@ -69,11 +68,7 @@ const makeRuntimeLayer = (
   parts: ReadonlyArray<Stream.Stream<InferenceRunnerStreamPart, unknown>>,
   options: {
     readonly compactionPolicyLayer?: Layer.Layer<CompactionPolicy>;
-    readonly compactionExecutorLayer?: Layer.Layer<
-      CompactionExecutor,
-      never,
-      LanguageModel.LanguageModel
-    >;
+    readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
     readonly generateText?: string;
     readonly onGenerateText?: (input: { readonly prompt: Prompt.RawInput }) => void;
     readonly onStreamText?: (input: { readonly prompt: Prompt.RawInput }) => void;
