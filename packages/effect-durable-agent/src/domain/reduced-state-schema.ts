@@ -1,6 +1,10 @@
 import * as Prompt from "effect/unstable/ai/Prompt";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+export {
+  TokenConsumptionState as TokenConsumptionStateSchema,
+  TokenUsageTotals as TokenUsageTotalsSchema,
+} from "./model-usage";
 
 import {
   CancelPendingMessageCommand,
@@ -30,6 +34,7 @@ import {
   SystemPromptText,
   ToolName,
   UsagePayload,
+  ModelSelectionPayload,
 } from "../types/events";
 
 const PromptFilePart = Schema.Struct(Prompt.FilePart.fields);
@@ -190,6 +195,7 @@ export const JsonCommandRecordSchema = Schema.Struct({
 });
 
 export const RunRecordSchema = Schema.Struct({
+  modelSelection: Schema.optionalKey(ModelSelectionPayload),
   ...LifecycleTimingFields,
   commandIds: Schema.Array(CommandId),
   runId: RunId,
@@ -351,16 +357,4 @@ export const JsonMessageRecordSchema = messageRecordSchema(
 export const RecoveryContinuationRecordSchema = Schema.Struct({
   ...RecoveryContinuation.fields,
   seq: SequenceNumber,
-});
-
-export const TokenUsageTotalsSchema = Schema.Struct({
-  cachedInputTokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  inputTokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  outputTokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  reasoningTokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  textTokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-});
-
-export const TokenConsumptionStateSchema = Schema.Struct({
-  total: TokenUsageTotalsSchema,
 });

@@ -7,7 +7,8 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as AiError from "effect/unstable/ai/AiError";
-import * as LanguageModel from "effect/unstable/ai/LanguageModel";
+import { ModelResolver } from "./model-resolver";
+import { makeUsagePayload } from "./provider-usage";
 import * as Prompt from "effect/unstable/ai/Prompt";
 import * as Response from "effect/unstable/ai/Response";
 
@@ -158,7 +159,7 @@ interface RunInferenceState {
 const makeLiveInferenceRunner = Effect.gen(function* () {
   const ids = yield* IdGenerator;
   const events = yield* EventFactory;
-  const languageModel = yield* LanguageModel.LanguageModel;
+  const models = yield* ModelResolver;
   const toolRegistry = yield* EDAToolRegistry;
 
   const recordPart = (
@@ -479,6 +480,7 @@ const makeLiveInferenceRunner = Effect.gen(function* () {
 
   return {
     runInference: Effect.fn("agent.inference")(function* (input: RunInferenceInput) {
+      const languageModel = yield* models.resolve(input.modelSelection);
       const inferenceIdentity = {
         runId: input.runId,
         turnId: input.turnId,
@@ -777,32 +779,3 @@ const makeFinishMetadata = (part: Response.FinishPart) => ({
   response: part.response,
   metadata: part.metadata,
 });
-
-const makeUsagePayload = (usage: Response.Usage) => {
-  const uncachedInputTokens = nonNegativeInt(usage.inputTokens.uncached);
-  const cachedInputTokens = nonNegativeInt(usage.inputTokens.cacheRead);
-  const cacheWriteInputTokens = nonNegativeInt(usage.inputTokens.cacheWrite);
-  const inputTokens =
-    nonNegativeInt(usage.inputTokens.total) ??
-    sumDefined([uncachedInputTokens, cachedInputTokens, cacheWriteInputTokens]);
-  const textTokens = nonNegativeInt(usage.outputTokens.text);
-  const reasoningTokens = nonNegativeInt(usage.outputTokens.reasoning);
-  const outputTokens =
-    nonNegativeInt(usage.outputTokens.total) ?? sumDefined([textTokens, reasoningTokens]);
-
-  return UsagePayload.make({
-    ...(inputTokens === undefined ? {} : { inputTokens }),
-    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
-    ...(outputTokens === undefined ? {} : { outputTokens }),
-    ...(textTokens === undefined ? {} : { textTokens }),
-    ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
-  });
-};
-
-const sumDefined = (values: ReadonlyArray<number | undefined>) => {
-  const present = values.filter((value): value is number => value !== undefined);
-  return present.length === 0 ? undefined : present.reduce((sum, value) => sum + value, 0);
-};
-
-const nonNegativeInt = (value: number | undefined) =>
-  value === undefined || !Number.isFinite(value) ? undefined : Math.max(0, Math.trunc(value));

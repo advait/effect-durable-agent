@@ -31,6 +31,14 @@ import {
 import { durableEventSchema } from "./internal";
 import { EDARunTrace, makeEDARunTrace } from "../tracing";
 
+/** Establishes a session's execution policy before its first run; not a model-switch operation. */
+export const sessionConfiguredEventType = makeEventType("SessionConfigured");
+export const SessionConfiguredEvent = durableEventSchema(
+  sessionConfiguredEventType,
+  Schema.Struct({ modelSelection: ModelSelectionPayload }),
+);
+export type SessionConfiguredEvent = typeof SessionConfiguredEvent.Type;
+
 /** Event type values for durable command lifecycle events. */
 export const commandAdmittedEventType = makeEventType("CommandAdmitted");
 export const commandStartedEventType = makeEventType("CommandStarted");
@@ -742,7 +750,11 @@ export const SummaryCreatedEvent = durableEventSchema(
 export type SummaryCreatedEvent = typeof SummaryCreatedEvent.Type;
 
 /** Payload recorded when compaction completes. */
-export const CompactionCompletedPayload = Schema.Struct({ compactionId: CompactionId });
+export const CompactionCompletedPayload = Schema.Struct({
+  compactionId: CompactionId,
+  modelSelection: Schema.optionalKey(ModelSelectionPayload),
+  usage: Schema.optionalKey(UsagePayload),
+});
 export type CompactionCompletedPayload = typeof CompactionCompletedPayload.Type;
 export const CompactionCompletedEvent = durableEventSchema(
   compactionCompletedEventType,
@@ -768,6 +780,8 @@ export type ContextRebasedEvent = typeof ContextRebasedEvent.Type;
 export const CompactionFailedPayload = Schema.Struct({
   compactionId: CompactionId,
   error: FailurePayload,
+  modelSelection: Schema.optionalKey(ModelSelectionPayload),
+  usage: Schema.optionalKey(UsagePayload),
 });
 export type CompactionFailedPayload = typeof CompactionFailedPayload.Type;
 export const CompactionFailedEvent = durableEventSchema(
@@ -839,6 +853,7 @@ export type BaseStateEvent = typeof BaseStateEvent.Type;
 
 /** Built-in durable event union for framework-owned session facts. */
 export const EDADurableEvent = Schema.Union([
+  SessionConfiguredEvent,
   CommandEvent,
   MessageEvent,
   RunEvent,

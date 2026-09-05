@@ -3,7 +3,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Prompt from "effect/unstable/ai/Prompt";
 import * as Schema from "effect/Schema";
-import * as LanguageModel from "effect/unstable/ai/LanguageModel";
+import type * as LanguageModel from "effect/unstable/ai/LanguageModel";
+import { ModelResolver } from "./model-resolver";
+import { makeUsagePayload } from "./provider-usage";
 
 import type { ContextProjection } from "../domain/context-projection";
 import {
@@ -17,7 +19,7 @@ import {
 } from "../domain/context-projection";
 import type { ReducedState } from "../domain/reduced-state";
 import { InferenceId, ContextVersion, SequenceNumber } from "../types/core";
-import { FailurePayload, type AssistantMessageContent } from "../types/events";
+import { FailurePayload, UsagePayload, type AssistantMessageContent } from "../types/events";
 import { CommittedDurableEvent, DurableAppendEntry, EDASessionStoreError } from "./session-store";
 import { EventFactory } from "./event-factory";
 import { IdGenerator } from "./id-generator";
@@ -78,17 +80,21 @@ export const CompactionOutput = Schema.Struct({
   text: Schema.NonEmptyString,
   promptMessage: Prompt.UserMessage,
   executorId: Schema.optionalKey(CompactionExecutorId),
+  usage: Schema.optionalKey(UsagePayload),
 });
 export type CompactionOutput = typeof CompactionOutput.Type;
 
 /** Executor input with framework-minted lifecycle identities. */
 export interface CompactionExecutorInput extends CompactionPolicyInput {
   readonly plan: CompactionPlan;
+  /** Provider service resolved from the same durable selection used for accounting. */
+  readonly model: LanguageModel.Service;
 }
 
 /** Typed failure from policy planning or summary generation. */
 export class CompactionError extends Schema.TaggedErrorClass<CompactionError>()("CompactionError", {
   message: Schema.String,
+  usage: Schema.optionalKey(UsagePayload),
 }) {}
 
 /** Service contract for deciding whether the current context should be compacted. */
@@ -169,11 +175,10 @@ export class CompactionExecutor extends Context.Service<
   /** Summary executor backed by the configured Effect AI LanguageModel. */
   static readonly LanguageModelSummary = (
     options: LanguageModelSummaryCompactionExecutorOptions = {},
-  ): Layer.Layer<CompactionExecutor, never, LanguageModel.LanguageModel> =>
+  ): Layer.Layer<CompactionExecutor> =>
     Layer.effect(
       CompactionExecutor,
-      Effect.gen(function* () {
-        const languageModel = yield* LanguageModel.LanguageModel;
+      Effect.sync(() => {
         const executorId = CompactionExecutorId.make(
           options.executorId ?? "language-model-summary",
         );
@@ -194,7 +199,7 @@ export class CompactionExecutor extends Context.Service<
                 message: "compaction plan selected no source messages",
               });
             }
-            const response = yield* languageModel
+            const response = yield* input.model
               .generateText({
                 prompt: Prompt.fromMessages([
                   Prompt.makeMessage("system", { content: summarizationSystemPrompt }),
@@ -214,9 +219,13 @@ export class CompactionExecutor extends Context.Service<
               );
             const text = response.text.trim();
             if (text.length === 0) {
-              return yield* new CompactionError({ message: "summary model returned no text" });
+              return yield* new CompactionError({
+                message: "summary model returned no text",
+                usage: makeUsagePayload(response.usage),
+              });
             }
             return CompactionOutput.make({
+              usage: makeUsagePayload(response.usage),
               text,
               promptMessage: Prompt.makeMessage("user", {
                 content: [Prompt.textPart({ text: `${summaryMessagePrefix}\n\n${text}` })],
@@ -276,6 +285,7 @@ const makeLiveCompactionRunner = Effect.gen(function* () {
   const policy = yield* CompactionPolicy;
   const executor = yield* CompactionExecutor;
   const keepAlive = yield* EDAKeepAlive;
+  const models = yield* ModelResolver;
 
   const maybeCompact = Effect.fnUntraced(function* (input: CompactionRunnerInput) {
     const plan = yield* policy
@@ -319,16 +329,21 @@ const makeLiveCompactionRunner = Effect.gen(function* () {
       { event: started },
     ]);
 
+    const model = yield* models.resolve(input.state.modelSelection);
     const output = yield* keepAlive
       .withActiveWork(
         `compaction:${compactionId}`,
-        executor.execute({ plan, state: input.state, context: input.context }),
+        executor.execute({ plan, state: input.state, context: input.context, model }),
       )
       .pipe(
         Effect.catchTag("CompactionError", (error) =>
           Effect.gen(function* () {
             const failed = yield* events.compactionFailed({
               compactionId,
+              ...(input.state.modelSelection === undefined
+                ? {}
+                : { modelSelection: input.state.modelSelection }),
+              ...(error.usage === undefined ? {} : { usage: error.usage }),
               error: FailurePayload.make({ message: error.message }),
             });
             const committed = yield* input.appendDurableEntries([{ event: failed }]);
@@ -371,7 +386,13 @@ const makeLiveCompactionRunner = Effect.gen(function* () {
       contextVersion: ContextVersion.make(input.context.contextVersion + 1),
       retainedFromContextSeq: plan.retainedFromContextSeq,
     });
-    const completed = yield* events.compactionCompleted({ compactionId });
+    const completed = yield* events.compactionCompleted({
+      compactionId,
+      ...(input.state.modelSelection === undefined
+        ? {}
+        : { modelSelection: input.state.modelSelection }),
+      ...(output.output.usage === undefined ? {} : { usage: output.output.usage }),
+    });
     const committed = yield* input.appendDurableEntries([
       { event: summaryCreated },
       { event: contextRebased },

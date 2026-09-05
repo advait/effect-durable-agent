@@ -1,8 +1,8 @@
 import {
   edaRuntimeConfig,
-  makeEDADurableObjectOpenAiModelLayer,
   type EDASessionDurableObjectOptions,
 } from "effect-durable-agent-cloudflare";
+import { makeEDADurableObjectOpenAiModelResolverLayer } from "effect-durable-agent-cloudflare/openai";
 import { optionalString } from "./http";
 
 export const EXAMPLE_DEFAULT_MODEL_ID = "gpt-4.1-mini";
@@ -16,7 +16,7 @@ export interface ExampleOpenAiEnv {
 
 export const makeExampleOpenAiOptions = (
   env: ExampleOpenAiEnv,
-): Pick<EDASessionDurableObjectOptions, "config" | "modelLayer"> => {
+): Pick<EDASessionDurableObjectOptions, "config" | "modelResolverLayer"> => {
   const modelId = optionalString(env.EDA_OPENAI_MODEL) ?? EXAMPLE_DEFAULT_MODEL_ID;
   return {
     config: edaRuntimeConfig({
@@ -24,10 +24,10 @@ export const makeExampleOpenAiOptions = (
       provider: "openai",
       systemPrompt: optionalString(env.EDA_SYSTEM_PROMPT),
     }),
-    modelLayer: makeEDADurableObjectOpenAiModelLayer({
+    modelResolverLayer: makeEDADurableObjectOpenAiModelResolverLayer({
       apiKey: optionalString(env.OPENAI_API_KEY),
       apiUrl: optionalString(env.EDA_OPENAI_API_URL),
-      modelId,
+      resolve: (selection) => ({ modelId: selection?.modelId ?? modelId, config: {} }),
     }),
   };
 };

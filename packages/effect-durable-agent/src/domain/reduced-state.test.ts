@@ -117,7 +117,7 @@ const activeInferenceEvents = () => [
 
 describe("reduced-state", () => {
   it("uses the current checkpoint schema version", () => {
-    expect(frameworkReducedStateReducerSchemaVersion).toBe(5);
+    expect(frameworkReducedStateReducerSchemaVersion).toBe(6);
   });
 
   it("folds and checkpoint-hydrates imported assistant context", () => {
@@ -508,13 +508,20 @@ describe("reduced-state", () => {
       }),
     ]);
 
-    expect(state.tokenConsumption.total).toEqual({
-      inputTokens: 30,
-      cachedInputTokens: 7,
-      outputTokens: 12,
-      textTokens: 9,
-      reasoningTokens: 3,
-    });
+    expect(state.tokenConsumption.byModel).toEqual([
+      {
+        provider: "test",
+        modelId: "test-model",
+        usage: {
+          inputTokens: 30,
+          cachedInputTokens: 7,
+          cacheWriteInputTokens: 0,
+          outputTokens: 12,
+          textTokens: 9,
+          reasoningTokens: 3,
+        },
+      },
+    ]);
     expect(state.inferences.get(INFERENCE_ID)?.terminal).toMatchObject({
       _tag: "Completed",
       usage: { cachedInputTokens: 4 },
@@ -544,6 +551,76 @@ describe("reduced-state", () => {
       _tag: "Completed",
       usage: { inputTokens: 8, outputTokens: 4, cachedInputTokens: 2 },
     });
+  });
+
+  it("preserves initial selection and attributes calls to their immutable run selections", () => {
+    const selected = {
+      provider: "openai",
+      modelId: "model-a",
+      settings: { thinkingLevel: "high" },
+    };
+    const other = { provider: "openai", modelId: "model-b", settings: { thinkingLevel: "low" } };
+    const events = [
+      committed(1, "SessionConfigured", { modelSelection: selected }),
+      committed(2, "RunStarted", {
+        runId: RUN_ID,
+        commandIds: [],
+        modelSelection: selected,
+        trace: makeEDARunTrace(),
+      }),
+      committed(3, "InferenceStarted", {
+        runId: RUN_ID,
+        turnId: TURN_ID,
+        inferenceId: INFERENCE_ID,
+      }),
+      committed(4, "InferenceCompleted", {
+        runId: RUN_ID,
+        turnId: TURN_ID,
+        inferenceId: INFERENCE_ID,
+        usage: {
+          inputTokens: 100,
+          cachedInputTokens: 10,
+          cacheWriteInputTokens: 5,
+          outputTokens: 20,
+        },
+      }),
+      committed(5, "RunStarted", {
+        runId: uuid(99),
+        commandIds: [],
+        modelSelection: other,
+        trace: makeEDARunTrace(),
+      }),
+      committed(6, "InferenceStarted", {
+        runId: uuid(99),
+        turnId: TURN_ID,
+        inferenceId: SECOND_INFERENCE_ID,
+      }),
+      committed(7, "InferenceCompleted", {
+        runId: uuid(99),
+        turnId: TURN_ID,
+        inferenceId: SECOND_INFERENCE_ID,
+        usage: { inputTokens: 50, outputTokens: 10 },
+      }),
+      committed(8, "CompactionCompleted", {
+        compactionId: uuid(100),
+        modelSelection: other,
+        usage: { inputTokens: 30, outputTokens: 4 },
+      }),
+      committed(9, "SessionConfigured", { modelSelection: other }),
+    ];
+    const state = reduceCommittedEvents(events);
+    expect(state.modelSelection).toEqual(selected);
+    expect(state.tokenConsumption.byModel).toMatchObject([
+      {
+        modelId: "model-a",
+        usage: { inputTokens: 100, cacheWriteInputTokens: 5, outputTokens: 20 },
+      },
+      { modelId: "model-b", usage: { inputTokens: 80, outputTokens: 14 } },
+    ]);
+    const restored = decodeReducedStateCheckpoint(encodeReducedStateCheckpoint(state), events);
+    expect(restored.modelSelection).toEqual(selected);
+    expect(restored.tokenConsumption).toEqual(state.tokenConsumption);
+    expect(restored.runs.get(RunId.make(uuid(99)))?.modelSelection).toEqual(other);
   });
 
   it("roundtrips heavyweight checkpoint fields through event pointers", () => {

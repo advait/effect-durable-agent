@@ -1,4 +1,4 @@
-import type * as LanguageModel from "effect/unstable/ai/LanguageModel";
+import { ModelResolver } from "./model-resolver";
 import * as Layer from "effect/Layer";
 import * as Tracer from "effect/Tracer";
 
@@ -31,14 +31,10 @@ import { TurnRunner } from "./turn-runner";
  */
 export interface EDARuntimeLayerOptions {
   readonly config: EDARuntimeConfig;
-  readonly compactionExecutorLayer?: Layer.Layer<
-    CompactionExecutor,
-    never,
-    LanguageModel.LanguageModel
-  >;
+  readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
   readonly compactionPolicyLayer?: Layer.Layer<CompactionPolicy>;
   readonly keepAliveLayer?: Layer.Layer<EDAKeepAlive>;
-  readonly modelLayer: Layer.Layer<LanguageModel.LanguageModel>;
+  readonly modelResolverLayer: Layer.Layer<ModelResolver>;
   readonly promptProjectorLayer?: Layer.Layer<EDAPromptProjector>;
   readonly reducerRegistryLayer?: Layer.Layer<EDAReducerRegistry>;
   readonly sessionId: SessionId;
@@ -57,7 +53,7 @@ export const makeEDARuntimeLayer = ({
   compactionExecutorLayer,
   compactionPolicyLayer,
   keepAliveLayer,
-  modelLayer,
+  modelResolverLayer,
   promptProjectorLayer,
   reducerRegistryLayer,
   sessionId,
@@ -70,6 +66,7 @@ export const makeEDARuntimeLayer = ({
   tracer,
 }: EDARuntimeLayerOptions): Layer.Layer<EDARuntime, SessionCommandAdmissionError> => {
   const Store = sessionStoreLayer;
+  const Models = modelResolverLayer;
   const EventObserver = sessionEventObserverLayer ?? SessionEventObserver.Noop;
   const Bus = LiveEventBus.Live.pipe(Layer.provide(EventObserver));
   const KeepAlive = keepAliveLayer ?? EDAKeepAlive.Noop;
@@ -87,7 +84,7 @@ export const makeEDARuntimeLayer = ({
         Factory,
         Ids,
         KeepAlive,
-        modelLayer,
+        Models,
         CompactionPolicyLayer,
         CompactionExecutorLayer,
       ),
@@ -128,7 +125,7 @@ export const makeEDARuntimeLayer = ({
         ? EDAToolRegistry.Empty
         : EDAToolRegistry.FromToolkit(toolkit);
   const InferenceRunnerLayer = InferenceRunner.Live.pipe(
-    Layer.provideMerge(Layer.mergeAll(Factory, modelLayer, Registry, Ids)),
+    Layer.provideMerge(Layer.mergeAll(Factory, Models, Registry, Ids)),
   );
   const ToolExec = ToolExecutor.Live.pipe(
     Layer.provideMerge(Layer.mergeAll(Factory, Registry, Ids, Session)),

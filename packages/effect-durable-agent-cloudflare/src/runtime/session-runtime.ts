@@ -1,4 +1,4 @@
-import type * as LanguageModel from "effect/unstable/ai/LanguageModel";
+import type { ModelResolver } from "effect-durable-agent/services/model-resolver";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -44,14 +44,10 @@ export type EDATracerFactory = (input: { readonly sessionId: SessionId }) => Tra
 export interface EDASessionRuntimeOptions {
   readonly background?: DurableObjectBackgroundWaiter;
   readonly config: EDARuntimeConfig;
-  readonly compactionExecutorLayer?: Layer.Layer<
-    CompactionExecutor,
-    never,
-    LanguageModel.LanguageModel
-  >;
+  readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
   readonly compactionPolicyLayer?: Layer.Layer<CompactionPolicy>;
   readonly keepAlive?: DurableObjectKeepAlive;
-  readonly modelLayer: Layer.Layer<LanguageModel.LanguageModel>;
+  readonly modelResolverLayer: Layer.Layer<ModelResolver>;
   readonly promptProjectorLayer?: Layer.Layer<EDAPromptProjector>;
   readonly reducers?: ReadonlyArray<EDAReducer>;
   readonly sessionEventObserverLayer: Layer.Layer<SessionEventObserver>;
@@ -154,7 +150,7 @@ export class EDASessionRuntime {
         compactionExecutorLayer: this.options.compactionExecutorLayer,
         compactionPolicyLayer: this.options.compactionPolicyLayer,
         keepAlive: this.keepAlive,
-        modelLayer: this.options.modelLayer,
+        modelResolverLayer: this.options.modelResolverLayer,
         promptProjectorLayer: this.options.promptProjectorLayer,
         reducers: this.options.reducers,
         sessionEventObserverLayer: this.options.sessionEventObserverLayer,

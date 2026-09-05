@@ -1,5 +1,11 @@
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as LanguageModel from "effect/unstable/ai/LanguageModel";
+import { makeMethods } from "@effect/vitest";
+import { ModelResolver } from "./model-resolver";
+import { makeLanguageModelLayer } from "../testkit/layers";
+import type { ModelSelectionPayload } from "../types/events";
 import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
 import * as Prompt from "effect/unstable/ai/Prompt";
@@ -90,6 +96,78 @@ const expectEveryToolCallPaired = (prompt: Prompt.RawInput) => {
 };
 
 describe("SessionState control loop - recovery and queue policy", () => {
+  makeMethods(it).live("resumes the interrupted run model, not the session's first model", () => {
+    const interruptedModel = {
+      provider: "test",
+      modelId: "interrupted-model",
+      settings: { thinkingLevel: "high" },
+    };
+    const observed: Array<ModelSelectionPayload | undefined> = [];
+    const models = Layer.effect(
+      ModelResolver,
+      Effect.gen(function* () {
+        const model = yield* LanguageModel.LanguageModel;
+        return {
+          resolve: (selection: ModelSelectionPayload | undefined) =>
+            Effect.sync(() => {
+              observed.push(selection);
+              return model;
+            }),
+        };
+      }),
+    ).pipe(
+      Layer.provide(
+        makeLanguageModelLayer(
+          Stream.make(
+            Response.makePart("finish", { reason: "stop", usage: usage(), response: undefined }),
+          ),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const events = yield* EventFactory;
+      const state = yield* SessionState;
+      const store = yield* EDASessionStore;
+      const commandId = CommandId.make(COMMAND_ID);
+      const runId = RunId.make(RUN_ID);
+      const turnId = TurnId.make(TURN_ID);
+      const firstRun = RunId.make(generatedId(500));
+      yield* state.appendDurableBatch([
+        yield* events.runStarted({ runId: firstRun, commandIds: [], modelSelection }),
+        yield* events.runCompleted({ runId: firstRun }),
+        yield* events.commandAdmitted({ command }),
+        yield* events.commandStarted({ commandId }),
+        yield* events.userMessageCommitted({
+          commandId,
+          messageId: MessageId.make(USER_MESSAGE_ID),
+          content: command.content,
+        }),
+        yield* events.runStarted({
+          runId,
+          commandIds: [commandId],
+          modelSelection: interruptedModel,
+        }),
+        yield* events.turnStarted({ runId, turnId }),
+        yield* events.inferenceStarted({
+          runId,
+          turnId,
+          inferenceId: InferenceId.make(INFERENCE_ID),
+        }),
+      ]);
+      yield* state.start({ modelSelection });
+      const committed = yield* waitForCommitted(store, hasCommandCompleted(commandId));
+      const replacement = committed.filter((entry) => entry.event.type === "RunStarted").at(-1);
+      expect(replacement?.event.payload).toMatchObject({ modelSelection: interruptedModel });
+      expect(observed).toEqual([interruptedModel]);
+      const snapshot = yield* state.snapshot();
+      expect(snapshot.modelSelection).toEqual(modelSelection);
+      expect(snapshot.tokenConsumption.byModel).toMatchObject([{ modelId: "interrupted-model" }]);
+    }).pipe(
+      Effect.provide(
+        makeEdaTestLayer({ sessionId: SessionId.make(SESSION_ID), modelResolverLayer: models }),
+      ),
+    );
+  });
   it("does not emit RecoveryCompleted when startup finds no work to repair", async () => {
     const program = Effect.scoped(
       Effect.gen(function* () {

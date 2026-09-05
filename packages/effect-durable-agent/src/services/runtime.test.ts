@@ -6,8 +6,12 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Prompt from "effect/unstable/ai/Prompt";
 import * as Response from "effect/unstable/ai/Response";
+import * as LanguageModel from "effect/unstable/ai/LanguageModel";
+import { ModelResolver } from "./model-resolver";
+import { SessionConfiguredEvent, type ModelSelectionPayload } from "../types/events";
 import * as Tool from "effect/unstable/ai/Tool";
 import { describe, expect, it } from "vite-plus/test";
+import { makeMethods } from "@effect/vitest";
 
 import { SubmitMessageCommand } from "../types/commands";
 import {
@@ -30,7 +34,7 @@ import { LiveEventBus } from "./live-event-bus";
 import { EDARuntime } from "./runtime";
 import { makeEDAToolkit } from "./tool-registry";
 import type { InferenceRunnerStreamPart } from "./inference-runner";
-import { makeEdaTestLayer } from "../testkit/layers";
+import { makeEdaTestLayer, makeLanguageModelLayer } from "../testkit/layers";
 
 const SESSION_ID = "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a";
 const COMMAND_ID = "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a";
@@ -126,6 +130,72 @@ const usage = () =>
   });
 
 describe("EDARuntime", () => {
+  makeMethods(it).effect(
+    "executes with the persisted creation selection instead of the process default",
+    () => {
+      const selected = {
+        provider: "test",
+        modelId: "selected",
+        settings: { thinkingLevel: "high" },
+      };
+      const observed: Array<ModelSelectionPayload | undefined> = [];
+      const models = Layer.effect(
+        ModelResolver,
+        Effect.gen(function* () {
+          const model = yield* LanguageModel.LanguageModel;
+          return {
+            resolve: (selection: ModelSelectionPayload | undefined) =>
+              Effect.sync(() => {
+                observed.push(selection);
+                return model;
+              }),
+          };
+        }),
+      ).pipe(
+        Layer.provide(
+          makeLanguageModelLayer(
+            Stream.make(
+              Response.makePart("text-delta", { id: "text", delta: "hello" }),
+              Response.makePart("finish", { reason: "stop", usage: usage(), response: undefined }),
+            ),
+          ),
+        ),
+      );
+      const runtimeLayer = EDARuntime.Live({
+        modelSelection: { provider: "test", modelId: "process-default" },
+      }).pipe(
+        Layer.provide(
+          makeEdaTestLayer({
+            sessionId: SessionId.make(SESSION_ID),
+            modelResolverLayer: models,
+            seedEvents: [
+              SessionConfiguredEvent.make({
+                namespace: effectDurableAgentNamespace,
+                type: "SessionConfigured",
+                schemaVersion: schemaV1,
+                durability: "durable",
+                eventId: EventId.make(TEXT_EVENT_ID),
+                sessionId: SessionId.make(SESSION_ID),
+                createdAtMs: UnixEpochMillis.make(1),
+                payload: { modelSelection: selected },
+              }),
+            ],
+          }),
+        ),
+      );
+      return Effect.gen(function* () {
+        const runtime = yield* EDARuntime;
+        yield* runtime.submitAndBlock(command);
+        yield* runtime.submitAndBlock(secondCommand);
+        const snapshot = yield* runtime.snapshot();
+        expect(snapshot.state.modelSelection).toEqual(selected);
+        expect(snapshot.state.tokenConsumption.byModel).toMatchObject([
+          { modelId: "selected", usage: { inputTokens: 20 } },
+        ]);
+        expect(observed).toEqual([selected, selected]);
+      }).pipe(Effect.provide(runtimeLayer));
+    },
+  );
   it("owns command submission and the blocking dispatch process", async () => {
     const stream = Stream.make(
       Response.makePart("text-delta", { id: "text-1", delta: "hello" }),

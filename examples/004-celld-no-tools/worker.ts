@@ -1,4 +1,6 @@
 import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Layer from "effect/Layer";
+import { ModelResolver } from "effect-durable-agent/services/model-resolver";
 
 import { CommandIdempotencyKey, SubmitMessageCommand } from "effect-durable-agent/types/commands";
 import { SessionId } from "effect-durable-agent/types/core";
@@ -21,10 +23,14 @@ export class CelldNoToolsSession extends EDASessionCell<Env> {
         provider: "openai",
         systemPrompt: "Answer briefly and clearly.",
       }),
-      modelLayer: makeEDACelldOpenAiModelLayer({
-        apiKey: env.OPENAI_API_KEY,
-        modelId,
-      }),
+      modelResolverLayer: ModelResolver.Fixed.pipe(
+        Layer.provide(
+          makeEDACelldOpenAiModelLayer({
+            apiKey: env.OPENAI_API_KEY,
+            modelId,
+          }),
+        ),
+      ),
     });
   }
 }

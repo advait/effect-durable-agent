@@ -1350,6 +1350,10 @@ const makeLiveSessionState = Effect.gen(function* () {
     input: SessionRunInput,
   ) {
     const plan = planSessionRecovery(reduced);
+    input = {
+      ...input,
+      modelSelection: plan.continuation?.run.modelSelection ?? input.modelSelection,
+    };
     yield* annotateEdaSpan({
       "eda.recovery.reason": reason,
       "eda.recovery.open_tool_calls": plan.openToolCalls.length,
@@ -1571,6 +1575,7 @@ const makeLiveSessionState = Effect.gen(function* () {
             : {
                 command: plan.continuation.command,
                 runId: continuationRunId,
+                modelSelection: input.modelSelection,
                 inputMessageIds: plan.continuation.inputMessageIds,
                 runScope: continuationRunTrace.runScope,
                 runSpan: continuationRunTrace.runSpan,
@@ -1586,6 +1591,7 @@ const makeLiveSessionState = Effect.gen(function* () {
   const resumeRecoveredCommand = Effect.fnUntraced(function* (
     continuation: {
       readonly command: CommandRecord;
+      readonly modelSelection: ModelSelectionPayload;
       readonly runId: RunId;
       readonly inputMessageIds: ReadonlyArray<MessageId>;
       readonly runScope: Scope.Closeable;
@@ -1617,7 +1623,7 @@ const makeLiveSessionState = Effect.gen(function* () {
       commandStarted,
       inputMessageIds: pendingInputs.map((message) => message.messageId),
       runId: continuation.runId,
-      modelSelection: input.modelSelection,
+      modelSelection: continuation.modelSelection,
       ...(input.maxToolCallsPerRun === undefined
         ? {}
         : { maxToolCallsPerRun: input.maxToolCallsPerRun }),
@@ -1961,6 +1967,7 @@ const makeLiveSessionState = Effect.gen(function* () {
   const drainOneReadyCommand = Effect.fnUntraced(function* (input: SessionRunInput) {
     const execution = yield* inspectExecutionState();
     const current = yield* currentReduced();
+    input = { ...input, modelSelection: current.modelSelection ?? input.modelSelection };
 
     if (execution?._tag === "FailedTurn") {
       return execution.result;
@@ -2105,6 +2112,7 @@ const makeLiveSessionState = Effect.gen(function* () {
     });
     yield* failIfFatal;
     const initial = yield* currentReduced();
+    input = { ...input, modelSelection: initial.modelSelection ?? input.modelSelection };
     const recovery = yield* withFatalRecording(
       recoverSession(initial, startupRecoveryReason, input),
     );
