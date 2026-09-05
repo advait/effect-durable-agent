@@ -1575,6 +1575,7 @@ const makeLiveSessionState = Effect.gen(function* () {
             : {
                 command: plan.continuation.command,
                 runId: continuationRunId,
+                modelSelection: input.modelSelection,
                 inputMessageIds: plan.continuation.inputMessageIds,
                 runScope: continuationRunTrace.runScope,
                 runSpan: continuationRunTrace.runSpan,
@@ -1590,6 +1591,7 @@ const makeLiveSessionState = Effect.gen(function* () {
   const resumeRecoveredCommand = Effect.fnUntraced(function* (
     continuation: {
       readonly command: CommandRecord;
+      readonly modelSelection: ModelSelectionPayload;
       readonly runId: RunId;
       readonly inputMessageIds: ReadonlyArray<MessageId>;
       readonly runScope: Scope.Closeable;
@@ -1621,7 +1623,7 @@ const makeLiveSessionState = Effect.gen(function* () {
       commandStarted,
       inputMessageIds: pendingInputs.map((message) => message.messageId),
       runId: continuation.runId,
-      modelSelection: input.modelSelection,
+      modelSelection: continuation.modelSelection,
       ...(input.maxToolCallsPerRun === undefined
         ? {}
         : { maxToolCallsPerRun: input.maxToolCallsPerRun }),
