@@ -156,7 +156,11 @@
       "types": "./dist/types/tracing.d.ts",
       "import": "./dist/types/tracing.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./services/run-scheduler": {
+      "types": "./dist/services/run-scheduler.d.ts",
+      "import": "./dist/services/run-scheduler.js"
+    }
   },
   "scripts": {
     "build": "vp pack",

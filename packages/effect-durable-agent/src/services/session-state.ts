@@ -94,6 +94,7 @@ import {
 } from "./reducer-registry";
 import { EDASinkRegistry } from "./sink-registry";
 import { SessionContext } from "./session-context";
+import { RunScheduler } from "./run-scheduler";
 import type { SessionEventSink } from "./session-event-sink";
 import { failurePayloadFromCause, makeStartedBoundaryGuard } from "./started-boundary-guard";
 import {
@@ -391,6 +392,7 @@ const makeLiveSessionState = Effect.gen(function* () {
   const compactionRunner = yield* CompactionRunner;
   const promptProjector = yield* EDAPromptProjector;
   const sessionContext = yield* SessionContext;
+  const runScheduler = yield* RunScheduler;
   const reducerRegistry = yield* EDAReducerRegistry;
   const sinkRegistry = yield* EDASinkRegistry;
   const hydrated = yield* hydrateFrameworkReducedState(store);
@@ -1151,6 +1153,7 @@ const makeLiveSessionState = Effect.gen(function* () {
     }
     const submit = command.command;
     const commandId = command.commandId;
+    yield* runScheduler.resolve({ sessionId: sessionContext.sessionId, commandId });
     yield* annotateEdaSpan({
       "eda.command.id": commandId,
       "eda.command.disposition": submit.disposition,
@@ -1227,6 +1230,10 @@ const makeLiveSessionState = Effect.gen(function* () {
     if (pending.length === 0) {
       return yield* processInactiveStopCommand(command);
     }
+    yield* runScheduler.resolve({
+      sessionId: sessionContext.sessionId,
+      commandId: command.commandId,
+    });
     const commandStarted = yield* events.commandStarted({ commandId: command.commandId });
     const runId = yield* ids.makeRunId();
     const activeRunTrace = yield* startRunTrace({
@@ -1495,6 +1502,12 @@ const makeLiveSessionState = Effect.gen(function* () {
       );
     }
 
+    if (plan.continuation !== undefined) {
+      yield* runScheduler.resolve({
+        sessionId: sessionContext.sessionId,
+        commandId: plan.continuation.command.commandId,
+      });
+    }
     const continuationRunId = plan.continuation === undefined ? undefined : yield* ids.makeRunId();
     const continuationRunTrace =
       plan.continuation === undefined || continuationRunId === undefined

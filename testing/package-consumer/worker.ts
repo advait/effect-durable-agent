@@ -10,6 +10,7 @@ import * as IdGenerator from "effect-durable-agent/services/id-generator";
 import * as KeepAlive from "effect-durable-agent/services/keep-alive";
 import * as PromptProjector from "effect-durable-agent/services/prompt-projector";
 import * as ReducerRegistry from "effect-durable-agent/services/reducer-registry";
+import * as RunScheduler from "effect-durable-agent/services/run-scheduler";
 import * as RuntimeService from "effect-durable-agent/services/runtime";
 import * as RuntimeLayer from "effect-durable-agent/services/runtime-layer";
 import * as SessionEventObserver from "effect-durable-agent/services/session-event-observer";
@@ -53,6 +54,7 @@ const publicModules = [
   KeepAlive,
   PromptProjector,
   ReducerRegistry,
+  RunScheduler,
   RuntimeService,
   RuntimeLayer,
   SessionEventObserver,
