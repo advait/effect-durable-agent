@@ -12,6 +12,7 @@ import { LiveEventBus } from "./live-event-bus";
 import { EDAPromptProjector } from "./prompt-projector";
 import { EDAReducerRegistry } from "./reducer-registry";
 import { EDARuntime, type EDARuntimeConfig } from "./runtime";
+import { RunScheduler } from "./run-scheduler";
 import { SessionContext } from "./session-context";
 import { SessionEventObserver } from "./session-event-observer";
 import { EDASessionQuery } from "./session-query";
@@ -37,6 +38,7 @@ export interface EDARuntimeLayerOptions {
   readonly modelResolverLayer: Layer.Layer<ModelResolver>;
   readonly promptProjectorLayer?: Layer.Layer<EDAPromptProjector>;
   readonly reducerRegistryLayer?: Layer.Layer<EDAReducerRegistry>;
+  readonly runSchedulerLayer?: Layer.Layer<RunScheduler>;
   readonly sessionId: SessionId;
   readonly sessionEventObserverLayer?: Layer.Layer<SessionEventObserver>;
   readonly sessionStoreLayer: Layer.Layer<EDASessionStore, EDASessionStoreError>;
@@ -56,6 +58,7 @@ export const makeEDARuntimeLayer = ({
   modelResolverLayer,
   promptProjectorLayer,
   reducerRegistryLayer,
+  runSchedulerLayer,
   sessionId,
   sessionEventObserverLayer,
   sessionStoreLayer,
@@ -115,6 +118,7 @@ export const makeEDARuntimeLayer = ({
         KeepAlive,
         Compaction,
         PromptProjector,
+        runSchedulerLayer ?? RunScheduler.Immediate,
       ),
     ),
   );

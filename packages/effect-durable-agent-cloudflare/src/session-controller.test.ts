@@ -1,4 +1,9 @@
 import * as Effect from "effect/Effect";
+import {
+  LocalRunResolution,
+  RunScheduler,
+  type RunSchedulingInput,
+} from "effect-durable-agent/services/run-scheduler";
 import { ModelResolver } from "effect-durable-agent/services/model-resolver";
 import * as Layer from "effect/Layer";
 import * as LanguageModel from "effect/unstable/ai/LanguageModel";
@@ -7,7 +12,7 @@ import * as Response from "effect/unstable/ai/Response";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { makeMethods } from "@effect/vitest";
+import { assert, makeMethods } from "@effect/vitest";
 
 import { SubmitMessageCommand } from "effect-durable-agent/types/commands";
 import { CommandId, EventId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
@@ -108,6 +113,7 @@ const finishedStream = (text: string) =>
 const makeHost = <ProjectionState extends object = never>(
   storage: FakeDurableObjectStorage,
   options: {
+    readonly runSchedulerLayer?: Layer.Layer<RunScheduler>;
     readonly compaction?: boolean;
     readonly getWebSockets?: () => ReadonlyArray<WebSocket>;
     readonly keepAlive?: DurableObjectKeepAlive;
@@ -147,6 +153,7 @@ const makeHost = <ProjectionState extends object = never>(
       ),
     ),
     reducers: options.reducers,
+    runSchedulerLayer: options.runSchedulerLayer,
     storage,
     ...(options.webSocketProjection === undefined
       ? {}
@@ -303,6 +310,39 @@ describe("makeEDADurableObjectOpenAiModelLayer", () => {
 });
 
 describe("EDASessionController", () => {
+  makeMethods(it).effect("forwards the scheduler through the lazy host runtime", () =>
+    Effect.gen(function* () {
+      const storage = new FakeDurableObjectStorage();
+      yield* EDASessionController.migrate(storage);
+      const calls: Array<RunSchedulingInput> = [];
+      const host = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          makeHost(storage, {
+            runSchedulerLayer: Layer.succeed(RunScheduler, {
+              resolve: (input) =>
+                Effect.sync(() => {
+                  calls.push(input);
+                  assert.isFalse(storage.eventRows.some((row) => row.type === "RunStarted"));
+                  return LocalRunResolution.make({});
+                }),
+            }),
+          }),
+        ),
+        (host) => Effect.promise(() => host.dispose()),
+      );
+      const terminal = yield* Effect.promise(() =>
+        host.submitAndBlock({
+          command: makeCommand(),
+          sessionId: SessionId.make(SESSION_ID),
+          trace: TRACE,
+        }),
+      );
+      assert.strictEqual(terminal.event.type, "CommandCompleted");
+      assert.deepStrictEqual(calls, [
+        { sessionId: SessionId.make(SESSION_ID), commandId: CommandId.make(COMMAND_ID) },
+      ]);
+    }).pipe(Effect.scoped),
+  );
   it("runs idempotent startup migrations", async () => {
     const storage = new FakeDurableObjectStorage();
 

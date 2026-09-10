@@ -1,3 +1,4 @@
+import type { RunScheduler } from "effect-durable-agent/services/run-scheduler";
 import type { ModelResolver } from "effect-durable-agent/services/model-resolver";
 import * as Layer from "effect/Layer";
 import type * as Tracer from "effect/Tracer";
@@ -39,6 +40,7 @@ export interface EDADurableObjectRuntimeLayerOptions {
   readonly keepAlive?: DurableObjectKeepAlive;
   readonly modelResolverLayer: Layer.Layer<ModelResolver>;
   readonly promptProjectorLayer?: Layer.Layer<EDAPromptProjector>;
+  readonly runSchedulerLayer?: Layer.Layer<RunScheduler>;
   readonly reducers?: ReadonlyArray<EDAReducer>;
   readonly sessionEventObserverLayer?: Layer.Layer<SessionEventObserver>;
   readonly sessionId: SessionId;
@@ -58,6 +60,7 @@ export const makeEDADurableObjectRuntimeLayer = ({
   modelResolverLayer,
   promptProjectorLayer,
   reducers,
+  runSchedulerLayer,
   sessionEventObserverLayer,
   sessionId,
   sinks,
@@ -77,6 +80,7 @@ export const makeEDADurableObjectRuntimeLayer = ({
     keepAliveLayer,
     modelResolverLayer,
     promptProjectorLayer,
+    runSchedulerLayer,
     reducerRegistryLayer: EDAReducerRegistry.Live(reducers ?? []),
     sessionEventObserverLayer,
     sessionId,

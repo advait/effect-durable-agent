@@ -153,6 +153,35 @@ Normal long-running ingress should prefer `submit` then observe the event stream
 
 ## 7. Commands and scheduling
 
+### Run-start resolution
+
+`SessionState` resolves `RunScheduler` before starting each new run: an initial or
+queued submit, an interrupt replacement, pending-message resumption, or a startup
+recovery replacement. Steering into an active run, subsequent turns of that run,
+stop/cancel/promote controls, and empty resumption commands do not resolve it.
+
+The pure dispatch and recovery policies continue to select eligible work from the
+canonical reduced state. The scheduler receives only the existing session and
+owning command IDs; it does not need a reconstructed state snapshot. Its local
+resolution concept lives in `domain/run-scheduling.ts`, while `SessionState` owns
+the Effect call, run ID allocation, existing event batch, and execution.
+
+All runtime builders default to `RunScheduler.Immediate`. Applications may supply
+`runSchedulerLayer` through the core runtime builder or Cloudflare/celld session
+options. The public service and its input/result types are exported from
+`effect-durable-agent/services/run-scheduler`.
+
+The immediate implementation produces no scheduling request IDs, commands,
+events, checkpoints, or waiting state. Existing durable histories and event ID
+allocation remain unchanged; no migration is needed. Direct compositions of
+`SessionState.Live` must now provide `RunScheduler`.
+
+This interface supports only prompt local resolution. Implementations must not
+wait for external permission inside the serialized control loop. Durable deferred
+scheduling, coordinator authorization, and subagent protocols require a later
+slice. Recovery can resolve the same command again, so calls do not imply
+exactly-once delivery.
+
 ### Commands
 
 `SubmitMessage` fields:
