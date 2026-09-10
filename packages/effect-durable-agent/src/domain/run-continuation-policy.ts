@@ -35,6 +35,9 @@ export const decideRunContinuation = (input: {
   readonly state: ReducedState;
   readonly maxToolRejectionCorrections?: number;
 }): RunContinuationDecision => {
+  // Opening a continuation ends this run even when its result arrived before the tool finished.
+  if (Array.from(input.state.resumables.values()).some((record) => record.runId === input.runId))
+    return { _tag: "CompleteRun" };
   const currentTurnTools = toolCallsForTurn(input.state, input.runId, input.turnId);
   const created = currentTurnTools.filter((tool) => tool.decision?._tag === "Created");
   const rejected = currentTurnTools.filter((tool) => tool.decision?._tag === "Rejected");

@@ -1,3 +1,9 @@
+import {
+  ResolveResumable,
+  ResumableCancelled,
+  type ResumableResolution,
+} from "effect-durable-agent/domain/resumables";
+import { DurableEventEnvelope } from "effect-durable-agent/types/events";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -93,8 +99,25 @@ export interface EDASessionRunRequestOutcomeRpcInput extends EDASessionScopedRpc
   readonly requestId: string;
 }
 
+/** Trusted extension result RPC. This must never be forwarded from ordinary user ingress. */
+export interface EDASessionResolveResumableRpcInput extends EDASessionScopedRpcInput {
+  readonly resolution: unknown;
+  readonly events?: ReadonlyArray<unknown>;
+}
+
+/** Trusted cancellation RPC for an extension-owned continuation. */
+export interface EDASessionCancelResumableRpcInput extends EDASessionScopedRpcInput {
+  readonly cancellation: unknown;
+}
+
 /** EDA RPC methods required by the session namespace helper. */
 export interface EDASessionRpcSurface {
+  readonly resolveResumable: (
+    input: EDASessionResolveResumableRpcInput,
+  ) => Promise<ResumableResolution>;
+  readonly cancelResumable: (
+    input: EDASessionCancelResumableRpcInput,
+  ) => Promise<ResumableResolution>;
   readonly runRequestOutcome: (
     input: EDASessionRunRequestOutcomeRpcInput,
   ) => Promise<RunRequestOutcome>;
@@ -225,6 +248,25 @@ export abstract class EDASessionDurableObject<
   async runRequestOutcome(input: EDASessionRunRequestOutcomeRpcInput): Promise<RunRequestOutcome> {
     return await this.#controller.runRequestOutcome({
       requestId: Schema.decodeUnknownSync(RunRequestId)(input.requestId),
+      sessionId: this.parseSessionId(input.sessionId),
+      trace: decodeTraceMetadata(input.trace),
+    });
+  }
+
+  /** Trusted extension RPC; the host authorizes the resolver before reaching this boundary. */
+  async resolveResumable(input: EDASessionResolveResumableRpcInput): Promise<ResumableResolution> {
+    return await this.#controller.resolveResumable({
+      resolution: Schema.decodeUnknownSync(ResolveResumable)(input.resolution),
+      events: Schema.decodeUnknownSync(Schema.Array(DurableEventEnvelope))(input.events ?? []),
+      sessionId: this.parseSessionId(input.sessionId),
+      trace: decodeTraceMetadata(input.trace),
+    });
+  }
+
+  /** Trusted extension RPC; cancellation never creates a continuation run. */
+  async cancelResumable(input: EDASessionCancelResumableRpcInput): Promise<ResumableResolution> {
+    return await this.#controller.cancelResumable({
+      cancellation: Schema.decodeUnknownSync(ResumableCancelled)(input.cancellation),
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
     });

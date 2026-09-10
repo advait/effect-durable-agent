@@ -188,6 +188,7 @@ const isActiveControlCommand = (
     case "CancelPendingMessage":
     case "PromotePendingMessage":
       return true;
+    case "ResumeResumable":
     case "ResumePendingMessages":
       return false;
     case "SubmitMessage":

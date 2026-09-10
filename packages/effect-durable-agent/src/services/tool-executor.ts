@@ -138,6 +138,12 @@ const makeLiveToolExecutor = Effect.gen(function* () {
                   sessionId: session.sessionId,
                   makeEventId: ids.makeEventId,
                   emitDurable: input.eventSink.appendDurable,
+                  openResumable: (request, requestEvents = () => Effect.succeed([])) =>
+                    input.eventSink.openToolResumable(
+                      created.event.payload.toolCallId,
+                      request,
+                      requestEvents,
+                    ),
                 },
               )
               .pipe(

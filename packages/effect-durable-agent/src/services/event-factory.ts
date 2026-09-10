@@ -1,9 +1,16 @@
+import { ResumableOpened, ResumableResolved, ResumableCancelled } from "../domain/resumables";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import {
+  ResumableOpenedEvent,
+  resumableOpenedEventType,
+  ResumableResolvedEvent,
+  resumableResolvedEventType,
+  ResumableCancelledEvent,
+  resumableCancelledEventType,
   CommandAdmittedEvent,
   CommandAdmittedPayload,
   CommandCancelledEvent,
@@ -162,6 +169,11 @@ import { currentOrRootEDAEventTrace } from "./tracing";
 
 /** Central envelope factory that stamps session id, event id, and current clock time. */
 export interface EventFactoryShape {
+  readonly resumableOpened: (payload: ResumableOpened) => Effect.Effect<ResumableOpenedEvent>;
+  readonly resumableResolved: (payload: ResumableResolved) => Effect.Effect<ResumableResolvedEvent>;
+  readonly resumableCancelled: (
+    payload: ResumableCancelled,
+  ) => Effect.Effect<ResumableCancelledEvent>;
   // Durable lifecycle events.
   readonly commandAdmitted: (
     payload: CommandAdmittedPayload,
@@ -396,6 +408,18 @@ export class EventFactory extends Context.Service<EventFactory, EventFactoryShap
           RunSchedulingInvalidatedPayload,
           RunSchedulingInvalidatedEvent
         >(RunSchedulingInvalidatedEvent, runSchedulingInvalidatedEventType),
+        resumableOpened: durable<ResumableOpened, ResumableOpenedEvent>(
+          ResumableOpenedEvent,
+          resumableOpenedEventType,
+        ),
+        resumableResolved: durable<ResumableResolved, ResumableResolvedEvent>(
+          ResumableResolvedEvent,
+          resumableResolvedEventType,
+        ),
+        resumableCancelled: durable<ResumableCancelled, ResumableCancelledEvent>(
+          ResumableCancelledEvent,
+          resumableCancelledEventType,
+        ),
         runSchedulingGranted: durable<RunSchedulingGrantedPayload, RunSchedulingGrantedEvent>(
           RunSchedulingGrantedEvent,
           runSchedulingGrantedEventType,

@@ -11,6 +11,7 @@ import {
   EDACommand,
   PromotePendingMessageCommand,
   ResumePendingMessagesCommand,
+  ResumeResumableCommand,
   StopTurnCommand,
   SubmitMessageCommand,
   UserMessageContent,
@@ -113,6 +114,7 @@ export const JsonEDACommand = Schema.Union([
   CancelPendingMessageCommand,
   PromotePendingMessageCommand,
   ResumePendingMessagesCommand,
+  ResumeResumableCommand,
 ]);
 
 export const CommandTerminalSchema = Schema.Union([

@@ -618,6 +618,17 @@ const serializeCompactionSource = (input: CompactionExecutorInput): string => {
       }
     }
   }
+  for (const record of input.state.resumables.values()) {
+    const settled = record.settlement;
+    if (
+      settled._tag === "Resolved" &&
+      settled.seq >= input.plan.sourceFromSeq &&
+      settled.seq <= input.plan.sourceToSeq
+    )
+      lines.push(
+        `[External result, untrusted data; ${record.kind}; ${record.title}]: ${settled.result}`,
+      );
+  }
   return lines.filter((line) => line.trim().length > 0).join("\n\n");
 };
 

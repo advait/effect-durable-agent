@@ -9,6 +9,7 @@ import * as Toolkit from "effect/unstable/ai/Toolkit";
 import { EventId, SessionId, ToolCallId } from "../types/core";
 import { DurableEventEnvelope, ToolName } from "../types/events";
 import type { CommittedDurableEvent, EDASessionStoreError } from "./session-store";
+import type { OpenResumable, ResumableHandle, ResumableOpenError } from "../domain/resumables";
 
 /** Runtime parameter schema associated with a provider-visible tool name. */
 export type ToolParamsSchema = Schema.Top;
@@ -18,6 +19,15 @@ export type EDAModelToolkit = Toolkit.WithHandler<Record<string, Tool.Any>>;
 
 /** Framework context passed to product tool handlers without model-visible params. */
 export interface EDAToolExecutionContext {
+  /**
+   * Commit a durable wait and its extension request in one batch. Repeated calls return the
+   * original handle without invoking the event factory again. The factory must perform no I/O.
+   * After tool completion the runtime ends this run, including when resolution arrives early.
+   */
+  readonly openResumable: (
+    input: OpenResumable,
+    requestEvents?: (handle: ResumableHandle) => Effect.Effect<ReadonlyArray<DurableEventEnvelope>>,
+  ) => Effect.Effect<ResumableHandle, EDASessionStoreError | ResumableOpenError>;
   /** Framework-owned tool-call identity for this execution. */
   readonly toolCallId: ToolCallId;
   /** Session identity fixed for this runtime instance. */

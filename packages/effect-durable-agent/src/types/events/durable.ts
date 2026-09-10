@@ -29,9 +29,31 @@ import {
   makeEventType,
   schemaV1,
 } from "./envelope";
+import { ResumableOpened, ResumableResolved, ResumableCancelled } from "../../domain/resumables";
 import { RunSchedulingRequest } from "../../domain/run-scheduling";
 import { durableEventSchema } from "./internal";
 import { EDARunTrace, makeEDARunTrace } from "../tracing";
+
+/** Commits a durable wait together with extension launch intent. */
+export const resumableOpenedEventType = makeEventType("ResumableOpened");
+export const ResumableOpenedEvent = durableEventSchema(resumableOpenedEventType, ResumableOpened);
+export type ResumableOpenedEvent = typeof ResumableOpenedEvent.Type;
+
+/** Records an external result and the identity of its sole continuation command. */
+export const resumableResolvedEventType = makeEventType("ResumableResolved");
+export const ResumableResolvedEvent = durableEventSchema(
+  resumableResolvedEventType,
+  ResumableResolved,
+);
+export type ResumableResolvedEvent = typeof ResumableResolvedEvent.Type;
+
+/** Fences external work abandoned by stop or interrupt. */
+export const resumableCancelledEventType = makeEventType("ResumableCancelled");
+export const ResumableCancelledEvent = durableEventSchema(
+  resumableCancelledEventType,
+  ResumableCancelled,
+);
+export type ResumableCancelledEvent = typeof ResumableCancelledEvent.Type;
 
 /** Establishes a session's execution policy before its first run; not a model-switch operation. */
 export const sessionConfiguredEventType = makeEventType("SessionConfigured");
@@ -911,6 +933,9 @@ export type BaseStateEvent = typeof BaseStateEvent.Type;
 
 /** Built-in durable event union for framework-owned session facts. */
 export const EDADurableEvent = Schema.Union([
+  ResumableOpenedEvent,
+  ResumableResolvedEvent,
+  ResumableCancelledEvent,
   SessionConfiguredEvent,
   RunSchedulingEvent,
   CommandEvent,
