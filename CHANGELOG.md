@@ -4,6 +4,13 @@ All notable changes to Effect Durable Agent will be documented in this file.
 
 ## Unreleased
 
+## 0.1.0-alpha.9
+
+- Resolve each new run through the replaceable RunScheduler boundary, including queued work and restart recovery
+- Default to immediate local execution without additional scheduling IDs, commands, events, or persisted state
+- Accept an optional runSchedulerLayer in core, Cloudflare, celld, and testkit runtime composition
+- Require a RunScheduler dependency when composing SessionState.Live directly
+
 ## 0.1.0-alpha.8
 
 - Persist creation-time model selection and retain immutable run selections during restart recovery
