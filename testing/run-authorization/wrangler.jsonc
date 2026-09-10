@@ -1,0 +1,24 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "eda-run-authorization-conformance",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "define": {
+    "EDA_CONFORMANCE_BLOCK_MODEL": "false",
+    "EDA_AUTHORIZER_OFFLINE": "false",
+  },
+  "secrets": { "required": ["STAGING_TOKEN"] },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SESSION", "class_name": "AuthorizationSession" },
+      { "name": "AUTHORIZER", "class_name": "ManualAuthorizer" },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AuthorizationSession", "ManualAuthorizer"] },
+  ],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+}

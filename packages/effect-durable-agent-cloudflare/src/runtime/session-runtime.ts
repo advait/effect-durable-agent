@@ -109,7 +109,9 @@ export class EDASessionRuntime {
 
   async alarm(sessionId?: SessionId): Promise<void> {
     const resolved = sessionId ?? this.state?.sessionId;
-    if (resolved !== undefined) await this.get(resolved);
+    if (resolved !== undefined) {
+      await this.run(resolved, (runtime) => runtime.retryRunSchedulingDelivery());
+    }
     await this.keepAlive.alarm();
   }
 

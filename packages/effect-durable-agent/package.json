@@ -160,6 +160,14 @@
     "./services/run-scheduler": {
       "types": "./dist/services/run-scheduler.d.ts",
       "import": "./dist/services/run-scheduler.js"
+    },
+    "./services/run-scheduling-wakeup": {
+      "types": "./dist/services/run-scheduling-wakeup.d.ts",
+      "import": "./dist/services/run-scheduling-wakeup.js"
+    },
+    "./domain/run-scheduling": {
+      "types": "./dist/domain/run-scheduling.d.ts",
+      "import": "./dist/domain/run-scheduling.js"
     }
   },
   "scripts": {

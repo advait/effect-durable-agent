@@ -114,6 +114,10 @@ export const planSessionRecovery = (state: ReducedState): SessionRecoveryPlan =>
       (message) =>
         !pausedMessageIds.has(message.messageId) &&
         !continuationInputIds.has(message.messageId) &&
+        !(
+          state.runSchedulingRequest?.work._tag === "Recovery" &&
+          state.runSchedulingRequest.work.inputMessageIds.includes(message.messageId)
+        ) &&
         !pendingCommandsById.has(message.commandId) &&
         !resumeOwnedMessageIds.has(message.messageId),
     )

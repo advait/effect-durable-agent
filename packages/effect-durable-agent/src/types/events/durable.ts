@@ -11,6 +11,7 @@ import {
   InferenceId,
   MessageId,
   RunId,
+  RunRequestId,
   SequenceNumber,
   SummaryId,
   ToolCallId,
@@ -28,6 +29,7 @@ import {
   makeEventType,
   schemaV1,
 } from "./envelope";
+import { RunSchedulingRequest } from "../../domain/run-scheduling";
 import { durableEventSchema } from "./internal";
 import { EDARunTrace, makeEDARunTrace } from "../tracing";
 
@@ -100,6 +102,58 @@ export const CommandEvent = Schema.Union([
   CommandCancelledEvent,
 ]);
 export type CommandEvent = typeof CommandEvent.Type;
+
+/** Durable reservation for the next run slot, committed before outbound delivery. */
+export const runSchedulingRequestedEventType = makeEventType("RunSchedulingRequested");
+export const RunSchedulingRequestedPayload = RunSchedulingRequest;
+export type RunSchedulingRequestedPayload = typeof RunSchedulingRequestedPayload.Type;
+export const RunSchedulingRequestedEvent = durableEventSchema(
+  runSchedulingRequestedEventType,
+  RunSchedulingRequestedPayload,
+);
+export type RunSchedulingRequestedEvent = typeof RunSchedulingRequestedEvent.Type;
+
+/** Acknowledgment that the external authorizer durably accepted this request. */
+export const runSchedulingDeliveredEventType = makeEventType("RunSchedulingDelivered");
+export const RunSchedulingDeliveredPayload = Schema.Struct({ requestId: RunRequestId });
+export type RunSchedulingDeliveredPayload = typeof RunSchedulingDeliveredPayload.Type;
+export const RunSchedulingDeliveredEvent = durableEventSchema(
+  runSchedulingDeliveredEventType,
+  RunSchedulingDeliveredPayload,
+);
+export type RunSchedulingDeliveredEvent = typeof RunSchedulingDeliveredEvent.Type;
+
+/** Revocation of a reservation whose work was cancelled, stopped, or superseded. */
+export const runSchedulingInvalidatedEventType = makeEventType("RunSchedulingInvalidated");
+export const RunSchedulingInvalidatedPayload = Schema.Struct({
+  requestId: RunRequestId,
+  reason: Schema.Literals(["stopped", "interrupted", "message-cancelled", "ineligible"]),
+});
+export type RunSchedulingInvalidatedPayload = typeof RunSchedulingInvalidatedPayload.Type;
+export const RunSchedulingInvalidatedEvent = durableEventSchema(
+  runSchedulingInvalidatedEventType,
+  RunSchedulingInvalidatedPayload,
+);
+export type RunSchedulingInvalidatedEvent = typeof RunSchedulingInvalidatedEvent.Type;
+
+/** Permission consumed atomically with RunStarted; never a standalone authorization. */
+export const runSchedulingGrantedEventType = makeEventType("RunSchedulingGranted");
+export const RunSchedulingGrantedPayload = Schema.Struct({ requestId: RunRequestId, runId: RunId });
+export type RunSchedulingGrantedPayload = typeof RunSchedulingGrantedPayload.Type;
+export const RunSchedulingGrantedEvent = durableEventSchema(
+  runSchedulingGrantedEventType,
+  RunSchedulingGrantedPayload,
+);
+export type RunSchedulingGrantedEvent = typeof RunSchedulingGrantedEvent.Type;
+
+/** Framework facts for durable run authorization and its strict delivery acknowledgment. */
+export const RunSchedulingEvent = Schema.Union([
+  RunSchedulingRequestedEvent,
+  RunSchedulingDeliveredEvent,
+  RunSchedulingInvalidatedEvent,
+  RunSchedulingGrantedEvent,
+]);
+export type RunSchedulingEvent = typeof RunSchedulingEvent.Type;
 
 /** Event type values for durable message lifecycle events. */
 export const systemMessageCommittedEventType = makeEventType("SystemMessageCommitted");
@@ -266,12 +320,16 @@ export const MessageQueuePausedEvent = durableEventSchema(
 );
 export type MessageQueuePausedEvent = typeof MessageQueuePausedEvent.Type;
 
-export const PendingMessagesPausedPayload = Schema.Struct({
+const PendingMessagesPausedFields = {
   interruptionCommandId: CommandId,
-  runId: RunId,
   messageIds: Schema.NonEmptyArray(MessageId),
   reason: Schema.Literal("user-interrupted"),
-});
+};
+/** A pause refers to the running lifecycle or to permission still waiting before a run. */
+export const PendingMessagesPausedPayload = Schema.Union([
+  Schema.Struct({ ...PendingMessagesPausedFields, runId: RunId }),
+  Schema.Struct({ ...PendingMessagesPausedFields, runRequestId: RunRequestId }),
+]);
 export type PendingMessagesPausedPayload = typeof PendingMessagesPausedPayload.Type;
 export const PendingMessagesPausedEvent = durableEventSchema(
   pendingMessagesPausedEventType,
@@ -854,6 +912,7 @@ export type BaseStateEvent = typeof BaseStateEvent.Type;
 /** Built-in durable event union for framework-owned session facts. */
 export const EDADurableEvent = Schema.Union([
   SessionConfiguredEvent,
+  RunSchedulingEvent,
   CommandEvent,
   MessageEvent,
   RunEvent,

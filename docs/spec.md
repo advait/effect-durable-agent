@@ -160,27 +160,26 @@ queued submit, an interrupt replacement, pending-message resumption, or a startu
 recovery replacement. Steering into an active run, subsequent turns of that run,
 stop/cancel/promote controls, and empty resumption commands do not resolve it.
 
-The pure dispatch and recovery policies continue to select eligible work from the
-canonical reduced state. The scheduler receives only the existing session and
-owning command IDs; it does not need a reconstructed state snapshot. Its local
-resolution concept lives in `domain/run-scheduling.ts`, while `SessionState` owns
-the Effect call, run ID allocation, existing event batch, and execution.
+The pure dispatch and recovery policies select eligible work from canonical
+reduced state. `RunScheduler.resolve` receives existing session and command IDs
+and returns `Local` or `Deferred` promptly, without outbound delivery. Domain
+policy owns eligibility and invalidation; `SessionState` sequences persistence,
+ID allocation, delivery, trusted grants, and execution.
 
-All runtime builders default to `RunScheduler.Immediate`. Applications may supply
-`runSchedulerLayer` through the core runtime builder or Cloudflare/celld session
-options. The public service and its input/result types are exported from
-`effect-durable-agent/services/run-scheduler`.
+All builders default to `RunScheduler.Immediate`, preserving existing event and
+ID allocation. Applications can supply `runSchedulerLayer` through the core,
+Cloudflare, or celld runtime options. Deferred execution first commits one
+`RunSchedulingRequested` reservation, delivers it outside the control loop, and
+records `RunSchedulingDelivered` only after a successful durable handoff. A host
+wakeup retries failures. Waiting for permission holds no active-work lease.
 
-The immediate implementation produces no scheduling request IDs, commands,
-events, checkpoints, or waiting state. Existing durable histories and event ID
-allocation remain unchanged; no migration is needed. Direct compositions of
-`SessionState.Live` must now provide `RunScheduler`.
-
-This interface supports only prompt local resolution. Implementations must not
-wait for external permission inside the serialized control loop. Durable deferred
-scheduling, coordinator authorization, and subagent protocols require a later
-slice. Recovery can resolve the same command again, so calls do not imply
-exactly-once delivery.
+`GrantRun` uses a separate trusted API, excluded from ordinary `EDACommand`
+ingress. A current eligible grant and `RunStarted` commit atomically. Stop,
+interrupt, and selected-message cancellation invalidate requests; stale grants
+cannot revive them. Waiting survives restart with the same request ID, while a
+replacement for a run that already started needs a fresh decision and request.
+See [durable run authorization](run-scheduling.md) for the complete contract,
+host obligations, and checkpoint compatibility.
 
 ### Commands
 
@@ -670,8 +669,8 @@ On startup `SessionState`:
 1. hydrates framework `ReducedState` from the `_eda.framework.reduced-state` reducer checkpoint plus event-log tail;
 2. hydrates registered app reducers from checkpoints plus tail;
 3. calls the pure `planSessionRecovery` policy to classify every incomplete lifecycle, pending stop, open compaction, and ownerless steer;
-4. interprets that complete plan as one atomic durable event batch, including a replacement `RunStarted` for eligible interrupted `SubmitMessage` or `ResumePendingMessages` work and a final `RecoveryCompleted` barrier;
-5. refolds state and requires recovery to reach either an empty plan or the single intentionally continued command/run;
+4. interprets that complete plan as one atomic durable event batch, including a replacement `RunStarted` or deferred scheduling request for eligible interrupted `SubmitMessage` or `ResumePendingMessages` work and a final `RecoveryCompleted` barrier;
+5. refolds state and requires recovery to reach either an empty recovery plan (including intentionally parked authorization work) or the single locally continued command/run;
 6. checkpoints the repaired state, starts the replacement turn with only its unconsumed source messages and eligible steers, and only then forks the long-lived control loop.
 
 The synchronous startup pass is part of the host wakeup contract: a Durable Object alarm that cold-starts a session runtime does not return from runtime construction until stale lifecycle repair has had a chance to commit durable terminal events. After that finite pass, the long-lived control loop handles live ingress and active-turn completion.
@@ -685,7 +684,7 @@ records `{ commandId, interruptedRunId, replacementRunId }` when recovery
 transparently resumes a command. “Completed” describes the repair transaction,
 not the later completion of resumed agent work.
 
-The post-recovery live loop does not silently repair stale active durable work. Once startup recovery has completed, durable replay and in-memory execution state must agree: an active durable command must have an in-memory execution owner. If that invariant is violated in a warm runtime, EDA treats it as a fatal runtime error and relies on the dedicated startup recovery path after a clean rebuild rather than patching over it inline.
+The post-recovery live loop does not silently repair stale active durable work. Once startup recovery has completed, durable replay and in-memory execution state must agree: an active durable command must have an in-memory execution owner or a current durable run-authorization reservation. If that invariant is violated in a warm runtime, EDA treats it as a fatal runtime error and relies on the dedicated startup recovery path after a clean rebuild rather than patching over it inline.
 
 The recovery functional core has no storage, fibers, clocks, or event minting.
 The startup imperative shell owns those effects and is the only code that

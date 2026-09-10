@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import {
   LocalRunResolution,
   RunScheduler,
+  RunSchedulingDeliveryError,
   type RunSchedulingInput,
 } from "effect-durable-agent/services/run-scheduler";
 import { ModelResolver } from "effect-durable-agent/services/model-resolver";
@@ -14,7 +15,8 @@ import * as Stream from "effect/Stream";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { assert, makeMethods } from "@effect/vitest";
 
-import { SubmitMessageCommand } from "effect-durable-agent/types/commands";
+import { GrantRunCommand, SubmitMessageCommand } from "effect-durable-agent/types/commands";
+import { RunSchedulingRequestRecord } from "effect-durable-agent/domain/run-scheduling";
 import { CommandId, EventId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
 import { EDASessionController, type EDASessionDurableObjectStorage } from "./session-controller";
 import {
@@ -310,6 +312,100 @@ describe("makeEDADurableObjectOpenAiModelLayer", () => {
 });
 
 describe("EDASessionController", () => {
+  makeMethods(it).effect(
+    "cold and warm alarms retry one durable request, then wait for a trusted grant with no alarm",
+    () =>
+      Effect.gen(function* () {
+        const storage = new FakeDurableObjectStorage();
+        yield* EDASessionController.migrate(storage);
+        const deliveries: Array<string> = [];
+        let accept = false;
+        const scheduler = RunScheduler.Deferred(({ request }) =>
+          Effect.gen(function* () {
+            assert.isTrue(storage.eventRows.some((row) => row.type === "RunSchedulingRequested"));
+            deliveries.push(request.requestId);
+            if (!accept)
+              return yield* new RunSchedulingDeliveryError({ message: "test authorizer offline" });
+          }),
+        );
+        const firstKeepAlive = new DurableObjectKeepAlive(storage);
+        const first = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            makeHost(storage, {
+              keepAlive: firstKeepAlive,
+              runSchedulerLayer: scheduler,
+            }),
+          ),
+          (host) => Effect.promise(() => host.dispose()),
+        );
+        const scope = { sessionId: SessionId.make(SESSION_ID) };
+        yield* Effect.promise(() => first.submit({ ...scope, command: makeCommand() }));
+        yield* Effect.promise(() => waitForEventType(storage, "RunSchedulingRequested"));
+        for (let i = 0; i < 100 && firstKeepAlive.activeLeaseCount > 0; i += 1)
+          yield* Effect.yieldNow;
+        assert.strictEqual(firstKeepAlive.activeLeaseCount, 0);
+        assert.isNotNull(storage.alarm);
+        const request = Schema.decodeUnknownSync(RunSchedulingRequestRecord)(
+          (yield* Effect.promise(() => first.snapshot(scope))).state.runSchedulingRequest,
+        );
+        yield* Effect.promise(() => first.dispose());
+        const secondKeepAlive = new DurableObjectKeepAlive(storage);
+        const second = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            makeHost(storage, {
+              keepAlive: secondKeepAlive,
+              runSchedulerLayer: scheduler,
+            }),
+          ),
+          (host) => Effect.promise(() => host.dispose()),
+        );
+        storage.alarm = null;
+        yield* Effect.promise(() => second.alarm(scope));
+        for (
+          let i = 0;
+          i < 100 && (deliveries.length < 2 || secondKeepAlive.activeLeaseCount > 0);
+          i += 1
+        )
+          yield* Effect.yieldNow;
+        assert.isNotNull(storage.alarm);
+        assert.strictEqual(secondKeepAlive.activeLeaseCount, 0);
+        assert.isTrue(deliveries.length >= 2);
+        assert.isTrue(deliveries.every((id) => id === request.requestId));
+        accept = true;
+        storage.alarm = null;
+        yield* Effect.promise(() => second.alarm(scope));
+        yield* Effect.promise(() => waitForEventType(storage, "RunSchedulingDelivered"));
+        assert.isNull(storage.alarm);
+        const deliveryCount = deliveries.length;
+        const parked = yield* Effect.promise(() => second.snapshot(scope));
+        assert.strictEqual(parked.state.runs.size, 0);
+        assert.strictEqual(parked.state.runSchedulingRequest?.requestId, request.requestId);
+        yield* Effect.promise(() => second.dispose());
+        const thirdKeepAlive = new DurableObjectKeepAlive(storage);
+        const third = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            makeHost(storage, {
+              keepAlive: thirdKeepAlive,
+              runSchedulerLayer: scheduler,
+            }),
+          ),
+          (host) => Effect.promise(() => host.dispose()),
+        );
+        yield* Effect.promise(() => third.snapshot(scope));
+        assert.strictEqual(deliveries.length, deliveryCount);
+        assert.isNull(storage.alarm);
+        const grant = { ...scope, command: new GrantRunCommand({ requestId: request.requestId }) };
+        assert.strictEqual((yield* Effect.promise(() => third.grantRun(grant)))._tag, "Granted");
+        assert.deepStrictEqual(yield* Effect.promise(() => third.grantRun(grant)), {
+          _tag: "Stale",
+        });
+        yield* Effect.promise(() => waitForEventType(storage, "CommandCompleted"));
+        const complete = yield* Effect.promise(() => third.snapshot(scope));
+        assert.strictEqual(complete.state.runs.size, 1);
+        assert.isUndefined(complete.state.runSchedulingRequest);
+      }),
+  );
+
   makeMethods(it).effect("forwards the scheduler through the lazy host runtime", () =>
     Effect.gen(function* () {
       const storage = new FakeDurableObjectStorage();
@@ -319,6 +415,10 @@ describe("EDASessionController", () => {
         Effect.sync(() =>
           makeHost(storage, {
             runSchedulerLayer: Layer.succeed(RunScheduler, {
+              deliver: () =>
+                Effect.die(
+                  new Error("Unexpected deferred delivery in an immediate scheduling test"),
+                ),
               resolve: (input) =>
                 Effect.sync(() => {
                   calls.push(input);

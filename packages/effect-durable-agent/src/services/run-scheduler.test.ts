@@ -41,6 +41,8 @@ const finished = Stream.make(
 );
 const recordingScheduler = (calls: Array<RunSchedulingInput>) =>
   Layer.succeed(RunScheduler, {
+    deliver: () =>
+      Effect.die(new Error("Unexpected deferred delivery in an immediate scheduling test")),
     resolve: (input) =>
       Effect.sync(() => {
         calls.push(input);
@@ -263,6 +265,8 @@ describe("RunScheduler", () => {
         makeEdaTestLayer({
           sessionId,
           runSchedulerLayer: Layer.succeed(RunScheduler, {
+            deliver: () =>
+              Effect.die(new Error("Unexpected deferred delivery in an immediate scheduling test")),
             resolve: () => Effect.die("scheduler defect"),
           }),
         }),

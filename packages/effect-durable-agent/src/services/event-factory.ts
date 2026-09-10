@@ -49,6 +49,18 @@ import {
   RunFailedPayload,
   RunInterruptedEvent,
   RunInterruptedPayload,
+  RunSchedulingRequestedEvent,
+  RunSchedulingRequestedPayload,
+  runSchedulingRequestedEventType,
+  RunSchedulingDeliveredEvent,
+  RunSchedulingDeliveredPayload,
+  runSchedulingDeliveredEventType,
+  RunSchedulingInvalidatedEvent,
+  RunSchedulingInvalidatedPayload,
+  runSchedulingInvalidatedEventType,
+  RunSchedulingGrantedEvent,
+  RunSchedulingGrantedPayload,
+  runSchedulingGrantedEventType,
   RunStartedEvent,
   RunStartedPayload,
   StopTurnAppliedEvent,
@@ -192,6 +204,18 @@ export interface EventFactoryShape {
   readonly assistantPartialCommitted: (
     payload: AssistantPartialCommittedPayload,
   ) => Effect.Effect<AssistantPartialCommittedEvent>;
+  readonly runSchedulingRequested: (
+    payload: RunSchedulingRequestedPayload,
+  ) => Effect.Effect<RunSchedulingRequestedEvent>;
+  readonly runSchedulingDelivered: (
+    payload: RunSchedulingDeliveredPayload,
+  ) => Effect.Effect<RunSchedulingDeliveredEvent>;
+  readonly runSchedulingInvalidated: (
+    payload: RunSchedulingInvalidatedPayload,
+  ) => Effect.Effect<RunSchedulingInvalidatedEvent>;
+  readonly runSchedulingGranted: (
+    payload: RunSchedulingGrantedPayload,
+  ) => Effect.Effect<RunSchedulingGrantedEvent>;
   readonly runStarted: (payload: RunStartedPayload) => Effect.Effect<RunStartedEvent>;
   readonly runCompleted: (payload: RunCompletedPayload) => Effect.Effect<RunCompletedEvent>;
   readonly runFailed: (payload: RunFailedPayload) => Effect.Effect<RunFailedEvent>;
@@ -360,6 +384,22 @@ export class EventFactory extends Context.Service<EventFactory, EventFactoryShap
           AssistantPartialCommittedPayload,
           AssistantPartialCommittedEvent
         >(AssistantPartialCommittedEvent, assistantPartialCommittedEventType),
+        runSchedulingRequested: durable<RunSchedulingRequestedPayload, RunSchedulingRequestedEvent>(
+          RunSchedulingRequestedEvent,
+          runSchedulingRequestedEventType,
+        ),
+        runSchedulingDelivered: durable<RunSchedulingDeliveredPayload, RunSchedulingDeliveredEvent>(
+          RunSchedulingDeliveredEvent,
+          runSchedulingDeliveredEventType,
+        ),
+        runSchedulingInvalidated: durable<
+          RunSchedulingInvalidatedPayload,
+          RunSchedulingInvalidatedEvent
+        >(RunSchedulingInvalidatedEvent, runSchedulingInvalidatedEventType),
+        runSchedulingGranted: durable<RunSchedulingGrantedPayload, RunSchedulingGrantedEvent>(
+          RunSchedulingGrantedEvent,
+          runSchedulingGrantedEventType,
+        ),
         runStarted: durable<RunStartedPayload, RunStartedEvent>(
           RunStartedEvent,
           runStartedEventType,

@@ -18,6 +18,7 @@ import { assertNeverError } from "../domain/assert-never";
 import {
   DispatchActiveCommand,
   decideDispatch,
+  promotionNeedsResumeCommand,
   type DispatchCommandCandidate,
 } from "../domain/dispatch-policy";
 import {
@@ -39,6 +40,7 @@ import { decideRunContinuation } from "../domain/run-continuation-policy";
 import { isSessionRecoveryPlanEmpty, planSessionRecovery } from "../domain/recovery-policy";
 import { planRunFailure, planUserInterruption } from "../domain/run-terminal-policy";
 import {
+  GrantRunCommand,
   CancelPendingMessageCommand,
   PromotePendingMessageCommand,
   ResumePendingMessagesCommand,
@@ -95,6 +97,16 @@ import {
 import { EDASinkRegistry } from "./sink-registry";
 import { SessionContext } from "./session-context";
 import { RunScheduler } from "./run-scheduler";
+import { RunSchedulingWakeup } from "./run-scheduling-wakeup";
+import {
+  canGrantRun,
+  planRunSchedulingCancellation,
+  planWaitingRunInterruption,
+  runSchedulingInputMessageIds,
+  waitingRunControl,
+  type RunGrantResult,
+  type RunSchedulingWork,
+} from "../domain/run-scheduling";
 import type { SessionEventSink } from "./session-event-sink";
 import { failurePayloadFromCause, makeStartedBoundaryGuard } from "./started-boundary-guard";
 import {
@@ -205,7 +217,11 @@ export interface SessionCommandResult {
 }
 
 /** Why a control drain stopped without starting more command work. */
-export const SessionNoRunnableReason = Schema.Literals(["active-command", "no-pending-command"]);
+export const SessionNoRunnableReason = Schema.Literals([
+  "active-command",
+  "no-pending-command",
+  "awaiting-run-authorization",
+]);
 export type SessionNoRunnableReason = typeof SessionNoRunnableReason.Type;
 
 /** Session control result when no admitted command is runnable. */
@@ -294,6 +310,13 @@ export type EDASubmittable = EDACommand | DurableEventEnvelope;
 
 /** Internal live-process authority for commands, durable writes, and scheduling. */
 export interface SessionStateShape extends SessionEventSink {
+  /** Trusted permission entrypoint, serialized with control actions and revalidated before commit. */
+  readonly grantRun: (
+    command: GrantRunCommand,
+    input: SessionRunInput,
+  ) => Effect.Effect<RunGrantResult, SessionStateError>;
+  /** Host alarm callback for strict, at-least-once delivery of the current persisted request. */
+  readonly retryRunSchedulingDelivery: () => Effect.Effect<void, EDASessionStoreError>;
   /** Commit session-initial context, such as app-owned system prompt, before command work starts. */
   readonly initialize: (
     input: SessionRunInput,
@@ -393,10 +416,15 @@ const makeLiveSessionState = Effect.gen(function* () {
   const promptProjector = yield* EDAPromptProjector;
   const sessionContext = yield* SessionContext;
   const runScheduler = yield* RunScheduler;
+  const schedulingWakeup = yield* RunSchedulingWakeup;
   const reducerRegistry = yield* EDAReducerRegistry;
   const sinkRegistry = yield* EDASinkRegistry;
   const hydrated = yield* hydrateFrameworkReducedState(store);
   const hydratedReducerStates = yield* hydrateAppReducerStates(store, reducerRegistry.reducers);
+  yield* schedulingWakeup.setPending(
+    hydrated.state.runSchedulingRequest !== undefined &&
+      hydrated.state.runSchedulingRequest.deliveredSeq === undefined,
+  );
   const startupRecoveryCheckpointSeq =
     hydratedReducerStates.checkpointSeq === undefined
       ? hydrated.checkpointSeq
@@ -410,6 +438,9 @@ const makeLiveSessionState = Effect.gen(function* () {
     },
   });
   const gate = yield* Semaphore.make(1);
+  // Control actions and trusted grants share ownership; append serialization remains separate.
+  const controlGate = yield* Semaphore.make(1);
+  const deliveryGate = yield* Semaphore.make(1);
   const ingressSignals = yield* Queue.sliding<void>(1);
   // Checkpoints are derived caches: keep only the latest pending boundary snapshot
   // so slow storage writes cannot back up the session engine. Dropping older
@@ -787,6 +818,8 @@ const makeLiveSessionState = Effect.gen(function* () {
   const initialize = (input: SessionRunInput) => commitInitialSystemPrompt(input.systemPrompt);
 
   const sessionApi: SessionStateShape = {
+    grantRun: (command, input) => grantRun(command, input),
+    retryRunSchedulingDelivery: () => retryRunSchedulingDelivery(),
     initialize,
     submitBatch,
     admitCommand,
@@ -1144,6 +1177,87 @@ const makeLiveSessionState = Effect.gen(function* () {
     return SessionForkedCommand.make({ commandId: input.commandId });
   });
 
+  const reconcileSchedulingWakeup = Effect.fnUntraced(function* () {
+    const request = (yield* currentReduced()).runSchedulingRequest;
+    yield* schedulingWakeup.setPending(request !== undefined && request.deliveredSeq === undefined);
+  });
+
+  const retryRunSchedulingDelivery = Effect.fnUntraced(function* () {
+    yield* deliveryGate.withPermitsIfAvailable(1)(
+      Effect.gen(function* () {
+        const request = yield* controlGate.withPermits(1)(
+          Effect.gen(function* () {
+            const current = (yield* currentReduced()).runSchedulingRequest;
+            // Reconcile even an empty request, so a grant racing a wakeup cannot leave a stray alarm.
+            yield* reconcileSchedulingWakeup();
+            return current?.deliveredSeq === undefined ? current : undefined;
+          }),
+        );
+        if (request === undefined) return;
+        const delivered = yield* Effect.exit(
+          keepAlive.withActiveWork(
+            "run-scheduling-delivery",
+            runScheduler
+              .deliver({
+                sessionId: sessionContext.sessionId,
+                request: { requestId: request.requestId, work: request.work },
+              })
+              .pipe(Effect.timeout("10 seconds")),
+          ),
+        );
+        if (Exit.isFailure(delivered)) {
+          if (Cause.hasInterruptsOnly(delivered.cause)) return yield* Effect.interrupt;
+          yield* controlGate.withPermits(1)(reconcileSchedulingWakeup());
+          yield* Effect.logWarning(
+            "Run authorization delivery will retry on the durable host wakeup",
+            {
+              requestId: request.requestId,
+              cause: Cause.pretty(delivered.cause),
+            },
+          );
+          return;
+        }
+        yield* controlGate.withPermits(1)(
+          Effect.gen(function* () {
+            const current = (yield* currentReduced()).runSchedulingRequest;
+            if (current?.requestId === request.requestId && current.deliveredSeq === undefined) {
+              yield* appendDurable(
+                yield* events.runSchedulingDelivered({ requestId: request.requestId }),
+              );
+            }
+            yield* reconcileSchedulingWakeup();
+          }),
+        );
+      }),
+    );
+  });
+
+  const forkSchedulingDelivery = () =>
+    retryRunSchedulingDelivery().pipe(
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          yield* markFatalIfDurable(cause);
+          yield* Effect.logError("Run authorization delivery worker failed", {
+            cause: Cause.pretty(cause),
+          });
+        }),
+      ),
+      Effect.forkIn(runtimeScope),
+      Effect.asVoid,
+    );
+
+  const prepareRunSchedulingRequest = Effect.fnUntraced(function* (work: RunSchedulingWork) {
+    // A crash before append leaves a harmless wakeup; the reverse order could strand work.
+    yield* schedulingWakeup.setPending(true);
+    return yield* events.runSchedulingRequested({ requestId: yield* ids.makeRunRequestId(), work });
+  });
+
+  const deferRun = Effect.fnUntraced(function* (work: RunSchedulingWork) {
+    yield* appendDurable(yield* prepareRunSchedulingRequest(work));
+    yield* forkSchedulingDelivery();
+    return SessionNoRunnableCommand.make({ reason: "awaiting-run-authorization" });
+  });
+
   const startSubmitCommand = Effect.fn(function* (
     command: DispatchCommandCandidate,
     input: SessionRunInput,
@@ -1153,7 +1267,11 @@ const makeLiveSessionState = Effect.gen(function* () {
     }
     const submit = command.command;
     const commandId = command.commandId;
-    yield* runScheduler.resolve({ sessionId: sessionContext.sessionId, commandId });
+    const resolution = yield* runScheduler.resolve({
+      sessionId: sessionContext.sessionId,
+      commandId,
+    });
+    if (resolution._tag === "Deferred") return yield* deferRun({ _tag: "Command", commandId });
     yield* annotateEdaSpan({
       "eda.command.id": commandId,
       "eda.command.disposition": submit.disposition,
@@ -1230,10 +1348,12 @@ const makeLiveSessionState = Effect.gen(function* () {
     if (pending.length === 0) {
       return yield* processInactiveStopCommand(command);
     }
-    yield* runScheduler.resolve({
+    const resolution = yield* runScheduler.resolve({
       sessionId: sessionContext.sessionId,
       commandId: command.commandId,
     });
+    if (resolution._tag === "Deferred")
+      return yield* deferRun({ _tag: "Command", commandId: command.commandId });
     const commandStarted = yield* events.commandStarted({ commandId: command.commandId });
     const runId = yield* ids.makeRunId();
     const activeRunTrace = yield* startRunTrace({
@@ -1265,6 +1385,160 @@ const makeLiveSessionState = Effect.gen(function* () {
           runSpan: activeRunTrace.runSpan,
         });
       }),
+    );
+  });
+
+  const grantRun = Effect.fn("agent.run.grant")(function* (
+    grant: GrantRunCommand,
+    input: SessionRunInput,
+  ): Effect.fn.Return<RunGrantResult, SessionStateError> {
+    yield* annotateEdaSpan({
+      "eda.session.id": sessionContext.sessionId,
+      "eda.run_request.id": grant.requestId,
+    });
+    return yield* controlGate.withPermits(1)(
+      keepAlive
+        .withActiveWork(
+          "run-authorization-grant",
+          Effect.gen(function* () {
+            yield* failIfFatal;
+            const initial = yield* currentReduced();
+            if (!canGrantRun(initial, grant.requestId)) return { _tag: "Stale" } as const;
+            const request = initial.runSchedulingRequest;
+            if (request === undefined) return { _tag: "Stale" } as const;
+            const command = initial.commands.get(request.work.commandId);
+            if (command?.command === undefined) return { _tag: "Stale" } as const;
+            const admitted = command.command;
+            const predecessor =
+              request.work._tag === "Recovery"
+                ? initial.runs.get(request.work.interruptedRunId)
+                : undefined;
+            const modelSelection =
+              predecessor?.modelSelection ?? initial.modelSelection ?? input.modelSelection;
+            const runId = yield* ids.makeRunId();
+            const trace = yield* startRunTrace({
+              commandId: command.commandId,
+              admissionTrace: command.admissionTrace,
+              modelSelection,
+              runId,
+            });
+            return yield* closeRunTraceOnFailure(
+              trace,
+              Effect.gen(function* () {
+                // Ingress may commit while spans/IDs are prepared. Revalidate under the append gate.
+                const started = yield* withAppendGate(
+                  Effect.gen(function* () {
+                    const current = yield* currentReduced();
+                    if (!canGrantRun(current, grant.requestId)) return undefined;
+                    const inputMessageIds = [
+                      ...runSchedulingInputMessageIds(current, request.work),
+                    ];
+                    const batch: Array<DurableEventEnvelope> = [];
+                    let commandStarted: CommittedDurableEvent | undefined;
+                    if (request.work._tag === "Recovery") {
+                      if (command.startedSeq === undefined || predecessor === undefined) {
+                        return yield* Effect.die(
+                          new Error(
+                            "Recovery authorization requires its started command and predecessor",
+                          ),
+                        );
+                      }
+                      [commandStarted] = yield* store.loadCommittedEventsBySeq([
+                        command.startedSeq,
+                      ]);
+                      if (commandStarted?.event.type !== "CommandStarted") {
+                        return yield* Effect.die(
+                          new Error("Recovery authorization is missing CommandStarted"),
+                        );
+                      }
+                    } else {
+                      batch.push(yield* events.commandStarted({ commandId: command.commandId }));
+                      if (admitted._tag === "SubmitMessage" && inputMessageIds.length === 0) {
+                        const messageId = yield* ids.makeMessageId();
+                        batch.push(
+                          yield* events.userMessageCommitted({
+                            commandId: command.commandId,
+                            messageId,
+                            content: admitted.content,
+                          }),
+                        );
+                        inputMessageIds.push(messageId);
+                      }
+                    }
+                    batch.push(
+                      yield* events.runSchedulingGranted({ requestId: request.requestId, runId }),
+                    );
+                    const commandIds = predecessor?.commandIds ?? [
+                      command.commandId,
+                      ...(admitted._tag === "ResumePendingMessages"
+                        ? inputMessageIds.flatMap((messageId) => {
+                            const message = current.messages.get(messageId);
+                            return message?._tag === "User" || message?._tag === "Steering"
+                              ? [message.commandId]
+                              : [];
+                          })
+                        : []),
+                    ];
+                    batch.push(
+                      yield* events.runStarted({
+                        runId,
+                        commandIds,
+                        modelSelection,
+                        trace: trace.runTrace,
+                      }),
+                    );
+                    if (request.work._tag === "Recovery") {
+                      batch.push(
+                        yield* events.recoveryCompleted({
+                          trigger: "runtime-restart",
+                          continuation: {
+                            commandId: command.commandId,
+                            interruptedRunId: request.work.interruptedRunId,
+                            replacementRunId: runId,
+                          },
+                        }),
+                      );
+                    }
+                    const committed = yield* commitDurableEntriesWithinGate(
+                      batch.map((event) => ({ event })),
+                    );
+                    commandStarted ??= committed[0];
+                    if (commandStarted === undefined)
+                      return yield* Effect.die(new Error("Granted run must have CommandStarted"));
+                    return { commandStarted, inputMessageIds };
+                  }),
+                );
+                if (started === undefined) {
+                  yield* Scope.close(trace.runScope, Exit.void);
+                  return { _tag: "Stale" } as const;
+                }
+                yield* reconcileSchedulingWakeup();
+                yield* startTurn({
+                  commandId: command.commandId,
+                  commandStarted: started.commandStarted,
+                  inputMessageIds: started.inputMessageIds,
+                  runId,
+                  modelSelection,
+                  ...(input.maxToolCallsPerRun === undefined
+                    ? {}
+                    : { maxToolCallsPerRun: input.maxToolCallsPerRun }),
+                  runScope: trace.runScope,
+                  runSpan: trace.runSpan,
+                });
+                yield* wakeAfterCommandAdmission();
+                return { _tag: "Granted", runId } as const;
+              }),
+            );
+          }),
+        )
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              yield* markFatalIfDurable(cause);
+              return yield* Effect.failCause(cause);
+            }),
+          ),
+        ),
     );
   });
 
@@ -1502,13 +1776,27 @@ const makeLiveSessionState = Effect.gen(function* () {
       );
     }
 
-    if (plan.continuation !== undefined) {
-      yield* runScheduler.resolve({
-        sessionId: sessionContext.sessionId,
-        commandId: plan.continuation.command.commandId,
-      });
+    const resolution =
+      plan.continuation === undefined
+        ? undefined
+        : yield* runScheduler.resolve({
+            sessionId: sessionContext.sessionId,
+            commandId: plan.continuation.command.commandId,
+          });
+    if (plan.continuation !== undefined && resolution?._tag === "Deferred") {
+      recoveryEvents.push(
+        yield* prepareRunSchedulingRequest({
+          _tag: "Recovery",
+          commandId: plan.continuation.command.commandId,
+          interruptedRunId: plan.continuation.run.runId,
+          inputMessageIds: plan.continuation.inputMessageIds,
+        }),
+      );
     }
-    const continuationRunId = plan.continuation === undefined ? undefined : yield* ids.makeRunId();
+    const continuationRunId =
+      plan.continuation === undefined || resolution?._tag === "Deferred"
+        ? undefined
+        : yield* ids.makeRunId();
     const continuationRunTrace =
       plan.continuation === undefined || continuationRunId === undefined
         ? undefined
@@ -1553,6 +1841,7 @@ const makeLiveSessionState = Effect.gen(function* () {
 
       const committed =
         recoveryEvents.length === 0 ? [] : yield* appendDurableBatch(recoveryEvents);
+      if (resolution?._tag === "Deferred") yield* forkSchedulingDelivery();
       const nextPlan = planSessionRecovery(yield* currentReduced());
       const reachedFixedPoint =
         plan.continuation === undefined || continuationRunId === undefined
@@ -1741,8 +2030,40 @@ const makeLiveSessionState = Effect.gen(function* () {
                   }),
                 ]
               : [];
+          const schedulingPlan = planRunSchedulingCancellation(current, target.messageId);
+          const schedulingEvents: Array<DurableEventEnvelope> = [];
+          if (schedulingPlan !== undefined) {
+            schedulingEvents.push(
+              yield* events.runSchedulingInvalidated({
+                requestId: schedulingPlan.requestId,
+                reason: "message-cancelled",
+              }),
+            );
+            if (schedulingPlan.cancelCommandId !== undefined) {
+              schedulingEvents.push(
+                yield* events.commandCancelled({
+                  commandId: schedulingPlan.cancelCommandId,
+                  reason: "pending recovery inputs cancelled",
+                }),
+              );
+            }
+            if (schedulingPlan.replacementWork !== undefined) {
+              schedulingEvents.push(
+                yield* prepareRunSchedulingRequest(schedulingPlan.replacementWork),
+              );
+            }
+          }
           const completed = yield* events.commandCompleted({ commandId: controlCommandId });
-          const committed = yield* appendDurableBatch([cancelled, ...originCancelled, completed]);
+          const committed = yield* appendDurableBatch([
+            cancelled,
+            ...originCancelled,
+            ...schedulingEvents,
+            completed,
+          ]);
+          if (schedulingEvents.length > 0) {
+            yield* reconcileSchedulingWakeup();
+            yield* forkSchedulingDelivery();
+          }
           return {
             started,
             outcome: SessionCommandCompleted.make({ committed: committed.at(-1)! }),
@@ -1791,8 +2112,18 @@ const makeLiveSessionState = Effect.gen(function* () {
             from: "queue",
             to: "steer",
           });
+          const resumed = promotionNeedsResumeCommand(current, target.messageId)
+            ? [
+                yield* events.commandAdmitted({
+                  command: new ResumePendingMessagesCommand({
+                    commandId: yield* ids.makeCommandId(),
+                    messageIds: [target.messageId],
+                  }),
+                }),
+              ]
+            : [];
           const completed = yield* events.commandCompleted({ commandId: controlCommandId });
-          const committed = yield* appendDurableBatch([promoted, completed]);
+          const committed = yield* appendDurableBatch([promoted, ...resumed, completed]);
           return {
             started,
             outcome: SessionCommandCompleted.make({ committed: committed.at(-1)! }),
@@ -1977,6 +2308,37 @@ const makeLiveSessionState = Effect.gen(function* () {
     }
   });
 
+  const interruptWaitingRun = Effect.fnUntraced(function* (
+    control: DispatchCommandCandidate,
+    reason: "stopped" | "interrupted",
+  ) {
+    const plan = planWaitingRunInterruption(yield* currentReduced(), control.commandId);
+    if (plan === undefined)
+      return yield* Effect.die(new Error("Waiting interruption requires a current reservation"));
+    const isStop = control.command._tag === "StopTurn";
+    const batch: Array<DurableEventEnvelope> = [];
+    if (isStop) batch.push(yield* events.commandStarted({ commandId: control.commandId }));
+    batch.push(yield* events.runSchedulingInvalidated({ requestId: plan.requestId, reason }));
+    const [firstMessageId, ...restMessageIds] = plan.messageIds;
+    if (firstMessageId !== undefined) {
+      batch.push(
+        yield* events.pendingMessagesPaused({
+          interruptionCommandId: control.commandId,
+          runRequestId: plan.requestId,
+          messageIds: [firstMessageId, ...restMessageIds],
+          reason: "user-interrupted",
+        }),
+      );
+    }
+    if (plan.cancelCommandId !== undefined) {
+      batch.push(yield* events.commandCancelled({ commandId: plan.cancelCommandId, reason }));
+    }
+    if (isStop) batch.push(yield* events.commandCompleted({ commandId: control.commandId }));
+    const committed = yield* appendDurableBatch(batch);
+    yield* reconcileSchedulingWakeup();
+    return committed;
+  });
+
   const drainOneReadyCommand = Effect.fnUntraced(function* (input: SessionRunInput) {
     const execution = yield* inspectExecutionState();
     const current = yield* currentReduced();
@@ -2056,6 +2418,36 @@ const makeLiveSessionState = Effect.gen(function* () {
       }
     }
 
+    if (current.runSchedulingRequest !== undefined) {
+      const control = waitingRunControl(current);
+      if (control === undefined)
+        return SessionNoRunnableCommand.make({ reason: "awaiting-run-authorization" });
+      switch (control.command._tag) {
+        case "CancelPendingMessage":
+          return yield* cancelPendingMessage(control);
+        case "PromotePendingMessage":
+          return yield* promotePendingMessage(control);
+        case "StopTurn": {
+          const committed = yield* interruptWaitingRun(control, "stopped");
+          const started = committed[0];
+          const completed = committed.at(-1);
+          if (started === undefined || completed === undefined)
+            return yield* Effect.die(
+              new Error("Stopping a waiting request must commit its control lifecycle"),
+            );
+          return {
+            started,
+            outcome: SessionCommandCompleted.make({ committed: completed }),
+          } satisfies SessionCommandResult;
+        }
+        case "SubmitMessage":
+          yield* interruptWaitingRun(control, "interrupted");
+          return yield* startSubmitCommand(control, input);
+        default:
+          return SessionNoRunnableCommand.make({ reason: "awaiting-run-authorization" });
+      }
+    }
+
     const decision = decideDispatch(current);
     switch (decision._tag) {
       case "DispatchBlockedByActiveCommand":
@@ -2105,7 +2497,9 @@ const makeLiveSessionState = Effect.gen(function* () {
     yield* failIfFatal;
     const processed: Array<SessionDrainProcessed> = [];
     while (true) {
-      const result = yield* withFatalRecording(drainOneReadyCommand(input));
+      const result = yield* controlGate.withPermits(1)(
+        withFatalRecording(drainOneReadyCommand(input)),
+      );
       if (isSessionNoRunnableCommand(result)) {
         yield* annotateEdaSpan({
           "eda.command.processed_count": processed.length,
@@ -2198,6 +2592,7 @@ const makeLiveSessionState = Effect.gen(function* () {
 
   const start = Effect.fn(function* (input: SessionRunInput) {
     yield* runStartupRecovery(input);
+    yield* forkSchedulingDelivery();
     yield* runLiveControlLoop(input).pipe(Effect.forkIn(runtimeScope));
   });
 
