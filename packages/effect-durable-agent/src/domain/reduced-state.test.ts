@@ -118,7 +118,7 @@ const activeInferenceEvents = () => [
 
 describe("reduced-state", () => {
   it("uses the current checkpoint schema version", () => {
-    assert.strictEqual(frameworkReducedStateReducerSchemaVersion, 7);
+    assert.strictEqual(frameworkReducedStateReducerSchemaVersion, 8);
   });
 
   it("folds and checkpoint-hydrates imported assistant context", () => {

@@ -1,6 +1,6 @@
 {
   "name": "effect-durable-agent",
-  "version": "0.1.0-alpha.10",
+  "version": "0.1.0-alpha.11",
   "description": "A host-independent, event-sourced durable state-management and execution layer for agentic applications.",
   "keywords": [
     "agents",
@@ -168,6 +168,10 @@
     "./domain/run-scheduling": {
       "types": "./dist/domain/run-scheduling.d.ts",
       "import": "./dist/domain/run-scheduling.js"
+    },
+    "./domain/resumables": {
+      "types": "./dist/domain/resumables.d.ts",
+      "import": "./dist/domain/resumables.js"
     }
   },
   "scripts": {

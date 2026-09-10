@@ -82,7 +82,7 @@ export type RunRequestOutcome = typeof RunRequestOutcome.Type;
 /** Canonical records consulted by authorization policy, without an Effect-layer snapshot. */
 type SchedulingState = Pick<
   ReducedState,
-  "commands" | "runs" | "messages" | "commandQueues" | "runSchedulingRequest"
+  "commands" | "runs" | "messages" | "commandQueues" | "runSchedulingRequest" | "resumables"
 >;
 
 /** Still-unconsumed inputs owned by a reservation, derived from the existing message records. */
@@ -131,7 +131,14 @@ export const canGrantRun = (state: SchedulingState, requestId: RunRequestId): bo
           (message._tag === "User" || message._tag === "Steering") &&
           message.commandId === command.commandId,
       );
-    if (inputs.length === 0 && !legacySubmit) return false;
+    const resumable =
+      command.command._tag === "ResumeResumable"
+        ? state.resumables.get(command.command.resumableId)
+        : undefined;
+    const resume =
+      resumable?.settlement._tag === "Resolved" &&
+      resumable.settlement.commandId === command.commandId;
+    if (inputs.length === 0 && !legacySubmit && !resume) return false;
   } else {
     const predecessor = state.runs.get(request.work.interruptedRunId);
     if (

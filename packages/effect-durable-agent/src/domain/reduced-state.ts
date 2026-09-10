@@ -1,3 +1,9 @@
+import {
+  ResumableRecord,
+  ResumableOpened,
+  ResumableResolved,
+  ResumableCancelled,
+} from "./resumables";
 import { RunSchedulingRequest, RunSchedulingRequestRecord } from "./run-scheduling";
 import * as Schema from "effect/Schema";
 import type * as Prompt from "effect/unstable/ai/Prompt";
@@ -7,6 +13,7 @@ export { type TokenUsageTotals, TokenConsumptionState } from "./model-usage";
 import { assertNever } from "./assert-never";
 import { deriveCommandQueues, emptyCommandQueues, type CommandQueues } from "./command-queues";
 import {
+  ResumableId,
   InferenceId,
   CommandId,
   CompactionId,
@@ -345,6 +352,8 @@ export type ActiveTurnIdentity = {
 
 /** Canonical durable replay product used by queries, recovery, and scheduling. */
 export interface ReducedState {
+  /** External continuations; only the event reducer updates this map. */
+  readonly resumables: ReadonlyMap<ResumableId, ResumableRecord>;
   /** Single current authorization reservation; absent after grant or invalidation. */
   readonly runSchedulingRequest?: RunSchedulingRequestRecord;
   /** Session execution policy established by configuration or the first historical run. */
@@ -390,6 +399,7 @@ const emptyTokenConsumptionState: TokenConsumptionState = {
 
 /** Empty durable replay state before any session event has committed. */
 export const initialReducedState: ReducedState = {
+  resumables: new Map(),
   lastSeq: SequenceNumber.make(0),
   commands: new Map(),
   runs: new Map(),
@@ -409,7 +419,7 @@ export const initialReducedState: ReducedState = {
 export const frameworkReducedStateReducerName = "_eda.framework.reduced-state";
 
 /** Schema version for the framework-owned `ReducedState` checkpoint payload. */
-export const frameworkReducedStateReducerSchemaVersion = 7;
+export const frameworkReducedStateReducerSchemaVersion = 8;
 
 /** JSON payload stored for the framework-owned reduced-state reducer checkpoint. */
 export type ReducedStateCheckpointCommandRecord = Omit<CommandRecord, "command">;
@@ -449,6 +459,8 @@ export interface ReducedStateCheckpointToolCallRecord extends Omit<
 }
 
 export interface ReducedStateCheckpointPayload {
+  /** Absent in checkpoints created before resumables existed. */
+  readonly resumables?: ReadonlyArray<readonly [ResumableId, ResumableRecord]>;
   readonly runSchedulingRequest?: RunSchedulingRequestRecord;
   readonly modelSelection?: ModelSelectionPayload;
   readonly lastSeq: SequenceNumber;
@@ -469,6 +481,7 @@ export interface ReducedStateCheckpointPayload {
 export const encodeReducedStateCheckpoint = (
   state: ReducedState,
 ): ReducedStateCheckpointPayload => ({
+  resumables: Array.from(state.resumables.entries()),
   lastSeq: state.lastSeq,
   ...(state.runSchedulingRequest === undefined
     ? {}
@@ -535,6 +548,11 @@ export const decodeReducedStateCheckpoint = (
   const runs = new Map(checkpoint.runs ?? []);
   const messages = decodeCheckpointMessageRecords(checkpoint.messages ?? [], eventsBySeq);
   return {
+    resumables: new Map(
+      Schema.decodeUnknownSync(Schema.Array(Schema.Tuple([ResumableId, ResumableRecord])))(
+        checkpoint.resumables ?? [],
+      ),
+    ),
     lastSeq: SequenceNumber.make(Number(checkpoint.lastSeq ?? 0)),
     ...(checkpoint.runSchedulingRequest === undefined
       ? {}
@@ -803,6 +821,7 @@ export const foldReducedState = (
   let lastSeq = state.lastSeq;
   let runSchedulingRequest = state.runSchedulingRequest;
   let modelSelection = state.modelSelection;
+  const resumables = new Map(state.resumables);
   const commands = new Map(state.commands);
   const runs = new Map(state.runs);
   const recoveryContinuations = new Map(state.recoveryContinuations);
@@ -827,6 +846,42 @@ export const foldReducedState = (
     const eventCreatedAtMs = Number(event.createdAtMs);
 
     switch (event.type) {
+      case "ResumableOpened": {
+        const opened = Schema.decodeUnknownSync(ResumableOpened)(event.payload);
+        if (!resumables.has(opened.resumableId))
+          resumables.set(opened.resumableId, {
+            ...opened,
+            openedSeq: seq,
+            settlement: { _tag: "Open" },
+          });
+        break;
+      }
+      case "ResumableResolved": {
+        const resolved = Schema.decodeUnknownSync(ResumableResolved)(event.payload);
+        const record = resumables.get(resolved.resumableId);
+        if (record?.settlement._tag === "Open")
+          resumables.set(record.resumableId, {
+            ...record,
+            settlement: {
+              _tag: "Resolved",
+              result: resolved.result,
+              commandId: resolved.commandId,
+              seq,
+            },
+          });
+        break;
+      }
+      case "ResumableCancelled": {
+        const cancelled = Schema.decodeUnknownSync(ResumableCancelled)(event.payload);
+        const record = resumables.get(cancelled.resumableId);
+        if (record !== undefined && record.settlement._tag !== "Cancelled")
+          resumables.set(record.resumableId, {
+            ...record,
+            settlement: { _tag: "Cancelled", reason: cancelled.reason, seq },
+          });
+        break;
+      }
+
       case runSchedulingRequestedEventType:
         runSchedulingRequest = Schema.decodeUnknownSync(RunSchedulingRequestRecord)({
           ...Schema.decodeUnknownSync(RunSchedulingRequest)(event.payload),
@@ -1327,6 +1382,7 @@ export const foldReducedState = (
         }));
         pruneForContextRebase(
           {
+            resumables,
             commands,
             runs,
             recoveryContinuations,
@@ -1395,6 +1451,7 @@ export const foldReducedState = (
   }
 
   return {
+    resumables,
     lastSeq,
     ...(runSchedulingRequest === undefined ? {} : { runSchedulingRequest }),
     ...(modelSelection === undefined ? {} : { modelSelection }),
@@ -1418,6 +1475,7 @@ export const reduceCommittedEvents = (committed: ReadonlyArray<CommittedDurableE
   foldReducedState(initialReducedState, committed);
 
 interface MutableReplayMaps {
+  readonly resumables: Map<ResumableId, ResumableRecord>;
   readonly commands: Map<CommandId, CommandRecord>;
   readonly runs: Map<RunId, RunRecord>;
   readonly recoveryContinuations: Map<RunId, RecoveryContinuationRecord>;
@@ -1435,6 +1493,22 @@ const pruneForContextRebase = (
   retainedFromContextSeq: SequenceNumber,
   currentSummaryId: SummaryId,
 ): void => {
+  for (const [resumableId, record] of maps.resumables) {
+    const settlement = record.settlement;
+    if (settlement._tag === "Open" || settlement.seq >= retainedFromContextSeq) continue;
+    const sourceRun = maps.runs.get(record.runId);
+    if (sourceRun !== undefined && sourceRun.terminal === undefined) continue;
+    if (settlement._tag === "Resolved") {
+      const command = maps.commands.get(settlement.commandId);
+      if (
+        command !== undefined &&
+        (command.terminal === undefined || command.terminal.seq >= retainedFromContextSeq)
+      )
+        continue;
+    }
+    maps.resumables.delete(resumableId);
+  }
+
   for (const [messageId, message] of maps.messages) {
     if (message._tag !== "System" && messagePruneSeq(message) < retainedFromContextSeq) {
       maps.messages.delete(messageId);

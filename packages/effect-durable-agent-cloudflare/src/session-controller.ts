@@ -1,3 +1,9 @@
+import type {
+  ResolveResumable,
+  ResumableCancelled,
+  ResumableResolution,
+} from "effect-durable-agent/domain/resumables";
+import type { DurableEventEnvelope } from "effect-durable-agent/types/events";
 import * as Effect from "effect/Effect";
 import type * as Tracer from "effect/Tracer";
 
@@ -114,6 +120,35 @@ export class EDASessionController<ProjectionState extends object = never> {
   }
 
   static readonly migrate = EDASessionRuntime.migrate;
+
+  /** Trusted extension handoff; result and resume command share the session's durable commit. */
+  resolveResumable(
+    input: EDASessionScopedInput & {
+      readonly resolution: ResolveResumable;
+      readonly events?: ReadonlyArray<DurableEventEnvelope>;
+    },
+  ): Promise<ResumableResolution> {
+    return this.run(input.sessionId, (eda) => {
+      const operation = eda.resolveResumable(input.resolution, input.events);
+      const parent = input.trace?.parent;
+      return parent === undefined || parent === null
+        ? operation
+        : operation.pipe(Effect.withParentSpan(toEdaExternalSpan(parent)));
+    });
+  }
+
+  /** Trusted cancellation fences delayed or duplicate external results. */
+  cancelResumable(
+    input: EDASessionScopedInput & { readonly cancellation: ResumableCancelled },
+  ): Promise<ResumableResolution> {
+    return this.run(input.sessionId, (eda) => {
+      const operation = eda.cancelResumable(input.cancellation);
+      const parent = input.trace?.parent;
+      return parent === undefined || parent === null
+        ? operation
+        : operation.pipe(Effect.withParentSpan(toEdaExternalSpan(parent)));
+    });
+  }
 
   /** Trusted reconciliation read; never submits or grants replacement work. */
   runRequestOutcome(

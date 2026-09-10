@@ -64,9 +64,14 @@ export const planSessionRecovery = (state: ReducedState): SessionRecoveryPlan =>
     : recoverable.activeCommands.find((command) => {
         const tag = command.command?._tag;
         return (
-          (tag === "SubmitMessage" || tag === "ResumePendingMessages") &&
+          (tag === "SubmitMessage" ||
+            tag === "ResumePendingMessages" ||
+            tag === "ResumeResumable") &&
           recoverable.activeRuns.some(
-            (run) => !stoppedRunIds.has(run.runId) && run.commandIds.includes(command.commandId),
+            (run) =>
+              !stoppedRunIds.has(run.runId) &&
+              run.commandIds.includes(command.commandId) &&
+              !Array.from(state.resumables.values()).some((record) => record.runId === run.runId),
           )
         );
       });

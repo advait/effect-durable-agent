@@ -5,6 +5,8 @@
 [![npm version](https://img.shields.io/npm/v/effect-durable-agent)](https://www.npmjs.com/package/effect-durable-agent)
 [![CI](https://github.com/advait/effect-durable-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/advait/effect-durable-agent/actions/workflows/ci.yml)
 
+See [durable external work](./docs/resumables.md) for tool-driven waiting and trusted continuation settlement.
+
 ## Why?
 
 Once an agent runs tools, launches sandboxes, requests approval, or interacts with external systems,

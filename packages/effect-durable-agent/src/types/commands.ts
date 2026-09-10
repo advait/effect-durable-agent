@@ -1,7 +1,7 @@
 import * as Prompt from "effect/unstable/ai/Prompt";
 import * as Schema from "effect/Schema";
 
-import { CommandId, MessageId, RunRequestId } from "./core";
+import { CommandId, MessageId, RunRequestId, ResumableId } from "./core";
 
 /** Caller-owned stable retry/correlation key for a submitted command. */
 export const CommandIdempotencyKey = Schema.NonEmptyString.pipe(
@@ -73,6 +73,12 @@ export class ResumePendingMessagesCommand extends Schema.TaggedClass<ResumePendi
   },
 ) {}
 
+/** Framework-owned continuation command created only by the trusted resumable resolver. */
+export class ResumeResumableCommand extends Schema.TaggedClass<ResumeResumableCommand>()(
+  "ResumeResumable",
+  { ...CommandSubmissionFields, resumableId: ResumableId },
+) {}
+
 /** Request interruption/finalization of the active turn. */
 export class StopTurnCommand extends Schema.TaggedClass<StopTurnCommand>()("StopTurn", {
   ...CommandSubmissionFields,
@@ -85,6 +91,7 @@ export const EDACommand = Schema.Union([
   CancelPendingMessageCommand,
   PromotePendingMessageCommand,
   ResumePendingMessagesCommand,
+  ResumeResumableCommand,
 ]);
 export type EDACommand = typeof EDACommand.Type;
 

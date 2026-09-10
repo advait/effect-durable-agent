@@ -66,6 +66,9 @@ export interface EDARuntimeSubmit {
 
 /** Public facade exposed to hosts and route handlers for one live session runtime. */
 export interface EDARuntimeShape {
+  /** Trusted continuation APIs; ordinary command ingress cannot synthesize resolution. */
+  readonly resolveResumable: SessionStateShape["resolveResumable"];
+  readonly cancelResumable: SessionStateShape["cancelResumable"];
   /** Trusted scheduler callback, deliberately separate from ordinary command admission. */
   /** Durable request reconciliation for trusted external schedulers. */
   readonly runRequestOutcome: EDASessionQueryShape["runRequestOutcome"];
@@ -151,6 +154,8 @@ const makeLiveRuntime = (config: EDARuntimeConfig) =>
     }) as EDARuntimeSubmit;
 
     return {
+      resolveResumable: sessionState.resolveResumable,
+      cancelResumable: sessionState.cancelResumable,
       runRequestOutcome: query.runRequestOutcome,
       grantRun: (command: GrantRunCommand) => sessionState.grantRun(command, runInput),
       retryRunSchedulingDelivery: () => sessionState.retryRunSchedulingDelivery(),

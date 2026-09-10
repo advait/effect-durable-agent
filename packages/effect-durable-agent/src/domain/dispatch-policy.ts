@@ -46,6 +46,7 @@ export type DispatchDecision =
       readonly command: DispatchCommandCandidate;
       readonly active?: DispatchActiveCommand;
     }
+  | { readonly _tag: "DispatchWaitingOnResumables" }
   | { readonly _tag: "DispatchNoPendingCommand" }
   | { readonly _tag: "DispatchInvariantViolation"; readonly messageIds: ReadonlyArray<MessageId> }
   | { readonly _tag: "DispatchStartCommand"; readonly command: DispatchCommandCandidate };
@@ -98,6 +99,18 @@ export const decideDispatch = (state: ReducedState): DispatchDecision => {
   if (stop !== undefined) {
     return { _tag: "DispatchStartCommand", command: toCandidate(stop) };
   }
+  const interrupt = state.commandQueues.pendingCommands.find(
+    (pending) =>
+      pending.command._tag === "SubmitMessage" && pending.command.disposition === "interrupt",
+  );
+  if (interrupt !== undefined)
+    return { _tag: "DispatchStartCommand", command: toCandidate(interrupt) };
+  const resume = state.commandQueues.pendingCommands.find(
+    (pending) => pending.command._tag === "ResumeResumable",
+  );
+  if (resume !== undefined) return { _tag: "DispatchStartCommand", command: toCandidate(resume) };
+  if (Array.from(state.resumables.values()).some((record) => record.settlement._tag === "Open"))
+    return { _tag: "DispatchWaitingOnResumables" };
   const next = nextIdleCommand(state);
   if (next === "orphan-pending-messages") {
     return {
@@ -184,6 +197,7 @@ const controlPriority = (command: EDACommand): number => {
       return 2;
     case "SubmitMessage":
       return 3;
+    case "ResumeResumable":
     case "ResumePendingMessages":
       return 4;
   }

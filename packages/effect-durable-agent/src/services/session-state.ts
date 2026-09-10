@@ -1,3 +1,4 @@
+import { makeResumableOperations, type ResumableOperations } from "./resumables";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -44,6 +45,7 @@ import {
   CancelPendingMessageCommand,
   PromotePendingMessageCommand,
   ResumePendingMessagesCommand,
+  ResumeResumableCommand,
   StopTurnCommand,
   SubmitMessageCommand,
   type EDACommand,
@@ -296,7 +298,7 @@ export type SessionStateError = EDASessionStoreError | TurnRunnerError;
 export class SessionCommandAdmissionConflict extends Schema.TaggedErrorClass<SessionCommandAdmissionConflict>()(
   "SessionCommandAdmissionConflict",
   {
-    code: Schema.Literals(["queue_paused", "paused_queue_changed"]),
+    code: Schema.Literals(["queue_paused", "paused_queue_changed", "internal_command"]),
     message: Schema.String,
     pausedMessageIds: Schema.Array(MessageId),
   },
@@ -310,6 +312,10 @@ export type EDASubmittable = EDACommand | DurableEventEnvelope;
 
 /** Internal live-process authority for commands, durable writes, and scheduling. */
 export interface SessionStateShape extends SessionEventSink {
+  /** Trusted external-result handoff; admits exactly one continuation with the resolution. */
+  readonly resolveResumable: ResumableOperations["resolveResumable"];
+  /** Abandon external work without accepting a late result. */
+  readonly cancelResumable: ResumableOperations["cancelResumable"];
   /** Trusted permission entrypoint, serialized with control actions and revalidated before commit. */
   readonly grantRun: (
     command: GrantRunCommand,
@@ -669,6 +675,16 @@ const makeLiveSessionState = Effect.gen(function* () {
 
   const wakeAfterCommandAdmission = () => Queue.offer(ingressSignals, undefined);
 
+  const resumables = makeResumableOperations({
+    sessionId: sessionContext.sessionId,
+    events,
+    ids,
+    snapshot,
+    withinGate: withAppendGate,
+    commit: (batch) => commitDurableEntriesWithinGate(batch.map((event) => ({ event }))),
+    wake: wakeAfterCommandAdmission,
+  });
+
   /** Use indexed store lookup for command idempotency instead of genesis replay. */
   const findExistingCommandAdmission = (command: EDACommand) =>
     Effect.gen(function* () {
@@ -687,6 +703,12 @@ const makeLiveSessionState = Effect.gen(function* () {
     preparedByCommandId: Map<string, DurableEventEnvelope>,
   ) =>
     Effect.gen(function* () {
+      if (command._tag === "ResumeResumable")
+        return yield* new SessionCommandAdmissionConflict({
+          code: "internal_command",
+          message: "ResumeResumable is admitted only by the trusted resolver",
+          pausedMessageIds: [],
+        });
       if (command.idempotencyKey !== undefined) {
         const prepared = preparedByIdempotencyKey.get(command.idempotencyKey);
         if (prepared !== undefined) {
@@ -710,9 +732,20 @@ const makeLiveSessionState = Effect.gen(function* () {
       const admitted = commandWithId(command, commandId);
       const event = yield* events.commandAdmitted({ command: admitted });
       rememberPreparedCommand(event, preparedByIdempotencyKey, preparedByCommandId);
-      if (admitted._tag !== "SubmitMessage" || admitted.disposition === "interrupt") {
-        return [event];
+      if (
+        admitted._tag === "StopTurn" ||
+        (admitted._tag === "SubmitMessage" && admitted.disposition === "interrupt")
+      ) {
+        const current = yield* snapshot();
+        return [
+          event,
+          ...(yield* resumables.cancelPendingResumables(
+            current,
+            admitted._tag === "StopTurn" ? "stopped" : "interrupted",
+          )),
+        ];
       }
+      if (admitted._tag !== "SubmitMessage" || admitted.disposition === "interrupt") return [event];
       const current = yield* Ref.get(state);
       const pausedMessageIds = current.reduced.commandQueues.pausedQueue.map(
         (message) => message.messageId,
@@ -818,6 +851,9 @@ const makeLiveSessionState = Effect.gen(function* () {
   const initialize = (input: SessionRunInput) => commitInitialSystemPrompt(input.systemPrompt);
 
   const sessionApi: SessionStateShape = {
+    openToolResumable: resumables.openToolResumable,
+    resolveResumable: resumables.resolveResumable,
+    cancelResumable: resumables.cancelResumable,
     grantRun: (command, input) => grantRun(command, input),
     retryRunSchedulingDelivery: () => retryRunSchedulingDelivery(),
     initialize,
@@ -1333,19 +1369,31 @@ const makeLiveSessionState = Effect.gen(function* () {
     command: DispatchCommandCandidate,
     input: SessionRunInput,
   ) {
-    if (command.command._tag !== "ResumePendingMessages") {
-      return yield* Effect.die(new Error("Resume dispatch requires ResumePendingMessages"));
+    const resume = command.command;
+    if (resume._tag !== "ResumePendingMessages" && resume._tag !== "ResumeResumable") {
+      return yield* Effect.die(
+        new Error("Resume dispatch requires an internal continuation command"),
+      );
     }
     const current = yield* currentData();
-    const pending = command.command.messageIds.flatMap((messageId) => {
-      const message = current.reduced.messages.get(messageId);
-      return (message?._tag === "User" || message?._tag === "Steering") &&
-        message.consumedSeq === undefined &&
-        message.cancelledSeq === undefined
-        ? [message]
-        : [];
-    });
-    if (pending.length === 0) {
+    const resumable =
+      resume._tag === "ResumeResumable"
+        ? current.reduced.resumables.get(resume.resumableId)
+        : undefined;
+    const eligibleResumable =
+      resumable?.settlement._tag === "Resolved" &&
+      resumable.settlement.commandId === command.commandId;
+    const pending = (resume._tag === "ResumePendingMessages" ? resume.messageIds : []).flatMap(
+      (messageId) => {
+        const message = current.reduced.messages.get(messageId);
+        return (message?._tag === "User" || message?._tag === "Steering") &&
+          message.consumedSeq === undefined &&
+          message.cancelledSeq === undefined
+          ? [message]
+          : [];
+      },
+    );
+    if (pending.length === 0 && !eligibleResumable) {
       return yield* processInactiveStopCommand(command);
     }
     const resolution = yield* runScheduler.resolve({
@@ -2459,6 +2507,7 @@ const makeLiveSessionState = Effect.gen(function* () {
         return yield* cancelPendingMessage(decision.command);
       case "DispatchPromotePendingMessage":
         return yield* promotePendingMessage(decision.command);
+      case "DispatchWaitingOnResumables":
       case "DispatchNoPendingCommand":
         return SessionNoRunnableCommand.make({ reason: "no-pending-command" });
       case "DispatchInvariantViolation":
@@ -2471,6 +2520,7 @@ const makeLiveSessionState = Effect.gen(function* () {
         switch (decision.command.command._tag) {
           case "StopTurn":
             return yield* processInactiveStopCommand(decision.command);
+          case "ResumeResumable":
           case "ResumePendingMessages":
             return yield* startResumePendingMessages(decision.command, input);
           case "SubmitMessage":
@@ -2717,6 +2767,8 @@ const commandWithId = (command: EDACommand, commandId: CommandId): EDACommand =>
         ...(command.idempotencyKey === undefined ? {} : { idempotencyKey: command.idempotencyKey }),
         messageId: command.messageId,
       });
+    case "ResumeResumable":
+      return new ResumeResumableCommand({ ...command, commandId });
     case "ResumePendingMessages":
       return new ResumePendingMessagesCommand({
         commandId,

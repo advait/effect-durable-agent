@@ -41,6 +41,10 @@ export type InferenceId = typeof InferenceId.Type;
 export const ToolCallId = UuidV7String.pipe(Schema.brand("ToolCallId"));
 export type ToolCallId = typeof ToolCallId.Type;
 
+/** Durable external continuation identity, stable across retries of its originating tool call. */
+export const ResumableId = UuidV7String.pipe(Schema.brand("ResumableId"));
+export type ResumableId = typeof ResumableId.Type;
+
 /** Retained message body identity. */
 export const MessageId = UuidV7String.pipe(Schema.brand("MessageId"));
 export type MessageId = typeof MessageId.Type;

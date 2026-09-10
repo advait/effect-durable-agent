@@ -1,4 +1,6 @@
 import * as Effect from "effect/Effect";
+import type { OpenResumable, ResumableHandle, ResumableOpenError } from "../domain/resumables";
+import type { ToolCallId } from "../types/core";
 
 import type {
   DurableEventEnvelope,
@@ -15,6 +17,12 @@ import type { CommittedDurableEvent, EDASessionStoreError } from "./session-stor
  * authorities.
  */
 export interface SessionEventSink {
+  /** Open one wait per tool call, atomically with app request facts. The callback only constructs events. */
+  readonly openToolResumable: (
+    toolCallId: ToolCallId,
+    input: OpenResumable,
+    requestEvents: (handle: ResumableHandle) => Effect.Effect<ReadonlyArray<DurableEventEnvelope>>,
+  ) => Effect.Effect<ResumableHandle, EDASessionStoreError | ResumableOpenError>;
   /** Commit one durable event through the authoritative session write path. */
   readonly appendDurable: (
     event: DurableEventEnvelope,

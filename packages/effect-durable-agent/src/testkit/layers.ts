@@ -159,6 +159,8 @@ export interface EdaTestLayerOptions {
   }) => void;
   /** Handler-backed Effect Toolkit; overrides `toolSchemas` when present. */
   readonly toolkit?: EDAModelToolkit;
+  /** Replace the external tool boundary when exercising runtime tool context capabilities. */
+  readonly toolRegistryLayer?: Layer.Layer<EDAToolRegistry>;
   /** Test/convenience schema-only tools; execution fails unless `toolkit` is provided. */
   readonly toolSchemas?: ReadonlyMap<string, ToolParamsSchema>;
   /** Durable prefix used when constructing a fresh in-memory runtime for recovery tests. */
@@ -268,11 +270,12 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
     ),
   );
   const Registry =
-    options.toolkit !== undefined
+    options.toolRegistryLayer ??
+    (options.toolkit !== undefined
       ? EDAToolRegistry.FromToolkit(options.toolkit)
       : options.toolSchemas === undefined
         ? EDAToolRegistry.Empty
-        : EDAToolRegistry.FromSchemas(options.toolSchemas);
+        : EDAToolRegistry.FromSchemas(options.toolSchemas));
   const InferenceRunnerLayer = InferenceRunner.Live.pipe(
     Layer.provideMerge(Layer.mergeAll(Factory, Models, Registry, Ids)),
   );
