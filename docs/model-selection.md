@@ -27,7 +27,7 @@ Compaction completion and known-usage failure events include model selection
 and provider usage. Calls interrupted before usage is persisted remain unknown;
 EDA does not invent usage estimates. Old compaction events remain readable.
 
-Framework checkpoint schema 6 rebuilds schema-5 checkpoints from retained
-events. Conversation history is preserved; the old aggregate usage shape and
+Framework checkpoint schema 7 rebuilds older checkpoints from retained
+events, including the schema-5 aggregate-usage format and schema 6. Conversation history is preserved; the old aggregate usage shape and
 the `modelLayer` host option are removed. All in-repository host examples and
 consumers use the new resolver contract.

@@ -4,7 +4,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { EDACommand } from "../types/commands";
+import { EDACommand, GrantRunCommand } from "../types/commands";
 import { CommandId, SequenceNumber, durablePosition } from "../types/core";
 import {
   ModelSelectionPayload,
@@ -21,7 +21,11 @@ import type {
   PositionedEvent,
 } from "../types/events";
 import { SessionState } from "./session-state";
-import type { EDASubmittable, SessionCommandAdmissionError } from "./session-state";
+import type {
+  EDASubmittable,
+  SessionCommandAdmissionError,
+  SessionStateShape,
+} from "./session-state";
 import { CommittedDurableEvent } from "./session-store";
 import { EDASessionQuery } from "./session-query";
 import { annotateEdaSpan, committedBatchAttributes } from "./tracing";
@@ -62,6 +66,10 @@ export interface EDARuntimeSubmit {
 
 /** Public facade exposed to hosts and route handlers for one live session runtime. */
 export interface EDARuntimeShape {
+  /** Trusted scheduler callback, deliberately separate from ordinary command admission. */
+  readonly grantRun: (command: GrantRunCommand) => ReturnType<SessionStateShape["grantRun"]>;
+  /** Durable host wakeup callback; retry delivery without waiting for authorization. */
+  readonly retryRunSchedulingDelivery: SessionStateShape["retryRunSchedulingDelivery"];
   /** Submit commands and/or app durable events durably and wake the dispatch process if needed. */
   readonly submit: EDARuntimeSubmit;
   /** Block until the command reaches CommandCompleted, CommandFailed, or CommandCancelled. */
@@ -141,6 +149,8 @@ const makeLiveRuntime = (config: EDARuntimeConfig) =>
     }) as EDARuntimeSubmit;
 
     return {
+      grantRun: (command: GrantRunCommand) => sessionState.grantRun(command, runInput),
+      retryRunSchedulingDelivery: () => sessionState.retryRunSchedulingDelivery(),
       submit,
       blockOnCommand,
       submitAndBlock: Effect.fn(function* (command: EDACommand) {

@@ -47,6 +47,7 @@ export class DurableObjectKeepAlive {
   private readonly now: () => number;
   private readonly onBackgroundError: (error: unknown) => void;
   private activeLeases = 0;
+  private runSchedulingPending = false;
   private generation = 0;
   private scheduleTail: Promise<void> = Promise.resolve();
   private shutdownRequested = false;
@@ -64,6 +65,12 @@ export class DurableObjectKeepAlive {
   /** Number of active unsettled host roots currently holding the heartbeat. */
   get activeLeaseCount(): number {
     return this.activeLeases;
+  }
+
+  /** Durable delivery work survives the release of every in-memory active lease. */
+  setRunSchedulingPending(pending: boolean): Promise<void> {
+    this.runSchedulingPending = pending;
+    return this.reschedule();
   }
 
   /** Acquire one active-work lease and arm the heartbeat if this is the first lease. */
@@ -158,6 +165,7 @@ export class DurableObjectKeepAlive {
     this.shutdownRequested = true;
     this.generation += 1;
     this.activeLeases = 0;
+    this.runSchedulingPending = false;
     return this.reschedule();
   }
 
@@ -180,7 +188,7 @@ export class DurableObjectKeepAlive {
   }
 
   private async syncAlarm(): Promise<void> {
-    if (this.shutdownRequested || this.activeLeases === 0) {
+    if (this.shutdownRequested || (this.activeLeases === 0 && !this.runSchedulingPending)) {
       await this.storage.deleteAlarm();
       return;
     }

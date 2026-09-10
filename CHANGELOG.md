@@ -4,6 +4,19 @@ All notable changes to Effect Durable Agent will be documented in this file.
 
 ## Unreleased
 
+- Add durable deferred run authorization: persist one request before delivery,
+  acknowledge successful handoff only, revalidate trusted grants, and consume
+  permission atomically with run start. Stop/cancel/interrupt and recovery retain
+  durable ownership across eviction. Cloudflare/celld alarms retry undelivered
+  requests independently of active-work leases.
+- Add the separate `GrantRun` API and `RunSchedulingWakeup` host capability;
+  custom `RunScheduler` layers now provide outbound delivery. Immediate execution
+  remains the default and retains its event/ID sequence.
+- Rebuild pre-7 framework checkpoints from retained event history. Pause facts
+  can identify a pending run request when interruption occurs before run start.
+
+## Unreleased
+
 ## 0.1.0-alpha.9
 
 - Resolve each new run through the replaceable RunScheduler boundary, including queued work and restart recovery

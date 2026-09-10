@@ -1,3 +1,5 @@
+import { RunSchedulingRequest, RunSchedulingRequestRecord } from "./run-scheduling";
+import * as Schema from "effect/Schema";
 import type * as Prompt from "effect/unstable/ai/Prompt";
 import { addModelUsage, TokenConsumptionState } from "./model-usage";
 export { type TokenUsageTotals, TokenConsumptionState } from "./model-usage";
@@ -42,6 +44,10 @@ import {
   runFailedEventType,
   runInterruptedEventType,
   runStartedEventType,
+  runSchedulingRequestedEventType,
+  runSchedulingDeliveredEventType,
+  runSchedulingInvalidatedEventType,
+  runSchedulingGrantedEventType,
   sessionConfiguredEventType,
   stopTurnAppliedEventType,
   stopTurnRequestedEventType,
@@ -339,6 +345,8 @@ export type ActiveTurnIdentity = {
 
 /** Canonical durable replay product used by queries, recovery, and scheduling. */
 export interface ReducedState {
+  /** Single current authorization reservation; absent after grant or invalidation. */
+  readonly runSchedulingRequest?: RunSchedulingRequestRecord;
   /** Session execution policy established by configuration or the first historical run. */
   readonly modelSelection?: ModelSelectionPayload;
   readonly lastSeq: SequenceNumber;
@@ -401,7 +409,7 @@ export const initialReducedState: ReducedState = {
 export const frameworkReducedStateReducerName = "_eda.framework.reduced-state";
 
 /** Schema version for the framework-owned `ReducedState` checkpoint payload. */
-export const frameworkReducedStateReducerSchemaVersion = 6;
+export const frameworkReducedStateReducerSchemaVersion = 7;
 
 /** JSON payload stored for the framework-owned reduced-state reducer checkpoint. */
 export type ReducedStateCheckpointCommandRecord = Omit<CommandRecord, "command">;
@@ -441,6 +449,7 @@ export interface ReducedStateCheckpointToolCallRecord extends Omit<
 }
 
 export interface ReducedStateCheckpointPayload {
+  readonly runSchedulingRequest?: RunSchedulingRequestRecord;
   readonly modelSelection?: ModelSelectionPayload;
   readonly lastSeq: SequenceNumber;
   readonly commands: ReadonlyArray<readonly [CommandId, ReducedStateCheckpointCommandRecord]>;
@@ -461,6 +470,9 @@ export const encodeReducedStateCheckpoint = (
   state: ReducedState,
 ): ReducedStateCheckpointPayload => ({
   lastSeq: state.lastSeq,
+  ...(state.runSchedulingRequest === undefined
+    ? {}
+    : { runSchedulingRequest: state.runSchedulingRequest }),
   ...(state.modelSelection === undefined ? {} : { modelSelection: state.modelSelection }),
   commands: Array.from(state.commands.entries()).map(([commandId, record]) => [
     commandId,
@@ -524,6 +536,13 @@ export const decodeReducedStateCheckpoint = (
   const messages = decodeCheckpointMessageRecords(checkpoint.messages ?? [], eventsBySeq);
   return {
     lastSeq: SequenceNumber.make(Number(checkpoint.lastSeq ?? 0)),
+    ...(checkpoint.runSchedulingRequest === undefined
+      ? {}
+      : {
+          runSchedulingRequest: Schema.decodeUnknownSync(RunSchedulingRequestRecord)(
+            checkpoint.runSchedulingRequest,
+          ),
+        }),
     ...(checkpoint.modelSelection === undefined
       ? {}
       : { modelSelection: checkpoint.modelSelection }),
@@ -782,6 +801,7 @@ export const foldReducedState = (
   committed: ReadonlyArray<CommittedDurableEvent>,
 ): ReducedState => {
   let lastSeq = state.lastSeq;
+  let runSchedulingRequest = state.runSchedulingRequest;
   let modelSelection = state.modelSelection;
   const commands = new Map(state.commands);
   const runs = new Map(state.runs);
@@ -807,6 +827,24 @@ export const foldReducedState = (
     const eventCreatedAtMs = Number(event.createdAtMs);
 
     switch (event.type) {
+      case runSchedulingRequestedEventType:
+        runSchedulingRequest = Schema.decodeUnknownSync(RunSchedulingRequestRecord)({
+          ...Schema.decodeUnknownSync(RunSchedulingRequest)(event.payload),
+          requestedSeq: seq,
+        });
+        break;
+      case runSchedulingDeliveredEventType:
+        if (
+          runSchedulingRequest !== undefined &&
+          runSchedulingRequest.requestId === payload.requestId
+        ) {
+          runSchedulingRequest = { ...runSchedulingRequest, deliveredSeq: seq };
+        }
+        break;
+      case runSchedulingInvalidatedEventType:
+      case runSchedulingGrantedEventType:
+        if (runSchedulingRequest?.requestId === payload.requestId) runSchedulingRequest = undefined;
+        break;
       case commandAdmittedEventType: {
         const { command } = payload;
         const commandId = requireAdmittedCommandId(command);
@@ -1358,6 +1396,7 @@ export const foldReducedState = (
 
   return {
     lastSeq,
+    ...(runSchedulingRequest === undefined ? {} : { runSchedulingRequest }),
     ...(modelSelection === undefined ? {} : { modelSelection }),
     commands,
     runs,
@@ -1507,7 +1546,10 @@ export const activeTurnIdentityForCommand = (
 /** Classify unfinished durable lifecycles that recovery may need to repair. */
 export const classifyRecoverableWork = (state: ReducedState): RecoverableWork => {
   const activeCommands = Array.from(state.commands.values()).filter(
-    (command) => command.startedSeq !== undefined && command.terminal === undefined,
+    (command) =>
+      command.startedSeq !== undefined &&
+      command.terminal === undefined &&
+      command.commandId !== state.runSchedulingRequest?.work.commandId,
   );
   const activeRuns = Array.from(state.runs.values()).filter((run) => run.terminal === undefined);
   const activeTurns = Array.from(state.turns.values()).filter(

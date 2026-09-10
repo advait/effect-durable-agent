@@ -11,6 +11,7 @@ import {
   EventId,
   MessageId,
   RunId,
+  RunRequestId,
   SessionId,
   SummaryId,
   ToolCallId,
@@ -23,6 +24,7 @@ export interface IdGeneratorShape {
   readonly makeEventId: () => Effect.Effect<EventId>;
   readonly makeCommandId: () => Effect.Effect<CommandId>;
   readonly makeRunId: () => Effect.Effect<RunId>;
+  readonly makeRunRequestId: () => Effect.Effect<RunRequestId>;
   readonly makeTurnId: () => Effect.Effect<TurnId>;
   readonly makeInferenceId: () => Effect.Effect<InferenceId>;
   readonly makeToolCallId: () => Effect.Effect<ToolCallId>;
@@ -92,6 +94,7 @@ const makeIdGenerator = (nextUuidV7: Effect.Effect<string>): IdGeneratorShape =>
   makeEventId: () => nextUuidV7.pipe(Effect.map((id) => EventId.make(id))),
   makeCommandId: () => nextUuidV7.pipe(Effect.map((id) => CommandId.make(id))),
   makeRunId: () => nextUuidV7.pipe(Effect.map((id) => RunId.make(id))),
+  makeRunRequestId: () => nextUuidV7.pipe(Effect.map((id) => RunRequestId.make(id))),
   makeTurnId: () => nextUuidV7.pipe(Effect.map((id) => TurnId.make(id))),
   makeInferenceId: () => nextUuidV7.pipe(Effect.map((id) => InferenceId.make(id))),
   makeToolCallId: () => nextUuidV7.pipe(Effect.map((id) => ToolCallId.make(id))),

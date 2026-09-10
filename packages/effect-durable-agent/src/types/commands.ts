@@ -1,7 +1,7 @@
 import * as Prompt from "effect/unstable/ai/Prompt";
 import * as Schema from "effect/Schema";
 
-import { CommandId, MessageId } from "./core";
+import { CommandId, MessageId, RunRequestId } from "./core";
 
 /** Caller-owned stable retry/correlation key for a submitted command. */
 export const CommandIdempotencyKey = Schema.NonEmptyString.pipe(
@@ -87,3 +87,11 @@ export const EDACommand = Schema.Union([
   ResumePendingMessagesCommand,
 ]);
 export type EDACommand = typeof EDACommand.Type;
+
+/**
+ * Trusted scheduler permission, accepted only through the separate grantRun API.
+ * Excluded from EDACommand so ordinary session ingress cannot authorize itself.
+ */
+export class GrantRunCommand extends Schema.TaggedClass<GrantRunCommand>()("GrantRun", {
+  requestId: RunRequestId,
+}) {}

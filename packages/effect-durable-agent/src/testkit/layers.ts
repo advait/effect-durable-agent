@@ -22,6 +22,7 @@ import { EDAReducerRegistry, type EDAReducer } from "../services/reducer-registr
 import { EDASinkRegistry, type EDASink } from "../services/sink-registry";
 import { SinkCheckpointStore } from "../services/sink-checkpoint-store";
 import { RunScheduler } from "../services/run-scheduler";
+import { RunSchedulingWakeup } from "../services/run-scheduling-wakeup";
 import { SessionContext } from "../services/session-context";
 import { EDASessionQuery } from "../services/session-query";
 import { SessionState } from "../services/session-state";
@@ -136,6 +137,7 @@ const isTestLanguageModelOptions = (
 /** Single-session in-memory layer graph options for EDA service tests. */
 export interface EdaTestLayerOptions {
   readonly runSchedulerLayer?: Layer.Layer<RunScheduler>;
+  readonly runSchedulingWakeupLayer?: Layer.Layer<RunSchedulingWakeup>;
   readonly sessionId: SessionId;
   /** Explicit ID sequence (Deterministic); omit for counter-based Sequential IDs. */
   readonly ids?: ReadonlyArray<string>;
@@ -261,6 +263,7 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
         Compaction,
         PromptProjector,
         options.runSchedulerLayer ?? RunScheduler.Immediate,
+        options.runSchedulingWakeupLayer ?? RunSchedulingWakeup.Unsupported,
       ),
     ),
   );

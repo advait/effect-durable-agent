@@ -16,8 +16,10 @@ import type {
 } from "effect-durable-agent/services/runtime";
 import {
   EDACommand,
+  GrantRunCommand,
   type EDACommand as EDACommandValue,
 } from "effect-durable-agent/types/commands";
+import type { RunGrantResult } from "effect-durable-agent/domain/run-scheduling";
 import type { EDASubmittable } from "effect-durable-agent/services/session-state";
 import { CommandId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
 import {
@@ -41,6 +43,13 @@ export const EDA_WEB_SOCKET_PROJECTION_HEADER = "x-eda-websocket-projection";
 
 /** Raw RPC shape decoded before admitting one session command. */
 export interface EDASessionCommandRpcInput {
+  readonly command: unknown;
+  readonly sessionId: string;
+  readonly trace: unknown;
+}
+
+/** Trusted Worker-to-object scheduler callback; never exposed as ordinary user ingress. */
+export interface EDASessionGrantRunRpcInput {
   readonly command: unknown;
   readonly sessionId: string;
   readonly trace: unknown;
@@ -76,6 +85,7 @@ export interface EDASessionBlockOnCommandRpcInput {
 
 /** EDA RPC methods required by the session namespace helper. */
 export interface EDASessionRpcSurface {
+  readonly grantRun: (input: EDASessionGrantRunRpcInput) => Promise<RunGrantResult>;
   readonly submit: (input: EDASessionCommandRpcInput) => Promise<CommittedDurableEventValue>;
   readonly submitBatch: (
     input: EDASessionSubmitBatchRpcInput,
@@ -196,6 +206,17 @@ export abstract class EDASessionDurableObject<
       trace: decodeTraceMetadata(input.trace),
     });
     return encodeEdaRpcCommittedDurableEvent(committed);
+  }
+
+  /** Trusted RPC only: the calling Worker owns scheduler authentication and authorization. */
+  async grantRun(input: EDASessionGrantRunRpcInput): Promise<RunGrantResult> {
+    const command = Schema.decodeUnknownSync(GrantRunCommand)(input.command);
+    const result = await this.#controller.grantRun({
+      command,
+      sessionId: this.parseSessionId(input.sessionId),
+      trace: decodeTraceMetadata(input.trace),
+    });
+    return result;
   }
 
   async submitBatch(

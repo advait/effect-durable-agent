@@ -1,4 +1,7 @@
 import type { RunScheduler } from "effect-durable-agent/services/run-scheduler";
+import { RunSchedulingWakeup } from "effect-durable-agent/services/run-scheduling-wakeup";
+import { EDASessionStoreError } from "effect-durable-agent/services/session-store";
+import * as Effect from "effect/Effect";
 import type { ModelResolver } from "effect-durable-agent/services/model-resolver";
 import * as Layer from "effect/Layer";
 import type * as Tracer from "effect/Tracer";
@@ -69,10 +72,8 @@ export const makeEDADurableObjectRuntimeLayer = ({
   toolRegistry,
   tracer,
 }: EDADurableObjectRuntimeLayerOptions): Layer.Layer<EDARuntime, SessionCommandAdmissionError> => {
-  const keepAliveLayer =
-    keepAlive === undefined
-      ? EDAKeepAlive.Noop
-      : EDAKeepAlive.FromAcquire(() => keepAlive.acquire());
+  const lifecycle = keepAlive ?? new DurableObjectKeepAlive(storage);
+  const keepAliveLayer = EDAKeepAlive.FromAcquire(() => lifecycle.acquire());
   return makeEDARuntimeLayer({
     config,
     compactionExecutorLayer,
@@ -81,6 +82,16 @@ export const makeEDADurableObjectRuntimeLayer = ({
     modelResolverLayer,
     promptProjectorLayer,
     runSchedulerLayer,
+    runSchedulingWakeupLayer: Layer.succeed(RunSchedulingWakeup, {
+      setPending: (pending) =>
+        Effect.tryPromise({
+          try: () => lifecycle.setRunSchedulingPending(pending),
+          catch: (error) =>
+            new EDASessionStoreError({
+              message: `Persisting run scheduling wakeup: ${String(error)}`,
+            }),
+        }),
+    }),
     reducerRegistryLayer: EDAReducerRegistry.Live(reducers ?? []),
     sessionEventObserverLayer,
     sessionId,

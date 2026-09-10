@@ -1,3 +1,4 @@
+import { assert } from "@effect/vitest";
 import * as Prompt from "effect/unstable/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -117,7 +118,7 @@ const activeInferenceEvents = () => [
 
 describe("reduced-state", () => {
   it("uses the current checkpoint schema version", () => {
-    expect(frameworkReducedStateReducerSchemaVersion).toBe(6);
+    assert.strictEqual(frameworkReducedStateReducerSchemaVersion, 7);
   });
 
   it("folds and checkpoint-hydrates imported assistant context", () => {

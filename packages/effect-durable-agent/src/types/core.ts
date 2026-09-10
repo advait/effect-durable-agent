@@ -25,6 +25,10 @@ export type CommandId = typeof CommandId.Type;
 export const RunId = UuidV7String.pipe(Schema.brand("RunId"));
 export type RunId = typeof RunId.Type;
 
+/** Stable deduplication identity for one durable request to authorize a new run. */
+export const RunRequestId = UuidV7String.pipe(Schema.brand("RunRequestId"));
+export type RunRequestId = typeof RunRequestId.Type;
+
 /** One LLM invocation within a run. */
 export const TurnId = UuidV7String.pipe(Schema.brand("TurnId"));
 export type TurnId = typeof TurnId.Type;

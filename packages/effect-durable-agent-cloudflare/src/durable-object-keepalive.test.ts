@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import { describe, expect, it } from "vite-plus/test";
+import { assert, makeMethods } from "@effect/vitest";
 
 import { DurableObjectKeepAlive } from "./durable-object-keepalive";
 
@@ -49,6 +50,43 @@ const makeKeepAlive = (
   });
 
 describe("DurableObjectKeepAlive", () => {
+  makeMethods(it).effect(
+    "preserves undelivered scheduling work after every lease ends and through reconstruction",
+    () =>
+      Effect.gen(function* () {
+        const storage = new FakeAlarmStorage();
+        const keepAlive = makeKeepAlive(storage);
+        yield* Effect.promise(() => keepAlive.setRunSchedulingPending(true));
+        const lease = yield* Effect.promise(() => keepAlive.acquire());
+        yield* Effect.promise(() => lease.release());
+        assert.strictEqual(keepAlive.activeLeaseCount, 0);
+        assert.strictEqual(storage.alarm, 6_000);
+        const reconstructed = makeKeepAlive(storage);
+        yield* Effect.promise(() => reconstructed.setRunSchedulingPending(true));
+        assert.strictEqual(storage.alarm, 6_000);
+        storage.alarm = null;
+        yield* Effect.promise(() => reconstructed.alarm());
+        assert.strictEqual(storage.alarm, 6_000);
+        yield* Effect.promise(() => reconstructed.setRunSchedulingPending(false));
+        assert.isNull(storage.alarm);
+      }),
+  );
+
+  makeMethods(it).effect(
+    "acknowledgment clears only delivery work while an active lease keeps its alarm",
+    () =>
+      Effect.gen(function* () {
+        const storage = new FakeAlarmStorage();
+        const keepAlive = makeKeepAlive(storage);
+        yield* Effect.promise(() => keepAlive.setRunSchedulingPending(true));
+        const lease = yield* Effect.promise(() => keepAlive.acquire());
+        yield* Effect.promise(() => keepAlive.setRunSchedulingPending(false));
+        assert.strictEqual(storage.alarm, 6_000);
+        yield* Effect.promise(() => lease.release());
+        assert.isNull(storage.alarm);
+      }),
+  );
+
   it("preserves the earliest alarm across overlapping lease transitions", async () => {
     const storage = new FakeAlarmStorage();
     let now = 1_000;

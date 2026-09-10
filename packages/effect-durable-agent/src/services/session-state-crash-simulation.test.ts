@@ -5,6 +5,12 @@ import * as Stream from "effect/Stream";
 import * as Response from "effect/unstable/ai/Response";
 import * as Tool from "effect/unstable/ai/Tool";
 import { describe, expect, it } from "vite-plus/test";
+import { assert, makeMethods } from "@effect/vitest";
+import * as Layer from "effect/Layer";
+import { GrantRunCommand } from "../types/commands";
+import { RunSchedulingRequestRecord } from "../domain/run-scheduling";
+import { RunScheduler } from "./run-scheduler";
+import { RunSchedulingWakeup } from "./run-scheduling-wakeup";
 
 import {
   classifyRecoverableWork,
@@ -195,6 +201,96 @@ const countingNoopToolkit = (calls: { value: number }): EDAModelToolkit =>
   );
 
 describe("SessionState crash-point simulation", () => {
+  makeMethods(it).effect(
+    "requires a current grant after every durable batch prefix of deferred execution",
+    () =>
+      Effect.gen(function* () {
+        const recorder = makeDurableCheckpointRecorder();
+        const scheduler = RunScheduler.Deferred(() => Effect.void);
+        const wakeup = Layer.succeed(RunSchedulingWakeup, { setPending: () => Effect.void });
+        const options = {
+          sessionId: SessionId.make(SESSION_ID),
+          clock: "live" as const,
+          runSchedulerLayer: scheduler,
+          runSchedulingWakeupLayer: wakeup,
+          parts: plainSubmitStream(),
+        };
+        yield* Effect.gen(function* () {
+          const state = yield* SessionState;
+          const store = yield* EDASessionStore;
+          yield* state.start({ modelSelection });
+          yield* state.admitCommand(command);
+          yield* waitForDurableStore(store, hasEventType("RunSchedulingDelivered"));
+          const request = Schema.decodeUnknownSync(RunSchedulingRequestRecord)(
+            (yield* state.snapshot()).runSchedulingRequest,
+          );
+          yield* state.grantRun(new GrantRunCommand({ requestId: request.requestId }), {
+            modelSelection,
+          });
+          yield* waitForDurableStore(store, hasCommandCompleted(command.commandId));
+        }).pipe(Effect.provide(makeEdaTestLayer({ ...options, wrapStore: recorder.wrapStore })));
+        assert.isTrue(
+          recorder.checkpoints.some((point) => point.operation === "RunSchedulingRequested"),
+        );
+        assert.isTrue(
+          recorder.checkpoints.some((point) => point.operation === "RunSchedulingDelivered"),
+        );
+        assert.isTrue(
+          recorder.checkpoints.some((point) => point.operation.includes("RunSchedulingGranted")),
+        );
+        for (const checkpoint of recorder.checkpoints) {
+          const recovered = makeDurableCheckpointRecorder();
+          const prefix = reduceCommittedEvents(checkpoint.committed);
+          yield* Effect.gen(function* () {
+            const state = yield* SessionState;
+            const store = yield* EDASessionStore;
+            yield* state.start({ modelSelection });
+            if (prefix.commands.get(command.commandId)?.terminal === undefined) {
+              yield* waitForDurableStore(
+                store,
+                (entries) => reduceCommittedEvents(entries).runSchedulingRequest !== undefined,
+              );
+              const request = Schema.decodeUnknownSync(RunSchedulingRequestRecord)(
+                (yield* state.snapshot()).runSchedulingRequest,
+              );
+              if (prefix.runSchedulingRequest !== undefined)
+                assert.strictEqual(request.requestId, prefix.runSchedulingRequest.requestId);
+              yield* state.grantRun(new GrantRunCommand({ requestId: request.requestId }), {
+                modelSelection,
+              });
+            }
+            const committed = yield* waitForDurableStore(
+              store,
+              hasCommandCompleted(command.commandId),
+            );
+            assert.deepStrictEqual(
+              committed.slice(0, checkpoint.committed.length),
+              checkpoint.committed,
+            );
+            assert.strictEqual(
+              committed.filter((entry) => entry.event.type === "CommandCompleted").length,
+              1,
+            );
+            assert.deepStrictEqual(yield* state.snapshot(), reduceCommittedEvents(committed));
+            assert.isTrue(
+              recovered.checkpoints
+                .filter((point) => point.operation.includes("RunStarted"))
+                .every((point) => point.operation.includes("RunSchedulingGranted")),
+            );
+          }).pipe(
+            Effect.provide(
+              makeEdaTestLayer({
+                ...options,
+                seedEvents: checkpoint.committed.map((entry) => entry.event),
+                ids: Array.from({ length: 150 }, (_, i) => sequentialUuidV7(100_000 + i)),
+                wrapStore: recovered.wrapStore,
+              }),
+            ),
+          );
+        }
+      }),
+  );
+
   it("recovers from every batch-aligned durable prefix of a plain submit run", async () => {
     await runCrashPrefixSimulation({
       name: "plain submit",

@@ -10,7 +10,8 @@ import type { EDASessionSnapshot } from "effect-durable-agent/services/session-q
 import type { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
 import type { EDASubmittable } from "effect-durable-agent/services/session-state";
 import { compactSpanAttributes, toEdaExternalSpan } from "effect-durable-agent/services/tracing";
-import type { EDACommand } from "effect-durable-agent/types/commands";
+import type { EDACommand, GrantRunCommand } from "effect-durable-agent/types/commands";
+import type { RunGrantResult } from "effect-durable-agent/domain/run-scheduling";
 import { CommandId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
 import {
   makeRootEDATraceMetadata,
@@ -108,6 +109,19 @@ export class EDASessionController<ProjectionState extends object = never> {
   }
 
   static readonly migrate = EDASessionRuntime.migrate;
+
+  /** Trusted scheduler ingress. Hosts must authorize callers before invoking this method. */
+  grantRun(
+    input: EDASessionScopedInput & { readonly command: GrantRunCommand },
+  ): Promise<RunGrantResult> {
+    const parent = input.trace?.parent;
+    return this.run(input.sessionId, (eda) => {
+      const operation = eda.grantRun(input.command);
+      return parent === undefined || parent === null
+        ? operation
+        : operation.pipe(Effect.withParentSpan(toEdaExternalSpan(parent)));
+    });
+  }
 
   submit(input: EDASessionSubmitInput): Promise<CommittedDurableEvent> {
     const trace = input.trace ?? makeRootEDATraceMetadata();

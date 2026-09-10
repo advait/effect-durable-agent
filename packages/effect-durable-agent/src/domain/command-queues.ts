@@ -176,7 +176,8 @@ const isPendingCommandRecord = (
 } =>
   record.command !== undefined &&
   record.admittedSeq !== undefined &&
-  record.startedSeq === undefined;
+  record.startedSeq === undefined &&
+  record.terminal === undefined;
 
 const isActiveControlCommand = (
   command: PendingCommand,

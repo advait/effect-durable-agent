@@ -2,6 +2,8 @@ import { defineConfig } from "vite-plus";
 import { configDefaults } from "vite-plus/test/config";
 
 const publicEntries = {
+  "services/run-scheduling-wakeup": "src/services/run-scheduling-wakeup.ts",
+  "domain/run-scheduling": "src/domain/run-scheduling.ts",
   "services/run-scheduler": "src/services/run-scheduler.ts",
   "services/model-resolver": "src/services/model-resolver.ts",
   "domain/model-usage": "src/domain/model-usage.ts",
