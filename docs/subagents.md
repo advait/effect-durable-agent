@@ -2,7 +2,7 @@
 
 Status: future
 Runtime: EDAGiaAgent
-Last reviewed: 2026-07-07
+Last reviewed: 2026-09-10
 
 This is a proposal / docs-only design. It does not propose putting subagent
 orchestration into EDA core. The design split is:
@@ -10,11 +10,19 @@ orchestration into EDA core. The design split is:
 - **EDA core** owns generic session waiting/resume semantics and first-party token
   accounting.
 - **Gia** owns subagent orchestration as an extension backed by Durable Objects.
+- **Gia PostgreSQL** owns run admission, per-person capacity lanes, queue order,
+  and leases. The capacity coordinator owns best-effort wakeups, outside the
+  immediate-admission path.
+
+The capacity design in sections 6.7 and 12.1 is agreed but not implemented. Gia's
+currently deployed global coordinator path is the migration baseline, not the
+target described here. The detailed implementation design lives in the Gia
+parent repository at `gia-cf/docs/proposals/run-capacity-lanes.md`.
 
 The reason for the split is simple: EDA is a per-session runtime. Subagents are a
 cross-session, product-specific orchestration feature involving Gia session
-metadata, ACLs, root workspace and sandbox semantics, child creation, global
-concurrency, queue fairness, deadlines, and operator UI. Those concerns should
+metadata, ACLs, root workspace and sandbox semantics, child creation, capacity
+lanes, queue fairness, deadlines, and operator UI. Those concerns should
 not become framework core.
 
 ---
@@ -36,9 +44,10 @@ This same primitive should serve:
 - a workflow waiting on an external webhook;
 - any future extension that needs hibernation without a live fiber.
 
-Subagent manifests, child state, join predicates, deadlines, broker leases, and
-result aggregation belong outside EDA in a Gia `SubagentOrchestrator` Durable
-Object.
+Subagent manifests, child state, join predicates, deadlines, and result
+aggregation belong outside EDA in a Gia `SubagentOrchestrator` Durable Object.
+Run-capacity leases belong to Gia PostgreSQL and are shared by root sessions and
+subagents through the same acquisition interface.
 
 ---
 
@@ -80,6 +89,10 @@ Object.
 | **Subagent orchestrator** | Gia Durable Object that owns subagent manifest state, child lifecycle, deadlines, joins, and resume calls. |
 | **Root session** | Top-level Gia session whose workspace, sandbox, and token budget are shared by a subagent tree. |
 | **Parent session** | Session that spawned a child or batch. A child can itself be a parent. |
+| **Capacity owner** | Persisted owning person of a root session, inherited by every descendant for run admission. |
+| **Capacity lane** | A concurrency constraint with a scope, applicable run kinds, and an effective limit. A run acquires all applicable lanes atomically. |
+| **Run lease** | Expiring accounting for an active run across its lane memberships; expiry does not prove execution stopped. |
+| **Capacity coordinator** | Gia Durable Object that reads PostgreSQL and wakes sessions after a hint or alarm. It does not own capacity state or authorize a run. |
 
 Use **waiting** for the scheduler/UI state. Use **resumable** for the durable
 continuation object. A session is "waiting on resumables," not itself
@@ -92,8 +105,8 @@ continuation object. A session is "waiting on resumables," not itself
 ```text
 Parent EDA session DO
   - model calls Gia spawnSubagents tool
-  - tool opens an EDA resumable
-  - tool emits Gia SubagentBatchRequested app event
+  - tool atomically commits ResumableOpened + SubagentBatchRequested
+  - batch/resumable identities stay stable across retries of that tool call
   - run completes; session state becomes waiting
 
 Parent durable outbox sink
@@ -103,16 +116,28 @@ Parent durable outbox sink
 
 Gia SubagentOrchestrator DO
   - owns manifest state in DO SQLite
-  - owns queue, deadlines, leases, token sub-budgets, and join predicates
+  - owns child launch tickets, deadlines, token sub-budgets, and join predicates
   - creates child Gia EDA sessions through trusted server contract
   - receives child result/progress signals
   - resolves the parent resumable when join criteria hold
 
 Child Gia EDA session DO
   - ordinary EDA session with lineage
+  - atomically acquires run capacity directly in PostgreSQL
+  - starts immediately when acquired; otherwise retains its queued request
   - shares root workspace and sandbox
   - writes result artifacts by reference
   - reports terminal/progress facts to orchestrator
+
+Gia PostgreSQL
+  - owns per-person root/subagent lanes, overrides, queue order, and run leases
+  - receives capacity progress/terminal sink facts directly
+
+Gia RunCapacityCoordinator DO
+  - accepts minimal poke() hints after database commits
+  - reads PostgreSQL for eligible requests and deadlines
+  - wakes sessions to retry acquisition; never grants from local state
+  - performs a best-effort recovery sweep every ten minutes
 ```
 
 The parent log should contain durable intent and durable resume facts. It should
@@ -245,6 +270,9 @@ The exact defaults should be conservative:
 EDA needs a small API surface, not subagent-specific framework code:
 
 - `EDAToolExecutionContext.openResumable(...)`
+- an atomic durable append that opens a resumable together with extension-owned
+  request events, using stable tool-call retry identities; EDA need not interpret
+  the extension event payload
 - trusted runtime/DO API to resolve/cancel/expire a resumable
 - reducer state for open/terminal resumables
 - dispatch policy support for `waiting`
@@ -271,12 +299,20 @@ session principal has the `agent.spawn_subagent` capability.
 The tool:
 
 1. Validates authorization and manifest schema.
-2. Opens one EDA resumable with `kind: "gia.subagent.join"`.
-3. Emits a Gia app event `SubagentBatchRequested` that carries the manifest and
-   the `resumableId`.
-4. Returns a small handle to the model.
+2. Assigns stable `batchId` and `resumableId` identities for this parent/tool call.
+   Re-executing the same tool call reuses the existing identities and manifest.
+3. Commits one EDA resumable with `kind: "gia.subagent.join"` and the Gia app event
+   `SubagentBatchRequested` in one atomic durable batch. The request carries the
+   manifest and the same `resumableId`.
+4. Returns a small handle to the model after that durable commit.
 5. Completes normally. The parent run then completes and the session becomes
    waiting.
+
+There must be no committed prefix containing this resumable without its batch
+request. A crash or cancellation before commit leaves neither event; one after
+commit leaves both for outbox recovery. A lost tool-result reply must not create
+a second batch/resumable. Separate `openResumable` and app-event commits are not
+a valid implementation of this spawn contract.
 
 The tool is the only way to create a parent-joined subagent batch. The CLI may
 observe, wait, and abort, but it should not originate parent-joined work from
@@ -328,7 +364,8 @@ would lose the batch.
 
 Instead:
 
-- `SubagentBatchRequested` is durable in the parent log.
+- `SubagentBatchRequested` and its `ResumableOpened` are atomically durable in the
+  parent log, with stable identities across tool retries.
 - A Gia durable sink watches for that event and sends an idempotent enqueue to
   the `SubagentOrchestrator`.
 - The sink cursor advances only after the orchestrator acknowledges durable
@@ -343,8 +380,7 @@ The `SubagentOrchestrator` DO owns:
 
 - manifest state and child ticket state in DO SQLite;
 - idempotent enqueue keyed by `(parentSessionId, batchId)`;
-- global or sharded concurrency permits;
-- weighted fairness across root sessions;
+- batch-local launch eligibility and manifest parallelism;
 - child launch through trusted Gia session-create APIs;
 - per-ticket admission timeout;
 - per-child timeout;
@@ -358,6 +394,10 @@ The `SubagentOrchestrator` DO owns:
 The orchestrator should be the operational source of truth for live subagent
 batch status. The parent EDA log remains the durable source of truth for "the
 parent requested this batch" and "the parent was resumed with this report."
+PostgreSQL is the source of truth for run capacity and queue position. A child
+ticket is not a capacity permit, and batch parallelism cannot increase the
+person's run limit. The orchestrator submits eligible child work through the
+ordinary session contract; the child acquires its own run lease.
 
 ### 6.5 Child Reporting
 
@@ -373,7 +413,10 @@ Recommended path:
 4. The orchestrator folds the child result into batch state.
 
 The orchestrator also reconciles by deadline. If a child never reports, the
-orchestrator marks it timed out, releases its permit, and evaluates the join.
+orchestrator marks the batch ticket timed out, requests child cancellation, and
+evaluates the join. A batch timeout is not proof that execution stopped. Actual
+terminal sink facts or lease expiry release PostgreSQL capacity; the
+orchestrator must not invent a run terminal outcome to free a permit.
 
 ### 6.6 Resolving the Parent
 
@@ -396,6 +439,70 @@ subagent-resolve:<parentSessionId>:<batchId>:<resumableId>
 Late child reports after resolution are accepted by the orchestrator for
 observability, but they do not cause a second parent resume.
 
+### 6.7 Direct Admission and Composable Capacity Lanes
+
+| Lane | Scope | Default concurrent run leases |
+| --- | --- | ---: |
+| `root_runs` | Per capacity owner, top-level sessions | 5 |
+| `subagent_runs` | Per capacity owner, descendants at every depth | 10 |
+
+All a person's batches and nested descendants share the subagent lane. These
+defaults and optional `(user ID, lane key)` overrides live in PostgreSQL. A
+missing override uses the default. The two initial lanes replace the existing
+global-only target; a future global lane is disabled until configured.
+
+Use lane definitions (scope, applicability, default limit), per-user overrides,
+concrete lane instances, and durable request-to-lane memberships. A request has
+one lease generation/deadline across its memberships. Adding a global constraint
+later means acquiring the personal lane and the global lane together through the
+same interface. Acquisition is all-or-none, with deterministic lane lock order.
+Unrelated users and the same user's root/subagent lanes do not share a lock when
+no global constraint is enabled.
+
+The trusted session admission path performs one atomic PostgreSQL function call
+using the existing durable request ID. It derives lane membership from persisted
+lineage and capacity owner, resolves current limits, and reserves immediately
+when eligible. It starts the run without awaiting a coordinator notification,
+acknowledgment, or alarm write. Acquisition remains outside the EDA control gate
+so stop/delete are not blocked by database latency. A lost response retries the
+same request; expired reservations and ambiguous grants reconcile against EDA
+outcomes rather than creating another user command.
+
+FIFO is per personal lane. With a future global constraint, admit the oldest
+eligible request across personal lanes; a user blocked by their own limit cannot
+block another eligible user. Limit reductions preserve current runs and constrain
+subsequent acquisition; increases issue a best-effort poke. Adding a new lane
+requires explicit treatment of existing active and queued memberships.
+
+A waiting resumable holds no active run. When a parent run completes, its
+terminal sink releases its lease; when the resumable resolves, a new run request
+reacquires the parent's lane. Nested waiting parents use this same rule so the
+ten-slot subagent lane cannot fill with parents holding permits while their
+children wait for capacity.
+
+The capacity sink writes directly to PostgreSQL. Retain the five-minute soft TTL
+and renewal from selected durable agent-loop events only, using original event
+timestamps and sequence deduplication. Ordinary progress updates must not take a
+global admission lock. Historical events for runs without capacity membership
+are skipped efficiently and cannot create fresh leases. Expiry reclaims
+accounting without proving physical completion; later genuine progress may
+register a new generation and temporarily exceed a configured limit.
+
+After a relevant commit, send a best-effort, scheduling-data-free `poke()` to the
+global capacity coordinator. Standard tracing context is allowed; lease state,
+limits, owners, and queue contents are not payloads. The coordinator coalesces
+hints, queries PostgreSQL, and wakes sessions to retry acquisition. Its deadline
+alarms and independent ten-minute best-effort sweep also read PostgreSQL. Pokes
+must not indefinitely postpone the periodic sweep, and the sweep remains
+scheduled while the queue is empty. No sweep or poke renews a lease.
+
+We accept the crash window after a database commit and before a poke. Subsequent
+traffic is expected to poke the coordinator frequently; the periodic sweep is
+the quiet-period fallback, not a hard latency guarantee. There is no durable
+capacity-notification outbox or coordinator-before-commit requirement. This
+exception does not weaken the durable batch-manifest, child-result, or
+parent-resumable handoffs in sections 6.3–6.6.
+
 ---
 
 ## 7. Lineage and Metadata
@@ -404,10 +511,11 @@ Gia should add lineage to agent metadata. Minimum fields:
 
 - `rootSessionId`
 - `parentSessionId`
+- `capacityOwnerUserId`
+- `sessionKind`: `"root" | "subagent"`
 
 Recommended fields:
 
-- `sessionKind`: `"root" | "subagent"`
 - `depth`
 - `subagentName`
 - `subagentBatchId`
@@ -418,6 +526,7 @@ For root sessions:
 sessionId = rootSessionId
 parentSessionId = null
 sessionKind = root
+capacityOwnerUserId = owning person
 depth = 0
 ```
 
@@ -427,12 +536,14 @@ For child sessions:
 rootSessionId = parent.rootSessionId
 parentSessionId = parent.sessionId
 sessionKind = subagent
+capacityOwnerUserId = parent.capacityOwnerUserId
 depth = parent.depth + 1
 ```
 
 Lineage must be server-derived. Callers may request a parent, child name, and
-prompt, but they must not supply authoritative `rootSessionId` or
-`parentSessionId`.
+prompt, but they must not supply authoritative `rootSessionId`, `parentSessionId`,
+`sessionKind`, or `capacityOwnerUserId`. Later messages or delegated credentials
+must not silently reattribute an existing run to a different person's quota.
 
 ### 7.1 Workspace and Sandbox Ownership
 
@@ -558,15 +669,17 @@ UI should show:
 
 ## 11. Liveness and Recovery
 
-The design relies on durable handoffs at each boundary:
+Batch and resumable correctness relies on durable handoffs. Capacity wakeup hints
+have the explicitly weaker recovery contract in section 6.7:
 
 | Boundary | Durability mechanism |
 | --- | --- |
-| Tool opens parent wait | EDA `ResumableOpened` in parent log |
-| Tool requests subagent batch | Gia `SubagentBatchRequested` in parent log |
+| Tool opens parent wait and requests batch | atomic EDA `ResumableOpened` + Gia `SubagentBatchRequested` batch, with stable retry identities |
 | Parent intent reaches orchestrator | durable outbox sink with cursor |
 | Orchestrator stores manifest | DO SQLite idempotent enqueue |
 | Child sessions are launched | orchestrator ticket state and trusted session-create idempotency |
+| Run capacity acquired or queued | atomic PostgreSQL request, memberships, and reservation |
+| Queued capacity work is woken | best-effort data-minimal poke, database-derived deadline alarm, or ten-minute recovery sweep |
 | Child reports result | child durable event plus durable sink to orchestrator |
 | Child never reports | orchestrator deadline alarm and reconciliation |
 | Parent resumes | trusted resolver appends `SubagentBatchResolved` + `ResumableResolved` |
@@ -578,7 +691,8 @@ Important liveness rules:
 - Every queued child ticket has an admission timeout.
 - Every launched child has a wall-clock timeout.
 - Every batch has a deadline.
-- Every lease has a TTL and reconciliation path.
+- Every run lease has a TTL and PostgreSQL-backed reconciliation path; batch
+  deadlines do not fabricate execution terminal outcomes.
 - Every resolver call is idempotent.
 - Resolving a resumable twice is harmless and produces one parent resume.
 
@@ -596,7 +710,11 @@ All subagent logs and spans should include:
 - `childSessionId`
 - `resumableId`
 - `ticketId`
-- `permitId`
+- `capacityOwnerUserId`
+- `requestId`
+- `runId`
+- `laneKey`
+- `leaseGeneration`
 - `queueDepth`
 - `tokenInput`
 - `tokenOutput`
@@ -610,6 +728,36 @@ Operators should be able to answer:
 - which children are queued, running, terminal, timed out, or cancelled?
 - what budget has been consumed?
 - what event/resolver caused the parent to resume?
+- is a run waiting for actual lane capacity, a database lock, a wakeup, or EDA
+  startup?
+
+Only attach fields applicable to the span's scope. IDs belong in authorized
+traces/logs, not high-cardinality metric labels; prompts and tool payloads do not
+belong in capacity telemetry.
+
+### 12.1 Coordinator and Admission Tracing
+
+Both `SubagentOrchestrator` and `RunCapacityCoordinator` must install the Gia
+Effect tracer on their actual ManagedRuntime, covering RPC, alarm, cold-start,
+and background-drain execution. Named effects alone are insufficient. Verify
+exported spans from the real Cloudflare host, not only an in-memory test tracer.
+
+For run capacity, instrument message acceptance, durable request creation,
+database acquisition, connection/transaction/lane-lock wait, lease mutation and
+commit, trusted grant, and run start. Instrument coordinator poke/coalescing,
+database scan, session wake RPC, alarm scheduling/firing, deadline lag, and
+periodic recovery. Capture scan bounds, eligible/blocked counts, effective limits,
+blocking lane, and retry/failure classification where meaningful.
+Return database-measured lock/decision durations as bounded timing metadata;
+observability must not turn the atomic function call into extra client round
+trips or mislabel total SQL time as lock wait.
+
+Separate immediate-admission latency from true queue wait and from wakeup delay.
+Recover request trace context from PostgreSQL when issuing wakeups. An alarm has
+its own trace; a coalesced drain may link relevant traces without claiming one
+request caused all work. Keep poke payloads free of scheduling state. Metrics use
+bounded lane/type/outcome labels, and telemetry failure cannot block admission,
+terminal release, or recovery.
 
 ---
 
@@ -627,20 +775,27 @@ Operators should be able to answer:
    - Keep units as tokens only.
 
 3. **Gia lineage metadata**
-   - Add `rootSessionId` and `parentSessionId`; preferably also `sessionKind`,
-     `depth`, `subagentName`, and `subagentBatchId`.
+   - Add `rootSessionId`, `parentSessionId`, `sessionKind`, and
+     `capacityOwnerUserId`; preferably also `depth`, `subagentName`, and
+     `subagentBatchId`.
    - Update opaque session-token, tool context, workspace, and E2B routing to
      distinguish current session from root owner.
 
 4. **Subagent extension skeleton**
    - Add `agent.spawn_subagent` capability.
    - Add `spawnSubagents` tool that opens a resumable and emits
-     `SubagentBatchRequested`.
+     `SubagentBatchRequested` in one atomic durable batch, with stable identities
+     across retries of the same tool call.
    - Add parent durable outbox sink to enqueue with a stub orchestrator.
 
 5. **SubagentOrchestrator DO**
    - Implement manifest store, idempotent enqueue, ticket state, child launch,
-     deadlines, leases, join evaluation, cancellation, and parent resolve.
+     deadlines, join evaluation, cancellation, and parent resolve.
+   - Implement direct PostgreSQL acquisition, lane defaults/overrides,
+     all-or-none memberships, and sink-only reporting before enforcing capacity
+     on root and child runs. Preserve identities when migrating global leases.
+   - Implement a wakeup-only capacity coordinator with minimal pokes, coalesced
+     drains, deadline alarms, and an independent ten-minute best-effort sweep.
 
 6. **Child reporting**
    - Add child result artifact contract.
@@ -648,7 +803,8 @@ Operators should be able to answer:
 
 7. **CLI/UI/observability**
    - Add read/wait/abort commands and waiting/subagent UI.
-   - Add logs, spans, and query helpers.
+   - Install both coordinator host tracers and verify exported stage spans,
+     bounded metrics, and query helpers.
 
 8. **Load and recovery validation**
    - Multi-hour hundreds-child soak.
@@ -675,9 +831,25 @@ Gia extension:
 
 - tool absent without `agent.spawn_subagent`;
 - tool execution opens resumable and completes normally;
+- crash/cancellation before or after the atomic resumable/request commit leaves
+  neither event or both; retry after a lost tool-result reply creates one batch
+  and one resumable;
 - durable outbox retries orchestrator enqueue without duplicate batch creation;
 - orchestrator launch is idempotent by ticket;
-- global concurrency cap is never exceeded;
+- five root and ten subagent leases are independently enforced per person under
+  the documented soft-expiry model, with per-user overrides;
+- all descendants share the root capacity owner and subagent lane;
+- multi-lane acquisition is atomic, FIFO/oldest-eligible ordering is maintained,
+  and unrelated lanes do not block one another;
+- waiting parents release their active run lease and reacquire on resume;
+- an immediately acquired run starts while the capacity coordinator is down;
+- a dropped poke preserves queued work and is recovered by later traffic or the
+  periodic sweep; cold/empty-queue/coalesced-poke alarm behavior is tested in
+  Workerd;
+- duplicate acquisition/grants, expired reservations, late/replayed events, and
+  deletion cannot leak memberships or duplicate commands;
+- real coordinator spans distinguish lock wait, database work, wakeup delay,
+  capacity wait, and run startup;
 - admission timeout, child timeout, and batch deadline all terminalize state;
 - all join modes resolve the parent once;
 - late child reports do not re-resume the parent;
@@ -716,6 +888,8 @@ This proposal requires:
 - root workspace and sandbox are shared;
 - callers do not supply authoritative lineage;
 - logs must support root-tree and child-level forensics.
+- PostgreSQL owns run capacity through composable per-person lanes, with a
+  coordinator used only for best-effort wakeups outside immediate admission.
 
 Completion notification uses a clear split:
 
