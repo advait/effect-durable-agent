@@ -67,6 +67,18 @@ export const RunGrantResult = Schema.Union([
 ]);
 export type RunGrantResult = typeof RunGrantResult.Type;
 
+/** Durable answer for reconciling an ambiguous grant delivery. Unknown never authorizes replacement work. */
+export const RunRequestOutcome = Schema.Union([
+  Schema.TaggedStruct("Unknown", {}),
+  Schema.TaggedStruct("Waiting", {}),
+  Schema.TaggedStruct("Invalidated", {}),
+  Schema.TaggedStruct("Granted", {
+    runId: RunId,
+    status: Schema.Literals(["Running", "Completed", "Failed", "Interrupted"]),
+  }),
+]);
+export type RunRequestOutcome = typeof RunRequestOutcome.Type;
+
 /** Canonical records consulted by authorization policy, without an Effect-layer snapshot. */
 type SchedulingState = Pick<
   ReducedState,

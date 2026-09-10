@@ -11,8 +11,13 @@ import type { CommittedDurableEvent } from "effect-durable-agent/services/sessio
 import type { EDASubmittable } from "effect-durable-agent/services/session-state";
 import { compactSpanAttributes, toEdaExternalSpan } from "effect-durable-agent/services/tracing";
 import type { EDACommand, GrantRunCommand } from "effect-durable-agent/types/commands";
-import type { RunGrantResult } from "effect-durable-agent/domain/run-scheduling";
-import { CommandId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
+import type { RunGrantResult, RunRequestOutcome } from "effect-durable-agent/domain/run-scheduling";
+import {
+  CommandId,
+  SequenceNumber,
+  SessionId,
+  type RunRequestId,
+} from "effect-durable-agent/types/core";
 import {
   makeRootEDATraceMetadata,
   type EDATraceMetadata,
@@ -109,6 +114,13 @@ export class EDASessionController<ProjectionState extends object = never> {
   }
 
   static readonly migrate = EDASessionRuntime.migrate;
+
+  /** Trusted reconciliation read; never submits or grants replacement work. */
+  runRequestOutcome(
+    input: EDASessionScopedInput & { readonly requestId: RunRequestId },
+  ): Promise<RunRequestOutcome> {
+    return this.run(input.sessionId, (eda) => eda.runRequestOutcome(input.requestId));
+  }
 
   /** Trusted scheduler ingress. Hosts must authorize callers before invoking this method. */
   grantRun(

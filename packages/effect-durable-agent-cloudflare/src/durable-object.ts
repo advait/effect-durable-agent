@@ -19,9 +19,14 @@ import {
   GrantRunCommand,
   type EDACommand as EDACommandValue,
 } from "effect-durable-agent/types/commands";
-import type { RunGrantResult } from "effect-durable-agent/domain/run-scheduling";
+import type { RunGrantResult, RunRequestOutcome } from "effect-durable-agent/domain/run-scheduling";
 import type { EDASubmittable } from "effect-durable-agent/services/session-state";
-import { CommandId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
+import {
+  CommandId,
+  RunRequestId,
+  SequenceNumber,
+  SessionId,
+} from "effect-durable-agent/types/core";
 import {
   EDATraceMetadata,
   makeEDATraceMetadataFromParent,
@@ -83,8 +88,16 @@ export interface EDASessionBlockOnCommandRpcInput {
   readonly trace: unknown;
 }
 
+/** Raw identity decoded at the trusted reconciliation RPC boundary. */
+export interface EDASessionRunRequestOutcomeRpcInput extends EDASessionScopedRpcInput {
+  readonly requestId: string;
+}
+
 /** EDA RPC methods required by the session namespace helper. */
 export interface EDASessionRpcSurface {
+  readonly runRequestOutcome: (
+    input: EDASessionRunRequestOutcomeRpcInput,
+  ) => Promise<RunRequestOutcome>;
   readonly grantRun: (input: EDASessionGrantRunRpcInput) => Promise<RunGrantResult>;
   readonly submit: (input: EDASessionCommandRpcInput) => Promise<CommittedDurableEventValue>;
   readonly submitBatch: (
@@ -206,6 +219,15 @@ export abstract class EDASessionDurableObject<
       trace: decodeTraceMetadata(input.trace),
     });
     return encodeEdaRpcCommittedDurableEvent(committed);
+  }
+
+  /** Reconcile lost grant replies from durable request and run facts. */
+  async runRequestOutcome(input: EDASessionRunRequestOutcomeRpcInput): Promise<RunRequestOutcome> {
+    return await this.#controller.runRequestOutcome({
+      requestId: Schema.decodeUnknownSync(RunRequestId)(input.requestId),
+      sessionId: this.parseSessionId(input.sessionId),
+      trace: decodeTraceMetadata(input.trace),
+    });
   }
 
   /** Trusted RPC only: the calling Worker owns scheduler authentication and authorization. */

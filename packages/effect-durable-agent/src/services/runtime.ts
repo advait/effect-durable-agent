@@ -67,6 +67,8 @@ export interface EDARuntimeSubmit {
 /** Public facade exposed to hosts and route handlers for one live session runtime. */
 export interface EDARuntimeShape {
   /** Trusted scheduler callback, deliberately separate from ordinary command admission. */
+  /** Durable request reconciliation for trusted external schedulers. */
+  readonly runRequestOutcome: EDASessionQueryShape["runRequestOutcome"];
   readonly grantRun: (command: GrantRunCommand) => ReturnType<SessionStateShape["grantRun"]>;
   /** Durable host wakeup callback; retry delivery without waiting for authorization. */
   readonly retryRunSchedulingDelivery: SessionStateShape["retryRunSchedulingDelivery"];
@@ -149,6 +151,7 @@ const makeLiveRuntime = (config: EDARuntimeConfig) =>
     }) as EDARuntimeSubmit;
 
     return {
+      runRequestOutcome: query.runRequestOutcome,
       grantRun: (command: GrantRunCommand) => sessionState.grantRun(command, runInput),
       retryRunSchedulingDelivery: () => sessionState.retryRunSchedulingDelivery(),
       submit,

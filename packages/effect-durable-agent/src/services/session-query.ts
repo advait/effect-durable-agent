@@ -3,13 +3,24 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import type * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { durableMessageTranscript } from "../domain/message-transcript";
 import type { DurableTranscriptMessage } from "../domain/message-transcript";
 import type { ReducedState } from "../domain/reduced-state";
 import type { EDAReducerStateSnapshot } from "./reducer-registry";
-import { SequenceNumber } from "../types/core";
+import { RunRequestOutcome } from "../domain/run-scheduling";
+import {
+  RunSchedulingRequestedPayload,
+  RunSchedulingGrantedPayload,
+  RunSchedulingInvalidatedPayload,
+  RunCompletedPayload,
+  RunFailedPayload,
+  RunInterruptedPayload,
+  effectDurableAgentNamespace,
+} from "../types/events";
+import { type RunRequestId, SequenceNumber } from "../types/core";
 import { PositionedEvent } from "../types/events";
 import { EDASessionStore, EDASessionStoreError } from "./session-store";
 import { LiveEventBus } from "./live-event-bus";
@@ -25,6 +36,10 @@ export interface EDASessionSnapshot {
 
 /** Read-only query facade over authoritative live state and reconnect-safe event streams. */
 export interface EDASessionQueryShape {
+  /** Reconcile one request against committed facts, including after reducer history pruning. */
+  readonly runRequestOutcome: (
+    requestId: RunRequestId,
+  ) => Effect.Effect<RunRequestOutcome, EDASessionStoreError>;
   /** Read the authoritative live state and derive its durable transcript. */
   readonly snapshot: () => Effect.Effect<EDASessionSnapshot, EDASessionStoreError>;
   /** Read durable user/assistant messages in committed sequence order from the live snapshot. */
@@ -74,6 +89,70 @@ export class EDASessionQuery extends Context.Service<EDASessionQuery, EDASession
       });
 
       return {
+        runRequestOutcome: Effect.fn("agent.run.request.outcome")(function* (
+          requestId: RunRequestId,
+        ) {
+          const head = (yield* sessionState.snapshot()).lastSeq;
+          let outcome: RunRequestOutcome = { _tag: "Unknown" };
+          yield* store.eventsAfter(SequenceNumber.make(0)).pipe(
+            Stream.takeWhile((entry) => entry.position.seq <= head),
+            Stream.runForEach((entry) =>
+              Effect.sync(() => {
+                const event = entry.event;
+                if (event.namespace !== effectDurableAgentNamespace) return;
+                switch (event.type) {
+                  case "RunSchedulingRequested":
+                    if (
+                      Schema.decodeUnknownSync(RunSchedulingRequestedPayload)(event.payload)
+                        .requestId === requestId
+                    )
+                      outcome = { _tag: "Waiting" };
+                    break;
+                  case "RunSchedulingInvalidated":
+                    if (
+                      Schema.decodeUnknownSync(RunSchedulingInvalidatedPayload)(event.payload)
+                        .requestId === requestId
+                    )
+                      outcome = { _tag: "Invalidated" };
+                    break;
+                  case "RunSchedulingGranted": {
+                    const grant = Schema.decodeUnknownSync(RunSchedulingGrantedPayload)(
+                      event.payload,
+                    );
+                    if (grant.requestId === requestId)
+                      outcome = { _tag: "Granted", runId: grant.runId, status: "Running" };
+                    break;
+                  }
+                  case "RunCompleted":
+                    if (
+                      outcome._tag === "Granted" &&
+                      Schema.decodeUnknownSync(RunCompletedPayload)(event.payload).runId ===
+                        outcome.runId
+                    )
+                      outcome = { ...outcome, status: "Completed" };
+                    break;
+                  case "RunFailed":
+                    if (
+                      outcome._tag === "Granted" &&
+                      Schema.decodeUnknownSync(RunFailedPayload)(event.payload).runId ===
+                        outcome.runId
+                    )
+                      outcome = { ...outcome, status: "Failed" };
+                    break;
+                  case "RunInterrupted":
+                    if (
+                      outcome._tag === "Granted" &&
+                      Schema.decodeUnknownSync(RunInterruptedPayload)(event.payload).runId ===
+                        outcome.runId
+                    )
+                      outcome = { ...outcome, status: "Interrupted" };
+                    break;
+                }
+              }),
+            ),
+          );
+          return outcome;
+        }),
         snapshot: () => snapshot,
         messages: () => snapshot.pipe(Effect.map((snapshot) => snapshot.messages)),
         eventsAfter: (afterSeq: SequenceNumber) =>
