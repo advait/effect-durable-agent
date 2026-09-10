@@ -109,6 +109,17 @@ export class ManualAuthorizer extends DurableObject<RunAuthorizationEnv> {
     };
   }
 
+  /** Resolve an ambiguous grant using the session's durable outcome query. */
+  outcome() {
+    const accepted = this.inspect();
+    if (accepted === null) throw new Error("No durable authorization request was accepted");
+    return this.env.SESSION.getByName(accepted.handoff.sessionId).runRequestOutcome({
+      sessionId: accepted.handoff.sessionId,
+      requestId: accepted.handoff.request.requestId,
+      trace: makeRootEDATraceMetadata(),
+    });
+  }
+
   grant() {
     const accepted = this.inspect();
     if (accepted === null) throw new Error("No durable authorization request was accepted");
@@ -146,10 +157,14 @@ export default {
           return new Response("Unauthorized", { status: 401 });
         const url = new URL(request.url);
         if (url.pathname === "/health") return Response.json({ ok: true });
-        const authorizerRoute = /^\/authorizers\/([^/]+)\/(inspect|grant)$/.exec(url.pathname);
+        const authorizerRoute = /^\/authorizers\/([^/]+)\/(inspect|grant|outcome)$/.exec(
+          url.pathname,
+        );
         if (authorizerRoute !== null) {
           const requestId = Schema.decodeUnknownSync(RunRequestId)(authorizerRoute[1]);
           const authorizer = env.AUTHORIZER.getByName(requestId);
+          if (authorizerRoute[2] === "outcome" && request.method === "GET")
+            return Response.json(yield* Effect.promise(() => authorizer.outcome()));
           if (authorizerRoute[2] === "inspect" && request.method === "GET")
             return Response.json(yield* Effect.promise(() => authorizer.inspect()));
           if (authorizerRoute[2] === "grant" && request.method === "POST")

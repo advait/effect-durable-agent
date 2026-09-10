@@ -17,7 +17,13 @@ import { assert, makeMethods } from "@effect/vitest";
 
 import { GrantRunCommand, SubmitMessageCommand } from "effect-durable-agent/types/commands";
 import { RunSchedulingRequestRecord } from "effect-durable-agent/domain/run-scheduling";
-import { CommandId, EventId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
+import {
+  CommandId,
+  EventId,
+  RunRequestId,
+  SequenceNumber,
+  SessionId,
+} from "effect-durable-agent/types/core";
 import { EDASessionController, type EDASessionDurableObjectStorage } from "./session-controller";
 import {
   makeEDADurableObjectOpenAiModelLayer,
@@ -339,6 +345,15 @@ describe("EDASessionController", () => {
           (host) => Effect.promise(() => host.dispose()),
         );
         const scope = { sessionId: SessionId.make(SESSION_ID) };
+        assert.deepStrictEqual(
+          yield* Effect.promise(() =>
+            first.runRequestOutcome({
+              ...scope,
+              requestId: RunRequestId.make("018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b60"),
+            }),
+          ),
+          { _tag: "Unknown" },
+        );
         yield* Effect.promise(() => first.submit({ ...scope, command: makeCommand() }));
         yield* Effect.promise(() => waitForEventType(storage, "RunSchedulingRequested"));
         for (let i = 0; i < 100 && firstKeepAlive.activeLeaseCount > 0; i += 1)
@@ -347,6 +362,12 @@ describe("EDASessionController", () => {
         assert.isNotNull(storage.alarm);
         const request = Schema.decodeUnknownSync(RunSchedulingRequestRecord)(
           (yield* Effect.promise(() => first.snapshot(scope))).state.runSchedulingRequest,
+        );
+        assert.deepStrictEqual(
+          yield* Effect.promise(() =>
+            first.runRequestOutcome({ ...scope, requestId: request.requestId }),
+          ),
+          { _tag: "Waiting" },
         );
         yield* Effect.promise(() => first.dispose());
         const secondKeepAlive = new DurableObjectKeepAlive(storage);
@@ -395,7 +416,8 @@ describe("EDASessionController", () => {
         assert.strictEqual(deliveries.length, deliveryCount);
         assert.isNull(storage.alarm);
         const grant = { ...scope, command: new GrantRunCommand({ requestId: request.requestId }) };
-        assert.strictEqual((yield* Effect.promise(() => third.grantRun(grant)))._tag, "Granted");
+        const granted = yield* Effect.promise(() => third.grantRun(grant));
+        assert.strictEqual(granted._tag, "Granted");
         assert.deepStrictEqual(yield* Effect.promise(() => third.grantRun(grant)), {
           _tag: "Stale",
         });
@@ -403,6 +425,24 @@ describe("EDASessionController", () => {
         const complete = yield* Effect.promise(() => third.snapshot(scope));
         assert.strictEqual(complete.state.runs.size, 1);
         assert.isUndefined(complete.state.runSchedulingRequest);
+        if (granted._tag !== "Granted") return yield* Effect.die("Expected granted run");
+        assert.deepStrictEqual(
+          yield* Effect.promise(() =>
+            third.runRequestOutcome({ ...scope, requestId: request.requestId }),
+          ),
+          { _tag: "Granted", runId: granted.runId, status: "Completed" },
+        );
+        yield* Effect.promise(() => third.dispose());
+        const fourth = yield* Effect.acquireRelease(
+          Effect.sync(() => makeHost(storage, { runSchedulerLayer: scheduler })),
+          (host) => Effect.promise(() => host.dispose()),
+        );
+        assert.deepStrictEqual(
+          yield* Effect.promise(() =>
+            fourth.runRequestOutcome({ ...scope, requestId: request.requestId }),
+          ),
+          { _tag: "Granted", runId: granted.runId, status: "Completed" },
+        );
       }),
   );
 

@@ -109,3 +109,21 @@ The crash simulator restarts from every durable batch boundary of a deferred
 run. Host tests cover reconstruction and alarm ownership. The fixture can also
 be deployed under a unique staging Worker name to verify actual RPC, alarm,
 replay, and redeployment behavior without changing an application deployment.
+
+## Reconciling ambiguous grant replies
+
+`runRequestOutcome(requestId)` reads committed request and run events through a
+captured session head. It returns `Unknown`, `Waiting`, `Invalidated`, or `Granted`
+with the original `runId` and `Running`, `Completed`, `Failed`, or `Interrupted`
+status. Cloudflare exposes the same trusted RPC using a session and request ID.
+
+After a lost grant response or `Stale`, query that same request. `Waiting` permits
+retrying its grant; `Granted` identifies the run whose permission was consumed;
+`Invalidated` ends that request. `Unknown` is not permission to submit replacement
+work. The query never submits commands or allocates run IDs. A Running answer is
+a committed lifecycle fact, not a heartbeat or proof of physical execution.
+
+The query streams retained history in constant memory and does not depend on
+reducer records surviving context pruning. Its read cost grows with session
+history, so use it for ambiguous delivery reconciliation rather than polling
+healthy runs. Historical event retention remains necessary for this contract.

@@ -2,7 +2,12 @@
 
 All notable changes to Effect Durable Agent will be documented in this file.
 
-## Unreleased
+## 0.1.0-alpha.10
+
+- Add `runRequestOutcome` to core and Cloudflare trusted query surfaces. Reconcile
+  ambiguous grant replies from retained committed facts as Unknown, Waiting,
+  Invalidated, or Granted with its run identity and lifecycle outcome, including
+  after reducer pruning and restart. No event or storage migration is required.
 
 - Add durable deferred run authorization: persist one request before delivery,
   acknowledge successful handoff only, revalidate trusted grants, and consume

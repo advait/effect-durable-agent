@@ -26,6 +26,7 @@ import {
 import { CommandId, SessionId } from "../types/core";
 import { type DurableEventEnvelope } from "../types/events";
 import { EDASessionStore, EDASessionStoreError, type EDASessionStoreShape } from "./session-store";
+import { EDASessionQuery } from "./session-query";
 import { SessionState } from "./session-state";
 import {
   RunScheduler,
@@ -265,6 +266,10 @@ describe("durable run authorization", () => {
             { modelSelection },
           );
           assert.deepStrictEqual(result, { _tag: "Stale" });
+          assert.deepStrictEqual(
+            yield* (yield* EDASessionQuery).runRequestOutcome(request.requestId),
+            { _tag: "Invalidated" },
+          );
           const snapshot = yield* state.snapshot();
           assert.isUndefined(snapshot.runSchedulingRequest);
           assert.strictEqual(snapshot.runs.size, 0);
