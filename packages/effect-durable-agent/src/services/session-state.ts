@@ -18,6 +18,7 @@ import { assertNeverError } from "../domain/assert-never";
 import {
   DispatchActiveCommand,
   decideDispatch,
+  promotionNeedsResumeCommand,
   type DispatchCommandCandidate,
 } from "../domain/dispatch-policy";
 import {
@@ -2111,8 +2112,18 @@ const makeLiveSessionState = Effect.gen(function* () {
             from: "queue",
             to: "steer",
           });
+          const resumed = promotionNeedsResumeCommand(current, target.messageId)
+            ? [
+                yield* events.commandAdmitted({
+                  command: new ResumePendingMessagesCommand({
+                    commandId: yield* ids.makeCommandId(),
+                    messageIds: [target.messageId],
+                  }),
+                }),
+              ]
+            : [];
           const completed = yield* events.commandCompleted({ commandId: controlCommandId });
-          const committed = yield* appendDurableBatch([promoted, completed]);
+          const committed = yield* appendDurableBatch([promoted, ...resumed, completed]);
           return {
             started,
             outcome: SessionCommandCompleted.make({ committed: committed.at(-1)! }),

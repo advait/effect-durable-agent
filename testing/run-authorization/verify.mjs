@@ -210,6 +210,20 @@ if (mode === "offline") {
         (value) => value.completedRunCount === 1,
       );
     }
+    if (control !== "cancel") {
+      await call(`/sessions/${sessionId}/submit`, {
+        _tag: "PromotePendingMessage",
+        messageId: first.pendingMessageIds[0],
+      });
+      const promoted = await waiting(sessionId);
+      assert.notEqual(promoted.request.work.commandId, first.request.work.commandId);
+      assert.equal((await grant(promoted.request.requestId))._tag, "Granted");
+      await until(
+        () => snapshot(sessionId),
+        (value) => value.completedRunCount === (control === "stop" ? 1 : 2),
+      );
+      assert.deepEqual(await grant(first.request.requestId), { _tag: "Stale" });
+    }
     state.controls.push({ control, sessionId, firstRequestId: first.request.requestId });
   }
 } else if (mode === "block") {

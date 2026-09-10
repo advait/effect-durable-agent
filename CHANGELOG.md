@@ -15,8 +15,6 @@ All notable changes to Effect Durable Agent will be documented in this file.
 - Rebuild pre-7 framework checkpoints from retained event history. Pause facts
   can identify a pending run request when interruption occurs before run start.
 
-## Unreleased
-
 ## 0.1.0-alpha.9
 
 - Resolve each new run through the replaceable RunScheduler boundary, including queued work and restart recovery

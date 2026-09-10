@@ -68,6 +68,9 @@ permission attempt. This protocol does not allocate coordinator capacity or leas
   pause pending messages using the existing queue-pause behavior. An interrupt's
   replacement command needs its own scheduling resolution and, when deferred,
   its own request ID.
+- Promoting a paused message whose command was cancelled atomically admits a
+  fresh resume owner when no existing execution owns it. Its next run requires
+  fresh authorization; promotion never revives the cancelled command.
 - Cancelling a selected pending message invalidates its request. Remaining
   eligible recovery inputs receive a fresh request in the same cancellation
   batch, preserving the predecessor reference. Cancelling unrelated queued

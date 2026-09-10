@@ -110,6 +110,24 @@ export const decideDispatch = (state: ReducedState): DispatchDecision => {
     : { _tag: "DispatchStartCommand", command: toCandidate(next) };
 };
 
+/** Promotion must retain a live or pending execution owner when the original command is terminal. */
+export const promotionNeedsResumeCommand = (
+  state: Pick<ReducedState, "commandQueues" | "messages" | "runSchedulingRequest">,
+  messageId: MessageId,
+): boolean => {
+  if (state.commandQueues.active?.runId !== undefined) return false;
+  const target = state.messages.get(messageId);
+  if (target?._tag !== "User" && target?._tag !== "Steering") return false;
+  const waiting = state.runSchedulingRequest?.work;
+  if (waiting?._tag === "Recovery" && waiting.inputMessageIds.includes(messageId)) return false;
+  return !state.commandQueues.pendingCommands.some(
+    (pending) =>
+      pending.commandId === target.commandId ||
+      (pending.command._tag === "ResumePendingMessages" &&
+        pending.command.messageIds.includes(messageId)),
+  );
+};
+
 const nextIdleCommand = (
   state: ReducedState,
 ): PendingCommand | "orphan-pending-messages" | undefined => {

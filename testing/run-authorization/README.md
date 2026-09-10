@@ -32,6 +32,7 @@ The modes form one sequence and share the verification state file:
 4. `queue`: grant three queued runs, reject duplicate grants, and verify full and
    cursor-based WebSocket replay.
 5. `controls`: stop, cancel, and interrupt waiting requests; old grants stay stale.
+   Promoting a paused message obtains a fresh owner and authorization.
 6. Restart with `EDA_CONFORMANCE_BLOCK_MODEL:true`, then run `block` to leave an
    authorized run unfinished.
 7. Restart with `EDA_CONFORMANCE_BLOCK_MODEL:false`, then run `recover`. Recovery

@@ -16,7 +16,13 @@ import {
   reduceCommittedEvents,
 } from "../domain/reduced-state";
 import { isSessionRecoveryPlanEmpty, planSessionRecovery } from "../domain/recovery-policy";
-import { CancelPendingMessageCommand, EDACommand, GrantRunCommand } from "../types/commands";
+import {
+  CancelPendingMessageCommand,
+  EDACommand,
+  GrantRunCommand,
+  PromotePendingMessageCommand,
+  SubmitMessageCommand,
+} from "../types/commands";
 import { CommandId, SessionId } from "../types/core";
 import { type DurableEventEnvelope } from "../types/events";
 import { EDASessionStore, EDASessionStoreError, type EDASessionStoreShape } from "./session-store";
@@ -304,6 +310,88 @@ describe("durable run authorization", () => {
     }).pipe(Effect.provide(test.layer));
   });
 
+  for (const interruption of ["stop", "interrupt"] as const) {
+    methods.effect(`promotion after ${interruption} has a fresh owner across replay`, () =>
+      Effect.gen(function* () {
+        const test = fixture();
+        const before = yield* Effect.gen(function* () {
+          const state = yield* SessionState;
+          const store = yield* EDASessionStore;
+          yield* state.start({ modelSelection });
+          yield* state.admitCommand(command);
+          const original = yield* waitingRequest;
+          yield* state.admitCommand(interruption === "stop" ? stopTurnCommand : interruptCommand);
+          if (interruption === "stop") {
+            yield* waitForCommitted(store, hasCommandCompleted(stopTurnCommand.commandId));
+          } else {
+            yield* waitForCommitted(
+              store,
+              (entries) =>
+                entries.filter((item) => item.event.type === "RunSchedulingRequested").length === 2,
+            );
+            const replacement = Schema.decodeUnknownSync(RunSchedulingRequestRecord)(
+              (yield* state.snapshot()).runSchedulingRequest,
+            );
+            yield* state.grantRun(new GrantRunCommand({ requestId: replacement.requestId }), {
+              modelSelection,
+            });
+            yield* waitForCommitted(store, hasCommandCompleted(interruptCommand.commandId));
+          }
+          const paused = (yield* state.snapshot()).commandQueues.pausedQueue[0];
+          assert.isDefined(paused);
+          if (paused === undefined) return yield* Effect.die("Missing paused message");
+          const promotion = new PromotePendingMessageCommand({
+            commandId: CommandId.make(sequentialUuidV7(9_100)),
+            messageId: paused.messageId,
+          });
+          yield* state.admitCommand(promotion);
+          yield* state.drainReadyWork({ modelSelection });
+          const committed = yield* collectCommitted(store);
+          const completedIndex = committed.findIndex(
+            (item) =>
+              item.event.type === "CommandCompleted" &&
+              item.event.payload.commandId === promotion.commandId,
+          );
+          assert.isAtLeast(completedIndex, 0);
+          return {
+            original,
+            messageId: paused.messageId,
+            events: committed.slice(0, completedIndex + 1).map((item) => item.event),
+          };
+        }).pipe(Effect.provide(test.layer));
+        const replayed = fixture({ seedEvents: before.events });
+        yield* Effect.gen(function* () {
+          const state = yield* SessionState;
+          const store = yield* EDASessionStore;
+          yield* state.start({ modelSelection });
+          yield* state.drainReadyWork({ modelSelection });
+          const request = Schema.decodeUnknownSync(RunSchedulingRequestRecord)(
+            (yield* state.snapshot()).runSchedulingRequest,
+          );
+          assert.notStrictEqual(request.work.commandId, command.commandId);
+          assert.strictEqual(
+            (yield* state.snapshot()).commands.get(request.work.commandId)?.command?._tag,
+            "ResumePendingMessages",
+          );
+          assert.deepStrictEqual(
+            yield* state.grantRun(new GrantRunCommand({ requestId: before.original.requestId }), {
+              modelSelection,
+            }),
+            { _tag: "Stale" },
+          );
+          yield* state.grantRun(new GrantRunCommand({ requestId: request.requestId }), {
+            modelSelection,
+          });
+          yield* waitForCommitted(store, hasCommandCompleted(request.work.commandId));
+          const snapshot = yield* state.snapshot();
+          assert.strictEqual(snapshot.commands.get(command.commandId)?.terminal?._tag, "Cancelled");
+          assert.isDefined(snapshot.messages.get(before.messageId)?.consumedSeq);
+          assert.lengthOf(snapshot.commandQueues.pendingSteers, 0);
+        }).pipe(Effect.provide(replayed.layer));
+      }),
+    );
+  }
+
   methods.effect("cancellation revokes the request and cannot revive its terminal command", () => {
     const test = fixture();
     return Effect.gen(function* () {
@@ -566,6 +654,119 @@ describe("durable run authorization", () => {
         }).pipe(Effect.provide(resumed.layer));
       }),
   );
+
+  for (const cancelLast of [false, true]) {
+    methods.effect(
+      `recovery cancellation ${cancelLast ? "removes the last input" : "retains another input"} across restart`,
+      () =>
+        Effect.gen(function* () {
+          const original = fixture({ parts: Stream.never });
+          const interrupted = yield* Effect.gen(function* () {
+            const state = yield* SessionState;
+            const store = yield* EDASessionStore;
+            yield* state.start({ modelSelection });
+            yield* state.admitCommand(command);
+            const request = yield* waitingRequest;
+            const granted = yield* state.grantRun(
+              new GrantRunCommand({ requestId: request.requestId }),
+              { modelSelection },
+            );
+            if (granted._tag !== "Granted") return yield* Effect.die("Expected initial grant");
+            for (const index of [0, 1]) {
+              const steer = new SubmitMessageCommand({
+                commandId: CommandId.make(sequentialUuidV7(9_200 + index)),
+                content: command.content,
+                disposition: "steer",
+              });
+              yield* state.admitCommand(steer);
+              yield* waitForCommitted(store, hasCommandCompleted(steer.commandId));
+            }
+            return {
+              runId: granted.runId,
+              events: (yield* collectCommitted(store)).map((item) => item.event),
+            };
+          }).pipe(Effect.provide(original.layer));
+          const recovering = fixture({ seedEvents: interrupted.events });
+          const afterCancel = yield* Effect.gen(function* () {
+            const state = yield* SessionState;
+            const store = yield* EDASessionStore;
+            yield* state.start({ modelSelection });
+            const first = Schema.decodeUnknownSync(RunSchedulingRequestRecord)(
+              (yield* state.snapshot()).runSchedulingRequest,
+            );
+            if (first.work._tag !== "Recovery")
+              return yield* Effect.die("Expected recovery request");
+            assert.lengthOf(first.work.inputMessageIds, 2);
+            const [firstMessageId, secondMessageId] = first.work.inputMessageIds;
+            if (firstMessageId === undefined || secondMessageId === undefined)
+              return yield* Effect.die("Expected two inputs");
+            const cancel = new CancelPendingMessageCommand({
+              commandId: CommandId.make(sequentialUuidV7(9_300)),
+              messageId: firstMessageId,
+              reason: "user-cancel",
+            });
+            yield* state.admitCommand(cancel);
+            yield* waitForCommitted(store, hasCommandCompleted(cancel.commandId));
+            const replacement = Schema.decodeUnknownSync(RunSchedulingRequestRecord)(
+              (yield* state.snapshot()).runSchedulingRequest,
+            );
+            assert.notStrictEqual(replacement.requestId, first.requestId);
+            assert.deepStrictEqual(replacement.work, {
+              _tag: "Recovery",
+              commandId: command.commandId,
+              interruptedRunId: interrupted.runId,
+              inputMessageIds: [secondMessageId],
+            });
+            assert.deepStrictEqual(
+              yield* state.grantRun(new GrantRunCommand({ requestId: first.requestId }), {
+                modelSelection,
+              }),
+              { _tag: "Stale" },
+            );
+            if (cancelLast) {
+              const last = new CancelPendingMessageCommand({
+                commandId: CommandId.make(sequentialUuidV7(9_301)),
+                messageId: secondMessageId,
+                reason: "user-cancel",
+              });
+              yield* state.admitCommand(last);
+              yield* waitForCommitted(store, hasCommandCompleted(last.commandId));
+              assert.isUndefined((yield* state.snapshot()).runSchedulingRequest);
+            }
+            return {
+              request: replacement,
+              events: (yield* collectCommitted(store)).map((item) => item.event),
+            };
+          }).pipe(Effect.provide(recovering.layer));
+          const restarted = fixture({ seedEvents: afterCancel.events });
+          yield* Effect.gen(function* () {
+            const state = yield* SessionState;
+            const store = yield* EDASessionStore;
+            yield* state.start({ modelSelection });
+            const result = yield* state.grantRun(
+              new GrantRunCommand({ requestId: afterCancel.request.requestId }),
+              { modelSelection },
+            );
+            if (cancelLast) {
+              assert.deepStrictEqual(result, { _tag: "Stale" });
+              const snapshot = yield* state.snapshot();
+              assert.isUndefined(snapshot.runSchedulingRequest);
+              assert.strictEqual(
+                snapshot.commands.get(command.commandId)?.terminal?._tag,
+                "Cancelled",
+              );
+              assert.strictEqual(snapshot.runs.size, 1);
+            } else {
+              assert.strictEqual(result._tag, "Granted");
+              yield* waitForCommitted(store, hasCommandCompleted(command.commandId));
+              const snapshot = yield* state.snapshot();
+              assert.strictEqual(snapshot.runs.size, 2);
+              assert.strictEqual(snapshot.recoveryContinuations.size, 1);
+            }
+          }).pipe(Effect.provide(restarted.layer));
+        }),
+    );
+  }
 
   methods.effect(
     "rebuilds the deployed schema-6 checkpoint from retained history before deferring",
