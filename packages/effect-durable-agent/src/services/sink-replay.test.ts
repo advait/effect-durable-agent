@@ -7,6 +7,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Tracer from "effect/Tracer";
 import * as Prompt from "effect/unstable/ai/Prompt";
 
 import {
@@ -20,6 +21,7 @@ import { ModelResolver } from "./model-resolver";
 import { EDARuntime } from "./runtime";
 import { makeEDARuntimeLayer } from "./runtime-layer";
 import { SessionState } from "./session-state";
+import { makeEdaExportingTracer, type EDAExportedSpan } from "./tracing";
 import { durablePosition, EventId, SequenceNumber, SessionId } from "../types/core";
 import {
   DurableEventEnvelope,
@@ -234,6 +236,7 @@ describe("paged sink startup replay", () => {
     "preserves projections and delivery at zero, page-boundary, and lagging checkpoints",
     () =>
       Effect.gen(function* () {
+        const spans: EDAExportedSpan[] = [];
         const cursors = [0, 1, 15, 16, 17, 63, 64, 132];
         const delivered = cursors.map(() => new Array<number>());
         const failures: Array<string> = [];
@@ -285,6 +288,10 @@ describe("paged sink startup replay", () => {
               appendDurableBatch: unexpected,
               publishEphemeral: unexpected,
             });
+            const initialization = spans.find((span) => span.name === "agent.sinks.initialize");
+            assert.strictEqual(initialization?.attributes["eda.sinks.reused"], 1);
+            assert.strictEqual(initialization?.attributes["eda.sinks.replayed"], 6);
+            assert.strictEqual(initialization?.attributes["eda.sinks.empty"], 1);
             yield* waitFor(() =>
               Effect.gen(function* () {
                 for (let i = 0; i < cursors.length; i++)
@@ -306,7 +313,13 @@ describe("paged sink startup replay", () => {
                 },
               );
             }
-          }).pipe(Effect.provide(harness(sinks))),
+          }).pipe(
+            Effect.provide(harness(sinks)),
+            Effect.provideService(
+              Tracer.Tracer,
+              makeEdaExportingTracer((span) => spans.push(span)),
+            ),
+          ),
         );
       }),
   );
@@ -516,6 +529,7 @@ describe("paged session recovery", () => {
   makeMethods(it).effect(
     "loads a checkpointed runtime with caught-up sinks without reading genesis",
     () => {
+      const spans: EDAExportedSpan[] = [];
       const head = SequenceNumber.make(131);
       const seedEvents = Array.from({ length: head }, (_, i) =>
         DurableEventEnvelope.make({
@@ -586,6 +600,16 @@ describe("paged session recovery", () => {
           assert.deepStrictEqual(snapshot.state.messages, projection.reduced.messages);
           assert.strictEqual(snapshot.reducerStates.get(counter.name), head);
           assert.deepStrictEqual(reads, [head, head]);
+          yield* runtime.snapshot();
+          const hydration = spans.filter((span) => span.name === "agent.session.hydrate");
+          const initialization = spans.filter((span) => span.name === "agent.sinks.initialize");
+          assert.strictEqual(hydration.length, 1);
+          assert.strictEqual(initialization.length, 1);
+          assert.strictEqual(hydration[0]?.attributes["sessionId"], sessionId);
+          assert.strictEqual(hydration[0]?.attributes["eda.checkpoint.framework_seq"], head);
+          assert.strictEqual(initialization[0]?.attributes["eda.sinks.reused"], 7);
+          assert.strictEqual(initialization[0]?.attributes["eda.sinks.replayed"], 0);
+          assert.strictEqual(initialization[0]?.attributes["eda.sinks.empty"], 0);
         }).pipe(
           Effect.provide(
             makeEDARuntimeLayer({
@@ -593,6 +617,7 @@ describe("paged session recovery", () => {
               sessionId,
               sessionStoreLayer: storeLayer,
               sinkCheckpointStoreLayer: checkpointLayer,
+              tracer: makeEdaExportingTracer((span) => spans.push(span)),
               modelResolverLayer: Layer.succeed(ModelResolver, { resolve: unexpected }),
               reducerRegistryLayer: EDAReducerRegistry.Live([counter]),
               sinks,
@@ -602,6 +627,56 @@ describe("paged session recovery", () => {
       );
     },
   );
+
+  for (const stage of ["hydrate", "sinks"] as const) {
+    makeMethods(it).effect(`exports a failed ${stage} startup span`, () =>
+      Effect.gen(function* () {
+        const spans: EDAExportedSpan[] = [];
+        const failure = new EDASessionStoreError({ message: "storage unavailable" });
+        const storeLayer = Layer.effect(
+          EDASessionStore,
+          Effect.gen(function* () {
+            const store = yield* EDASessionStore;
+            return { ...store, loadReducerCheckpoint: () => Effect.fail(failure) };
+          }),
+        ).pipe(Layer.provide(EDASessionStore.InMemorySeeded(sessionId, [])));
+        const checkpointLayer = Layer.succeed(SinkCheckpointStore, {
+          load: () => Effect.fail(failure),
+          commit: unexpected,
+          saveState: unexpected,
+        });
+        const result = yield* Effect.scoped(
+          EDARuntime.pipe(
+            Effect.provide(
+              makeEDARuntimeLayer({
+                config: { modelSelection: { provider: "test", modelId: "test" } },
+                sessionId,
+                sessionStoreLayer:
+                  stage === "hydrate" ? storeLayer : EDASessionStore.InMemorySeeded(sessionId, []),
+                sinkCheckpointStoreLayer: checkpointLayer,
+                modelResolverLayer: Layer.succeed(ModelResolver, { resolve: unexpected }),
+                sinks: [{ name: "failure" }],
+                tracer: makeEdaExportingTracer((span) => spans.push(span)),
+              }),
+            ),
+          ),
+        ).pipe(Effect.exit);
+        assert.ok(Exit.isFailure(result));
+        const failed = spans.find(
+          (span) =>
+            span.name ===
+            (stage === "hydrate" ? "agent.session.hydrate" : "agent.sinks.initialize"),
+        );
+        assert.strictEqual(failed?.statusCode, "ERROR");
+        assert.strictEqual(failed?.statusMessage, "storage unavailable");
+        assert.strictEqual(failed?.attributes["sessionId"], sessionId);
+        assert.strictEqual(
+          spans.filter((span) => span.name.startsWith("agent.sinks.initialize")).length,
+          stage === "hydrate" ? 0 : 1,
+        );
+      }),
+    );
+  }
 
   for (const pageSize of [1, 16, 31]) {
     for (const checkpointKind of ["missing", "valid", "stale"] as const) {

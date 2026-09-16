@@ -416,7 +416,10 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
         ),
       );
 
-      return runLoop;
+      return {
+        runLoop,
+        initialization: cursor === initialHead ? "reused" : cursor > 0 ? "replayed" : "empty",
+      };
     });
 
     return {
@@ -426,13 +429,36 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
         if (wasStarted) {
           return;
         }
-        const runners = yield* Effect.forEach(sinks, (sink) => makeSinkRunner(sink, input), {
-          concurrency: 1,
-        });
+        const runners = yield* Effect.gen(function* () {
+          const runners = yield* Effect.forEach(sinks, (sink) => makeSinkRunner(sink, input), {
+            concurrency: 1,
+          });
+          yield* Effect.annotateCurrentSpan({
+            "eda.sinks.reused": runners.filter((runner) => runner.initialization === "reused")
+              .length,
+            "eda.sinks.replayed": runners.filter((runner) => runner.initialization === "replayed")
+              .length,
+            "eda.sinks.empty": runners.filter((runner) => runner.initialization === "empty").length,
+          });
+          return runners;
+        }).pipe(
+          Effect.withSpan("agent.sinks.initialize", {
+            attributes: {
+              sessionId: session.sessionId,
+              "eda.session.id": session.sessionId,
+              "eda.seq.head": input.initialProjection.reduced.lastSeq,
+              "eda.sinks.count": sinks.length,
+            },
+          }),
+        );
         // Catch-up can append events. Subscribe every sink before starting any delivery fiber.
-        yield* Effect.forEach(runners, (runner) => runner.pipe(Effect.forkIn(input.scope)), {
-          discard: true,
-        });
+        yield* Effect.forEach(
+          runners,
+          (runner) => runner.runLoop.pipe(Effect.forkIn(input.scope)),
+          {
+            discard: true,
+          },
+        );
       }),
       notifyDurableHeadAdvanced: () => Effect.void,
       publishEphemeralToSinks: () => Effect.void,
