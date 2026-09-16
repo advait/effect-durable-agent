@@ -16,11 +16,15 @@ import {
   frameworkReducedStateReducerSchemaVersion,
 } from "../domain/reduced-state";
 import { makeEdaTestLayer } from "../testkit/layers";
+import { ModelResolver } from "./model-resolver";
+import { EDARuntime } from "./runtime";
+import { makeEDARuntimeLayer } from "./runtime-layer";
 import { SessionState } from "./session-state";
 import { durablePosition, EventId, SequenceNumber, SessionId } from "../types/core";
 import {
   DurableEventEnvelope,
   EventType,
+  EventNamespace,
   UnixEpochMillis,
   effectDurableAgentNamespace,
   schemaV1,
@@ -33,7 +37,7 @@ import { EDAReducer, EDAReducerRegistry } from "./reducer-registry";
 import { SessionContext } from "./session-context";
 import { EDASessionStore, EDASessionStoreError, type EDASessionStoreShape } from "./session-store";
 import { EDASinkName, SinkCheckpointStore } from "./sink-checkpoint-store";
-import { EDASinkRegistry, type EDASink } from "./sink-registry";
+import { EDASinkRegistry, type EDASink, type EDASinkDurableBatch } from "./sink-registry";
 
 const sessionId = SessionId.make(sequentialUuidV7(1));
 const event = (seq: number) =>
@@ -64,6 +68,24 @@ const counter = EDAReducer.make({
   initial: 0,
   stateSchema: Schema.Number,
   reduce: (n) => n + 1,
+});
+const history = EDAReducer.make({
+  name: "replay.history",
+  initial: Schema.decodeUnknownSync(Schema.Array(Schema.Number))([]),
+  stateSchema: Schema.Array(Schema.Number),
+  reduce: (state, entry) => [...state, Number(entry.position.seq)],
+});
+const projectionAt = (count: number) => ({
+  reduced: reduceCommittedEvents(
+    Array.from({ length: count }, (_, i) => ({
+      event: event(i + 1),
+      position: durablePosition(SequenceNumber.make(i + 1)),
+    })),
+  ),
+  reducerStates: new Map<string, unknown>([
+    [counter.name, count],
+    [history.name, Array.from({ length: count }, (_, i) => i + 1)],
+  ]),
 });
 const unexpected = () => Effect.die(new Error("unexpected mutation"));
 
@@ -97,7 +119,7 @@ const harness = (
     LiveEventBus.Noop,
     SinkCheckpointStore.InMemory,
     EDAKeepAlive.Noop,
-    EDAReducerRegistry.Live([counter]),
+    EDAReducerRegistry.Live([counter, history]),
     EventFactory.Live.pipe(Layer.provide(Layer.merge(session, ids))),
   );
   return EDASinkRegistry.Live(sinks).pipe(Layer.provideMerge(dependencies));
@@ -114,10 +136,105 @@ const waitFor = (test: () => Effect.Effect<boolean, EDASessionStoreError>) =>
 
 describe("paged sink startup replay", () => {
   makeMethods(it).effect(
+    "reuses caught-up projections without reads and isolates later sink folds",
+    () =>
+      Effect.gen(function* () {
+        const deliveries: Array<Array<EDASinkDurableBatch>> = [[], []];
+        const reads: Array<number> = [];
+        const sinks = deliveries.map(
+          (batches, i): EDASink => ({
+            name: `caught-up.${i}`,
+            durable: {
+              process: (batch) =>
+                Effect.sync(() => {
+                  batches.push(batch);
+                }),
+            },
+          }),
+        );
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const store = yield* EDASessionStore;
+            const all = yield* store.eventsAfter(SequenceNumber.make(0)).pipe(Stream.runCollect);
+            const initialProjection = projectionAt(132);
+            const checkpoints = yield* SinkCheckpointStore;
+            for (const sink of sinks)
+              yield* checkpoints.commit(EDASinkName.make(sink.name), SequenceNumber.make(132), {
+                preserved: sink.name,
+              });
+            reads.length = 0;
+            const registry = yield* EDASinkRegistry;
+            yield* registry.startSinkRunners({
+              initialProjection,
+              scope: yield* Effect.scope,
+              appendDurableBatch: unexpected,
+              publishEphemeral: unexpected,
+            });
+            assert.deepStrictEqual(reads, []);
+            const bus = yield* LiveEventBus;
+            for (const seq of [133, 134]) {
+              const committed = yield* store.append({ entries: [{ event: event(seq) }] });
+              for (const entry of committed) yield* bus.publish(entry);
+              yield* waitFor(() =>
+                Effect.gen(function* () {
+                  for (const sink of sinks)
+                    if ((yield* checkpoints.load(EDASinkName.make(sink.name))).afterSeq !== seq)
+                      return false;
+                  return true;
+                }),
+              );
+            }
+            const complete = yield* store
+              .eventsAfter(SequenceNumber.make(0))
+              .pipe(Stream.runCollect);
+            for (const batches of deliveries) {
+              assert.deepStrictEqual(
+                batches.map((b) => b.throughSeq),
+                [133, 134],
+              );
+              for (const batch of batches) {
+                assert.deepStrictEqual(
+                  batch.stateAfter,
+                  reduceCommittedEvents(complete.slice(0, batch.throughSeq)),
+                );
+                assert.strictEqual(batch.reducerStates.get(counter.name), batch.throughSeq);
+                assert.deepStrictEqual(
+                  batch.reducerStates.get(history.name),
+                  Array.from({ length: batch.throughSeq }, (_, i) => i + 1),
+                );
+              }
+            }
+            assert.deepStrictEqual(
+              initialProjection.reducerStates,
+              projectionAt(132).reducerStates,
+            );
+            assert.deepStrictEqual(initialProjection.reduced, reduceCommittedEvents(all));
+            assert.strictEqual(initialProjection.reducerStates.get(counter.name), 132);
+            for (const sink of sinks)
+              assert.deepStrictEqual(
+                (yield* checkpoints.load(EDASinkName.make(sink.name))).payload,
+                { preserved: sink.name },
+              );
+          }).pipe(
+            Effect.provide(
+              harness(sinks, (store) => ({
+                ...store,
+                eventsAfter: (seq) => {
+                  reads.push(seq);
+                  return store.eventsAfter(seq);
+                },
+              })),
+            ),
+          ),
+        );
+      }),
+  );
+
+  makeMethods(it).effect(
     "preserves projections and delivery at zero, page-boundary, and lagging checkpoints",
     () =>
       Effect.gen(function* () {
-        const cursors = [0, 1, 15, 16, 17, 63, 64];
+        const cursors = [0, 1, 15, 16, 17, 63, 64, 132];
         const delivered = cursors.map(() => new Array<number>());
         const failures: Array<string> = [];
         const sinks = cursors.map(
@@ -163,7 +280,7 @@ describe("paged sink startup replay", () => {
               );
             const registry = yield* EDASinkRegistry;
             yield* registry.startSinkRunners({
-              initialHead: SequenceNumber.make(132),
+              initialProjection: projectionAt(132),
               scope: yield* Effect.scope,
               appendDurableBatch: unexpected,
               publishEphemeral: unexpected,
@@ -199,7 +316,7 @@ describe("paged sink startup replay", () => {
       Effect.gen(function* () {
         const registry = yield* EDASinkRegistry;
         yield* registry.startSinkRunners({
-          initialHead: SequenceNumber.make(0),
+          initialProjection: projectionAt(0),
           scope: yield* Effect.scope,
           appendDurableBatch: unexpected,
           publishEphemeral: unexpected,
@@ -229,7 +346,7 @@ describe("paged sink startup replay", () => {
             const registry = yield* EDASinkRegistry;
             const result = yield* registry
               .startSinkRunners({
-                initialHead: SequenceNumber.make(132),
+                initialProjection: projectionAt(132),
                 scope: yield* Effect.scope,
                 appendDurableBatch: unexpected,
                 publishEphemeral: unexpected,
@@ -290,7 +407,7 @@ describe("paged sink startup replay", () => {
           const registry = yield* EDASinkRegistry;
           const fiber = yield* registry
             .startSinkRunners({
-              initialHead: SequenceNumber.make(132),
+              initialProjection: projectionAt(132),
               scope: yield* Effect.scope,
               appendDurableBatch: unexpected,
               publishEphemeral: unexpected,
@@ -325,76 +442,167 @@ describe("paged sink startup replay", () => {
     }),
   );
 
-  makeMethods(it).effect(
-    "subscribes later sinks before an earlier sink appends during startup catch-up",
-    () =>
-      Effect.gen(function* () {
-        let appended = false;
-        const sinks: ReadonlyArray<EDASink> = [
-          {
-            name: "writer",
-            durable: {
-              process: (_, ctx) =>
-                Effect.gen(function* () {
-                  if (!appended) {
-                    appended = true;
-                    yield* ctx.stageDurable(event(133));
-                  }
-                }),
+  for (const readerCursor of [64, 132])
+    makeMethods(it).effect(
+      `subscribes reader at ${readerCursor} before an earlier sink appends during startup catch-up`,
+      () =>
+        Effect.gen(function* () {
+          let appended = false;
+          const sinks: ReadonlyArray<EDASink> = [
+            {
+              name: "writer",
+              durable: {
+                process: (_, ctx) =>
+                  Effect.gen(function* () {
+                    if (!appended) {
+                      appended = true;
+                      yield* ctx.stageDurable(event(133));
+                    }
+                  }),
+              },
             },
-          },
-          { name: "reader", durable: { process: () => Effect.void } },
-        ];
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const store = yield* EDASessionStore;
-            const bus = yield* LiveEventBus;
-            const checkpoints = yield* SinkCheckpointStore;
-            yield* checkpoints.commit(
-              EDASinkName.make("writer"),
-              SequenceNumber.make(131),
-              undefined,
-            );
-            yield* checkpoints.commit(
-              EDASinkName.make("reader"),
-              SequenceNumber.make(64),
-              undefined,
-            );
-            const registry = yield* EDASinkRegistry;
-            yield* registry.startSinkRunners({
-              initialHead: SequenceNumber.make(132),
-              scope: yield* Effect.scope,
-              publishEphemeral: unexpected,
-              appendDurableBatch: (events) =>
+            { name: "reader", durable: { process: () => Effect.void } },
+          ];
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const store = yield* EDASessionStore;
+              const bus = yield* LiveEventBus;
+              const checkpoints = yield* SinkCheckpointStore;
+              yield* checkpoints.commit(
+                EDASinkName.make("writer"),
+                SequenceNumber.make(131),
+                undefined,
+              );
+              yield* checkpoints.commit(
+                EDASinkName.make("reader"),
+                SequenceNumber.make(readerCursor),
+                undefined,
+              );
+              const registry = yield* EDASinkRegistry;
+              yield* registry.startSinkRunners({
+                initialProjection: projectionAt(132),
+                scope: yield* Effect.scope,
+                publishEphemeral: unexpected,
+                appendDurableBatch: (events) =>
+                  Effect.gen(function* () {
+                    const committed = yield* store.append({
+                      entries: events.map((event) => ({ event })),
+                    });
+                    for (const entry of committed) yield* bus.publish(entry);
+                    return committed;
+                  }),
+              });
+              yield* waitFor(() =>
                 Effect.gen(function* () {
-                  const committed = yield* store.append({
-                    entries: events.map((event) => ({ event })),
-                  });
-                  for (const entry of committed) yield* bus.publish(entry);
-                  return committed;
+                  return (yield* checkpoints.load(EDASinkName.make("reader"))).afterSeq === 133;
                 }),
-            });
-            yield* waitFor(() =>
-              Effect.gen(function* () {
-                return (yield* checkpoints.load(EDASinkName.make("reader"))).afterSeq === 133;
-              }),
-            );
-            assert.strictEqual(appended, true);
-          }).pipe(
-            Effect.provide(
-              harness(sinks, (store) => ({
-                ...store,
-                eventsAfter: (seq) =>
-                  store.eventsAfter(seq).pipe(Stream.tap(() => Effect.yieldNow)),
-              })),
+              );
+              assert.strictEqual(appended, true);
+            }).pipe(
+              Effect.provide(
+                harness(sinks, (store) => ({
+                  ...store,
+                  eventsAfter: (seq) =>
+                    store.eventsAfter(seq).pipe(Stream.tap(() => Effect.yieldNow)),
+                })),
+              ),
             ),
-          ),
-        );
-      }),
-  );
+          );
+        }),
+    );
 });
 
 describe("paged session recovery", () => {
+  makeMethods(it).effect(
+    "loads a checkpointed runtime with caught-up sinks without reading genesis",
+    () => {
+      const head = SequenceNumber.make(131);
+      const seedEvents = Array.from({ length: head }, (_, i) =>
+        DurableEventEnvelope.make({
+          ...event(i + 1),
+          namespace: EventNamespace.make("test.replay"),
+          type: EventType.make("TestRecorded"),
+          payload: { index: i },
+        }),
+      );
+      const projection = {
+        reduced: reduceCommittedEvents(
+          seedEvents.map((event, i) => ({
+            event,
+            position: durablePosition(SequenceNumber.make(i + 1)),
+          })),
+        ),
+      };
+      const reads: Array<number> = [];
+      const sinks = Array.from(
+        { length: 7 },
+        (_, i): EDASink => ({ name: `runtime.${i}`, durable: { process: unexpected } }),
+      );
+      const storeLayer = Layer.effect(
+        EDASessionStore,
+        Effect.gen(function* () {
+          const store = yield* EDASessionStore;
+          yield* store.saveReducerCheckpoints([
+            {
+              name: frameworkReducedStateReducerName,
+              schemaVersion: frameworkReducedStateReducerSchemaVersion,
+              throughSeq: head,
+              payload: encodeReducedStateCheckpoint(projection.reduced),
+              updatedAtMs: 1715000000000,
+            },
+            {
+              name: counter.name,
+              schemaVersion: 1,
+              throughSeq: head,
+              payload: head,
+              updatedAtMs: 1715000000000,
+            },
+          ]);
+          return {
+            ...store,
+            eventsAfter: (seq: SequenceNumber) => {
+              reads.push(seq);
+              return seq === 0
+                ? Stream.die("checkpointed runtime replayed genesis")
+                : store.eventsAfter(seq);
+            },
+          };
+        }),
+      ).pipe(Layer.provide(EDASessionStore.InMemorySeeded(sessionId, seedEvents)));
+      const checkpointLayer = Layer.effect(
+        SinkCheckpointStore,
+        Effect.gen(function* () {
+          const checkpoints = yield* SinkCheckpointStore;
+          for (const sink of sinks)
+            yield* checkpoints.commit(EDASinkName.make(sink.name), head, undefined);
+          return checkpoints;
+        }),
+      ).pipe(Layer.provide(SinkCheckpointStore.InMemory));
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const runtime = yield* EDARuntime;
+          const snapshot = yield* runtime.snapshot();
+          assert.strictEqual(snapshot.state.lastSeq, head);
+          assert.deepStrictEqual(snapshot.state.messages, projection.reduced.messages);
+          assert.strictEqual(snapshot.reducerStates.get(counter.name), head);
+          assert.deepStrictEqual(reads, [head, head]);
+        }).pipe(
+          Effect.provide(
+            makeEDARuntimeLayer({
+              config: { modelSelection: { provider: "test", modelId: "test" } },
+              sessionId,
+              sessionStoreLayer: storeLayer,
+              sinkCheckpointStoreLayer: checkpointLayer,
+              modelResolverLayer: Layer.succeed(ModelResolver, { resolve: unexpected }),
+              reducerRegistryLayer: EDAReducerRegistry.Live([counter]),
+              sinks,
+            }),
+          ),
+        ),
+      );
+    },
+  );
+
   for (const pageSize of [1, 16, 31]) {
     for (const checkpointKind of ["missing", "valid", "stale"] as const) {
       makeMethods(it).effect(

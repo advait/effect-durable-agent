@@ -17,7 +17,7 @@
     "test": "pnpm --filter effect-durable-agent run test && pnpm --filter effect-durable-agent-cloudflare run test && pnpm --filter effect-durable-agent-celld run test && pnpm run test:examples && pnpm run test:integration",
     "test:examples": "vp test run --passWithNoTests examples",
     "test:integration": "pnpm run build && pnpm --filter effect-durable-agent-cloudflare run test:integration && pnpm --filter effect-durable-agent-celld run test:integration",
-    "test:replay-memory": "node --max-old-space-size=128 --expose-gc --import tsx scripts/check-replay-memory.mjs && node --max-old-space-size=128 --expose-gc --import tsx scripts/check-replay-memory.mjs 4500 65536 state"
+    "test:replay-memory": "node --max-old-space-size=128 --expose-gc --import tsx scripts/check-replay-memory.mjs && node --max-old-space-size=128 --expose-gc --import tsx scripts/check-replay-memory.mjs 4500 32768 checkpointed && node --max-old-space-size=128 --expose-gc --import tsx scripts/check-replay-memory.mjs 4500 32768 lagging && node --max-old-space-size=128 --expose-gc --import tsx scripts/check-replay-memory.mjs 4500 65536 state"
   },
   "pnpm": {
     "overrides": {

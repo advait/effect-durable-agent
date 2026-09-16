@@ -12,6 +12,7 @@ export interface EDAReducerDefinition<State, Name extends string = string> {
   readonly schemaVersion?: number;
   readonly encode?: (state: State) => unknown;
   readonly decode?: (payload: unknown) => State;
+  /** Return the next state without mutating the input; projections may be shared across sinks. */
   reduce(state: State, event: CommittedDurableEvent): State;
 }
 
@@ -23,6 +24,7 @@ export interface EDAReducer<State = unknown, Name extends string = string> {
   readonly schemaVersion?: number;
   encode(state: State): unknown;
   decode(payload: unknown): State;
+  /** Return the next state without mutating the input; projections may be shared across sinks. */
   reduce(state: State, event: CommittedDurableEvent): State;
 }
 
