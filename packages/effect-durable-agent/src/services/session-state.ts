@@ -2644,11 +2644,11 @@ const hydrateFrameworkReducedState = (
       checkpoint.schemaVersion !== frameworkReducedStateReducerSchemaVersion
         ? SequenceNumber.make(0)
         : checkpoint.throughSeq;
-    const tail = yield* store.eventsAfter(checkpointSeq).pipe(
-      Stream.runCollect,
-      Effect.map((events) => Array.from(events)),
+    const state = yield* store.eventsAfter(checkpointSeq).pipe(
+      Stream.chunks,
+      Stream.runFold(() => checkpointState, foldReducedState),
     );
-    return { state: foldReducedState(checkpointState, tail), checkpointSeq };
+    return { state, checkpointSeq };
   });
 
 const hydrateAppReducerStates = (
@@ -2668,11 +2668,14 @@ const hydrateAppReducerStates = (
           checkpoint === undefined || checkpoint.schemaVersion !== schemaVersion
             ? SequenceNumber.make(0)
             : checkpoint.throughSeq;
-        const tail = yield* store.eventsAfter(checkpointSeq).pipe(
-          Stream.runCollect,
-          Effect.map((events) => Array.from(events)),
+        const state = yield* store.eventsAfter(checkpointSeq).pipe(
+          Stream.chunks,
+          Stream.runFold(
+            () => checkpointState,
+            (current, page) => page.reduce(reducer.reduce, current),
+          ),
         );
-        return [reducer.name, tail.reduce(reducer.reduce, checkpointState), checkpointSeq] as const;
+        return [reducer.name, state, checkpointSeq] as const;
       }),
     );
     const checkpointSeq = entries.reduce<SequenceNumber | undefined>(

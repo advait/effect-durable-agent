@@ -9,11 +9,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
-import {
-  foldReducedState,
-  reduceCommittedEvents,
-  type ReducedState,
-} from "../domain/reduced-state";
+import { foldReducedState, initialReducedState, type ReducedState } from "../domain/reduced-state";
 import { EDAReducerRegistry, type EDAReducerStateSnapshot } from "./reducer-registry";
 import { EventId, SessionId, SequenceNumber, durablePosition } from "../types/core";
 import type {
@@ -214,12 +210,29 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
         const checkpointRef = yield* SynchronizedRef.make(storedCheckpoint);
         const checkpoint = makeSinkCheckpoint(checkpointStore, sinkName, checkpointRef);
         const cursor = storedCheckpoint.afterSeq;
-        const prefix = yield* readDurablePrefixThrough(store, cursor);
-        const state = yield* Ref.make<DurableRunnerState>({
+        const initial: DurableRunnerState = {
           cursor,
-          reduced: reduceCommittedEvents(prefix),
-          reducerStates: reducerRegistry.reduce(reducerRegistry.initial, prefix),
-        });
+          reduced: initialReducedState,
+          reducerStates: reducerRegistry.initial,
+        };
+        // A sink needs projections at its own cursor, which may precede the session checkpoint.
+        // Fold storage pages so historical payloads can be released during reconstruction.
+        const hydrated =
+          cursor <= SequenceNumber.make(0)
+            ? initial
+            : yield* store.eventsAfter(SequenceNumber.make(0)).pipe(
+                Stream.takeWhile((event) => event.position.seq <= cursor),
+                Stream.chunks,
+                Stream.runFold(
+                  () => initial,
+                  (current, page): DurableRunnerState => ({
+                    cursor,
+                    reduced: foldReducedState(current.reduced, page),
+                    reducerStates: reducerRegistry.reduce(current.reducerStates, page),
+                  }),
+                ),
+              );
+        const state = yield* Ref.make(hydrated);
         const live = yield* liveBus.subscribeQueue().pipe(Scope.provide(input.scope));
 
         const processDurableBatch = Effect.fnUntraced(function* (
@@ -389,7 +402,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
           ),
         );
 
-        yield* runLoop.pipe(Effect.forkIn(input.scope));
+        return runLoop;
       });
 
     return {
@@ -399,26 +412,18 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
         if (wasStarted) {
           return;
         }
-        yield* Effect.forEach(sinks, (sink) => makeSinkRunner(sink, input), {
+        const runners = yield* Effect.forEach(sinks, (sink) => makeSinkRunner(sink, input), {
+          concurrency: 1,
+        });
+        // Catch-up can append events. Subscribe every sink before starting any delivery fiber.
+        yield* Effect.forEach(runners, (runner) => runner.pipe(Effect.forkIn(input.scope)), {
           discard: true,
-          concurrency: "unbounded",
         });
       }),
       notifyDurableHeadAdvanced: () => Effect.void,
       publishEphemeralToSinks: () => Effect.void,
     } satisfies EDASinkRegistryShape;
   });
-
-const readDurablePrefixThrough = (store: EDASessionStoreShape, throughSeq: SequenceNumber) => {
-  if (throughSeq <= SequenceNumber.make(0)) {
-    return Effect.succeed([]);
-  }
-  return store.eventsAfter(SequenceNumber.make(0)).pipe(
-    Stream.takeWhile((event) => event.position.seq <= throughSeq),
-    Stream.runCollect,
-    Effect.map((events) => Array.from(events)),
-  );
-};
 
 const makeSinkCheckpoint = (
   store: SinkCheckpointStoreShape,
