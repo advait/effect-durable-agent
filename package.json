@@ -6,7 +6,7 @@
   "scripts": {
     "build": "pnpm --filter effect-durable-agent run build && pnpm --filter effect-durable-agent-cloudflare run build && pnpm --filter effect-durable-agent-celld run build",
     "check": "pnpm run lint && pnpm exec tsc -p tsconfig.json --noEmit && pnpm --filter effect-durable-agent run check && pnpm --filter effect-durable-agent-cloudflare run check && pnpm --filter effect-durable-agent-celld run check && pnpm exec tsc -p examples/tsconfig.json --noEmit",
-    "ci": "pnpm run build && pnpm run check && pnpm run test && pnpm run release:versions && pnpm run package:check",
+    "ci": "pnpm run build && pnpm run check && pnpm run test && pnpm run test:replay-memory && pnpm run release:versions && pnpm run package:check",
     "lint": "vp fmt --check .github docs examples scripts testing package.json pnpm-workspace.yaml tsconfig.base.json tsconfig.json vite.config.ts && vp lint --deny-warnings examples scripts testing vite.config.ts",
     "lint:fix": "vp fmt .github docs examples scripts testing package.json pnpm-workspace.yaml tsconfig.base.json tsconfig.json vite.config.ts && vp lint --fix examples scripts testing vite.config.ts && pnpm --filter effect-durable-agent run lint:fix && pnpm --filter effect-durable-agent-cloudflare run lint:fix && pnpm --filter effect-durable-agent-celld run lint:fix",
     "package:check": "node scripts/check-package.mjs",
@@ -16,7 +16,8 @@
     "release:check": "pnpm run ci",
     "test": "pnpm --filter effect-durable-agent run test && pnpm --filter effect-durable-agent-cloudflare run test && pnpm --filter effect-durable-agent-celld run test && pnpm run test:examples && pnpm run test:integration",
     "test:examples": "vp test run --passWithNoTests examples",
-    "test:integration": "pnpm run build && pnpm --filter effect-durable-agent-cloudflare run test:integration && pnpm --filter effect-durable-agent-celld run test:integration"
+    "test:integration": "pnpm run build && pnpm --filter effect-durable-agent-cloudflare run test:integration && pnpm --filter effect-durable-agent-celld run test:integration",
+    "test:replay-memory": "node --max-old-space-size=128 --expose-gc --import tsx scripts/check-replay-memory.mjs && node --max-old-space-size=128 --expose-gc --import tsx scripts/check-replay-memory.mjs 4500 65536 state"
   },
   "pnpm": {
     "overrides": {
