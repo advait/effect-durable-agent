@@ -2,6 +2,13 @@
 
 All notable changes to Effect Durable Agent will be documented in this file.
 
+## 0.1.0-alpha.13
+
+- Add two aggregate startup spans for session hydration and sink initialization,
+  including session identity, checkpoint sequences, and projection reuse/replay counts.
+- Retain these two summaries when startup completes within one clock tick.
+  No event, checkpoint, delivery, or RPC contract changes.
+
 ## 0.1.0-alpha.10
 
 - Add `runRequestOutcome` to core and Cloudflare trusted query surfaces. Reconcile

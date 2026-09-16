@@ -419,8 +419,26 @@ const makeLiveSessionState = Effect.gen(function* () {
   const schedulingWakeup = yield* RunSchedulingWakeup;
   const reducerRegistry = yield* EDAReducerRegistry;
   const sinkRegistry = yield* EDASinkRegistry;
-  const hydrated = yield* hydrateFrameworkReducedState(store);
-  const hydratedReducerStates = yield* hydrateAppReducerStates(store, reducerRegistry.reducers);
+  const { hydrated, hydratedReducerStates } = yield* Effect.gen(function* () {
+    const hydrated = yield* hydrateFrameworkReducedState(store);
+    const hydratedReducerStates = yield* hydrateAppReducerStates(store, reducerRegistry.reducers);
+    yield* Effect.annotateCurrentSpan({
+      "eda.seq.head": hydrated.state.lastSeq,
+      "eda.checkpoint.framework_seq": hydrated.checkpointSeq,
+      ...(hydratedReducerStates.checkpointSeq === undefined
+        ? {}
+        : { "eda.checkpoint.app_min_seq": hydratedReducerStates.checkpointSeq }),
+    });
+    return { hydrated, hydratedReducerStates };
+  }).pipe(
+    Effect.withSpan("agent.session.hydrate", {
+      attributes: {
+        sessionId: sessionContext.sessionId,
+        "eda.session.id": sessionContext.sessionId,
+        "eda.reducers.count": reducerRegistry.reducers.length,
+      },
+    }),
+  );
   yield* schedulingWakeup.setPending(
     hydrated.state.runSchedulingRequest !== undefined &&
       hydrated.state.runSchedulingRequest.deliveredSeq === undefined,

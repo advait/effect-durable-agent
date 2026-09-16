@@ -194,9 +194,14 @@ class ExportingNativeSpan extends Tracer.NativeSpan {
 
   override end(endTime: bigint, exit: Exit.Exit<unknown, unknown>): void {
     super.end(endTime, exit);
-    // Workers can report the same clock tick for very fast operations. Such spans
-    // add noise without describing execution, so keep them out of exported traces.
-    if (endTime <= this.startTime) {
+    // Keep the two startup summaries even within one clock tick: their checkpoint
+    // and reuse counts explain why initialization was fast. Other zero-duration
+    // spans add noise without describing execution.
+    if (
+      endTime <= this.startTime &&
+      this.name !== "agent.session.hydrate" &&
+      this.name !== "agent.sinks.initialize"
+    ) {
       return;
     }
     const parent = Option.getOrUndefined(this.parent);
