@@ -1,5 +1,5 @@
-import { makeMethods } from "@effect/vitest";
-import { describe, expect, it } from "vite-plus/test";
+import { assert, makeMethods } from "@effect/vitest";
+import { describe, it } from "vite-plus/test";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -130,13 +130,15 @@ describe("paged sink startup replay", () => {
                 Effect.sync(() => {
                   // Record assertions outside the runner: sink defects are intentionally caught by its contract.
                   try {
-                    expect(batch.stateAfter).toEqual(
+                    assert.deepStrictEqual(
+                      batch.stateAfter,
                       reduceCommittedEvents(all.slice(0, batch.throughSeq)),
                     );
-                    expect(batch.reducerStates.get(counter.name)).toBe(batch.throughSeq);
-                    expect(
+                    assert.strictEqual(batch.reducerStates.get(counter.name), batch.throughSeq);
+                    assert.strictEqual(
                       batch.events.every((entry) => entry.event.type === "UserMessageCommitted"),
-                    ).toBe(true);
+                      true,
+                    );
                     delivered[i]?.push(
                       ...batch.allEvents.map((entry) => Number(entry.position.seq)),
                     );
@@ -174,14 +176,18 @@ describe("paged sink startup replay", () => {
                 return true;
               }),
             );
-            expect(failures).toEqual([]);
+            assert.deepStrictEqual(failures, []);
             for (const [i, cursor] of cursors.entries()) {
-              expect(delivered[i]).toEqual(
+              assert.deepStrictEqual(
+                delivered[i],
                 Array.from({ length: 132 - cursor }, (_, j) => cursor + j + 1),
               );
-              expect((yield* checkpoints.load(EDASinkName.make(`replay.${i}`))).payload).toEqual({
-                preserved: i,
-              });
+              assert.deepStrictEqual(
+                (yield* checkpoints.load(EDASinkName.make(`replay.${i}`))).payload,
+                {
+                  preserved: i,
+                },
+              );
             }
           }).pipe(Effect.provide(harness(sinks))),
         );
@@ -229,9 +235,9 @@ describe("paged sink startup replay", () => {
                 publishEphemeral: unexpected,
               })
               .pipe(Effect.exit);
-            expect(Exit.isFailure(result)).toBe(true);
-            expect(delivered).toBe(0);
-            expect(yield* checkpoints.load(EDASinkName.make("failure"))).toEqual({
+            assert.strictEqual(Exit.isFailure(result), true);
+            assert.strictEqual(delivered, 0);
+            assert.deepStrictEqual(yield* checkpoints.load(EDASinkName.make("failure")), {
               afterSeq: 64,
               payload: { saved: true },
             });
@@ -292,7 +298,10 @@ describe("paged sink startup replay", () => {
             .pipe(Effect.forkChild);
           yield* Deferred.await(reading);
           yield* Fiber.interrupt(fiber);
-          expect((yield* checkpoints.load(EDASinkName.make("interrupted"))).afterSeq).toBe(64);
+          assert.strictEqual(
+            (yield* checkpoints.load(EDASinkName.make("interrupted"))).afterSeq,
+            64,
+          );
         }).pipe(
           Effect.provide(
             harness([{ name: "interrupted" }], (store) => ({
@@ -370,7 +379,7 @@ describe("paged sink startup replay", () => {
                 return (yield* checkpoints.load(EDASinkName.make("reader"))).afterSeq === 133;
               }),
             );
-            expect(appended).toBe(true);
+            assert.strictEqual(appended, true);
           }).pipe(
             Effect.provide(
               harness(sinks, (store) => ({
@@ -401,9 +410,9 @@ describe("paged session recovery", () => {
             Effect.gen(function* () {
               const state = yield* SessionState;
               const snapshot = yield* state.snapshotData();
-              expect(snapshot.reduced).toEqual(reduceCommittedEvents(committed));
-              expect(snapshot.reducerStates.get(counter.name)).toBe(132);
-              expect(reads).toEqual([
+              assert.deepStrictEqual(snapshot.reduced, reduceCommittedEvents(committed));
+              assert.strictEqual(snapshot.reducerStates.get(counter.name), 132);
+              assert.deepStrictEqual(reads, [
                 checkpointKind === "valid" ? 17 : 0,
                 checkpointKind === "valid" ? 17 : 0,
               ]);
