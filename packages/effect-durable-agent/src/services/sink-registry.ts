@@ -119,7 +119,11 @@ export interface EDASinkRunnerStartInput {
   readonly appendDurableBatch: (
     events: ReadonlyArray<DurableEventEnvelope>,
   ) => Effect.Effect<ReadonlyArray<CommittedDurableEvent>, EDASessionStoreError>;
-  readonly initialHead: SequenceNumber;
+  /** Immutable framework and app projections at one common durable head. */
+  readonly initialProjection: {
+    readonly reduced: ReducedState;
+    readonly reducerStates: EDAReducerStateSnapshot;
+  };
   readonly publishEphemeral: (
     event: EphemeralEventEnvelope,
   ) => Effect.Effect<PositionedEvent, EDASessionStoreError>;
@@ -203,22 +207,32 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
       forkScoped: (effect) => effect.pipe(Effect.forkIn(scope), Effect.asVoid),
     });
 
-    const makeSinkRunner = (sink: EDASink, input: EDASinkRunnerStartInput) =>
-      Effect.gen(function* () {
-        const sinkName = EDASinkName.make(sink.name);
-        const storedCheckpoint = yield* checkpointStore.load(sinkName);
-        const checkpointRef = yield* SynchronizedRef.make(storedCheckpoint);
-        const checkpoint = makeSinkCheckpoint(checkpointStore, sinkName, checkpointRef);
-        const cursor = storedCheckpoint.afterSeq;
-        const initial: DurableRunnerState = {
-          cursor,
-          reduced: initialReducedState,
-          reducerStates: reducerRegistry.initial,
-        };
-        // A sink needs projections at its own cursor, which may precede the session checkpoint.
-        // Fold storage pages so historical payloads can be released during reconstruction.
-        const hydrated =
-          cursor <= SequenceNumber.make(0)
+    const makeSinkRunner = Effect.fnUntraced(function* (
+      sink: EDASink,
+      { initialProjection, appendDurableBatch, publishEphemeral, scope }: EDASinkRunnerStartInput,
+    ) {
+      // Long-lived fibers capture the head and capabilities, not the initial projection.
+      const initialHead = initialProjection.reduced.lastSeq;
+      const sinkName = EDASinkName.make(sink.name);
+      const storedCheckpoint = yield* checkpointStore.load(sinkName);
+      const checkpointRef = yield* SynchronizedRef.make(storedCheckpoint);
+      const checkpoint = makeSinkCheckpoint(checkpointStore, sinkName, checkpointRef);
+      const cursor = storedCheckpoint.afterSeq;
+      const initial: DurableRunnerState = {
+        cursor,
+        reduced: initialReducedState,
+        reducerStates: reducerRegistry.initial,
+      };
+      // Share the immutable session projection only at exactly the sink's cursor.
+      // Lagging sinks must reconstruct their earlier state, never observe future state.
+      const hydrated =
+        cursor === initialHead
+          ? {
+              cursor,
+              reduced: initialProjection.reduced,
+              reducerStates: initialProjection.reducerStates,
+            }
+          : cursor <= SequenceNumber.make(0)
             ? initial
             : yield* store.eventsAfter(SequenceNumber.make(0)).pipe(
                 Stream.takeWhile((event) => event.position.seq <= cursor),
@@ -232,178 +246,178 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
                   }),
                 ),
               );
-        const state = yield* Ref.make(hydrated);
-        const live = yield* liveBus.subscribeQueue().pipe(Scope.provide(input.scope));
+      const state = yield* Ref.make(hydrated);
+      const live = yield* liveBus.subscribeQueue().pipe(Scope.provide(scope));
 
-        const processDurableBatch = Effect.fnUntraced(function* (
-          allEvents: ReadonlyArray<CommittedDurableEvent>,
-        ) {
-          if (allEvents.length === 0) {
-            return;
-          }
+      const processDurableBatch = Effect.fnUntraced(function* (
+        allEvents: ReadonlyArray<CommittedDurableEvent>,
+      ) {
+        if (allEvents.length === 0) {
+          return;
+        }
 
-          const current = yield* Ref.get(state);
-          const fresh = allEvents.filter((entry) => entry.position.seq > current.cursor);
-          if (fresh.length === 0) {
-            return;
-          }
+        const current = yield* Ref.get(state);
+        const fresh = allEvents.filter((entry) => entry.position.seq > current.cursor);
+        if (fresh.length === 0) {
+          return;
+        }
 
-          const durable = sink.durable;
-          const throughSeq = fresh.at(-1)!.position.seq;
-          const nextReduced = foldReducedState(current.reduced, fresh);
-          const nextReducerStates = reducerRegistry.reduce(current.reducerStates, fresh);
-          const eventsForSink =
-            durable === undefined ? [] : filterInterested(fresh, durable.interests);
+        const durable = sink.durable;
+        const throughSeq = fresh.at(-1)!.position.seq;
+        const nextReduced = foldReducedState(current.reduced, fresh);
+        const nextReducerStates = reducerRegistry.reduce(current.reducerStates, fresh);
+        const eventsForSink =
+          durable === undefined ? [] : filterInterested(fresh, durable.interests);
 
-          if (durable !== undefined && eventsForSink.length > 0) {
-            yield* Effect.gen(function* () {
-              const staged: Array<DurableEventEnvelope> = [];
-              const completed = yield* durable
-                .process(
-                  {
-                    allEvents: fresh,
-                    events: eventsForSink,
-                    stateAfter: nextReduced,
-                    reducerStates: nextReducerStates,
-                    throughSeq,
-                  },
-                  baseContext(staged, input.publishEphemeral, input.scope, checkpoint),
-                )
-                .pipe(
-                  Effect.as(true),
-                  Effect.catchCause((cause) =>
-                    Cause.hasInterruptsOnly(cause)
-                      ? Effect.failCause(cause)
-                      : Effect.logError("EDA durable sink violated its infallible contract", {
-                          cause: Cause.pretty(cause),
-                          sink: sink.name,
-                        }).pipe(Effect.as(false)),
-                  ),
-                );
-              if (completed && staged.length > 0) {
-                yield* annotateEdaSpan({ "eda.sink.staged_events": staged.length });
-                yield* input.appendDurableBatch(staged);
-              }
-            }).pipe(
-              Effect.withSpan("agent.sink.drain", {
-                attributes: {
-                  "eda.sink.name": sink.name,
-                  "eda.sink.cursor.before": current.cursor,
-                  "eda.sink.events.read": fresh.length,
-                  "eda.sink.events.interested": eventsForSink.length,
-                  "eda.sink.cursor.after": throughSeq,
+        if (durable !== undefined && eventsForSink.length > 0) {
+          yield* Effect.gen(function* () {
+            const staged: Array<DurableEventEnvelope> = [];
+            const completed = yield* durable
+              .process(
+                {
+                  allEvents: fresh,
+                  events: eventsForSink,
+                  stateAfter: nextReduced,
+                  reducerStates: nextReducerStates,
+                  throughSeq,
                 },
-              }),
-            );
-          }
-
-          yield* commitSinkCheckpoint(checkpointStore, sinkName, checkpointRef, throughSeq);
-          yield* Ref.set(state, {
-            cursor: throughSeq,
-            reduced: nextReduced,
-            reducerStates: nextReducerStates,
-          });
-        });
-
-        const processDurableBatchWithKeepAlive = (events: ReadonlyArray<CommittedDurableEvent>) =>
-          keepAlive.withActiveWork(`sink:${sink.name}`, processDurableBatch(events));
-
-        const drainDurablesThrough = (targetHead: SequenceNumber) =>
-          Effect.gen(function* () {
-            while (true) {
-              const current = yield* Ref.get(state);
-              if (current.cursor >= targetHead) {
-                return;
-              }
-              const allEvents = yield* readCursorBatchThrough(
-                store,
-                current.cursor,
-                targetHead,
-                sink.durable?.batchSize,
-              );
-              if (allEvents.length === 0) {
-                return;
-              }
-              yield* processDurableBatchWithKeepAlive(allEvents);
-            }
-          });
-
-        const processLiveDurable = (event: PositionedEvent) =>
-          Effect.gen(function* () {
-            const current = yield* Ref.get(state);
-            if (event.position.seq <= current.cursor) {
-              return;
-            }
-            if (event.position.seq > current.cursor + 1) {
-              yield* drainDurablesThrough(SequenceNumber.make(event.position.seq - 1));
-            }
-            const afterCatchup = yield* Ref.get(state);
-            if (event.position.seq > afterCatchup.cursor + 1) {
-              yield* Effect.logWarning("EDA sink runner could not catch up before live durable", {
-                cursor: afterCatchup.cursor,
-                eventSeq: event.position.seq,
-                sink: sink.name,
-              });
-              return;
-            }
-            yield* processDurableBatchWithKeepAlive([committedDurableFromPositioned(event)]);
-          });
-
-        const processLiveEphemeral = (event: PositionedEvent) =>
-          Effect.gen(function* () {
-            const before = yield* Ref.get(state);
-            if (event.position.seq < before.cursor) {
-              return;
-            }
-            if (event.position.seq > before.cursor) {
-              yield* drainDurablesThrough(event.position.seq);
-            }
-            const after = yield* Ref.get(state);
-            if (event.position.seq !== after.cursor) {
-              return;
-            }
-            if (
-              sink.ephemeral === undefined ||
-              !matchesInterest(event.event.type, sink.ephemeral.interests)
-            ) {
-              return;
-            }
-            yield* sink.ephemeral
-              .process(event, baseContext([], input.publishEphemeral, input.scope, checkpoint))
+                baseContext(staged, publishEphemeral, scope, checkpoint),
+              )
               .pipe(
+                Effect.as(true),
                 Effect.catchCause((cause) =>
-                  Effect.logError("EDA sink ephemeral projection failed", {
-                    cause: String(cause),
-                    sink: sink.name,
-                  }),
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.failCause(cause)
+                    : Effect.logError("EDA durable sink violated its infallible contract", {
+                        cause: Cause.pretty(cause),
+                        sink: sink.name,
+                      }).pipe(Effect.as(false)),
                 ),
               );
-          });
-
-        const processLiveEvent = (event: PositionedEvent) =>
-          event.event.durability === "durable"
-            ? processLiveDurable(event)
-            : processLiveEphemeral(event);
-
-        const runLoop = Effect.gen(function* () {
-          yield* drainDurablesThrough(input.initialHead);
-          return yield* Effect.forever(
-            Effect.gen(function* () {
-              const event = yield* PubSub.take(live);
-              yield* processLiveEvent(event);
+            if (completed && staged.length > 0) {
+              yield* annotateEdaSpan({ "eda.sink.staged_events": staged.length });
+              yield* appendDurableBatch(staged);
+            }
+          }).pipe(
+            Effect.withSpan("agent.sink.drain", {
+              attributes: {
+                "eda.sink.name": sink.name,
+                "eda.sink.cursor.before": current.cursor,
+                "eda.sink.events.read": fresh.length,
+                "eda.sink.events.interested": eventsForSink.length,
+                "eda.sink.cursor.after": throughSeq,
+              },
             }),
           );
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logError("EDA sink runner failed", {
-              cause: Cause.pretty(cause),
-              sink: sink.name,
-            }),
-          ),
-        );
+        }
 
-        return runLoop;
+        yield* commitSinkCheckpoint(checkpointStore, sinkName, checkpointRef, throughSeq);
+        yield* Ref.set(state, {
+          cursor: throughSeq,
+          reduced: nextReduced,
+          reducerStates: nextReducerStates,
+        });
       });
+
+      const processDurableBatchWithKeepAlive = (events: ReadonlyArray<CommittedDurableEvent>) =>
+        keepAlive.withActiveWork(`sink:${sink.name}`, processDurableBatch(events));
+
+      const drainDurablesThrough = (targetHead: SequenceNumber) =>
+        Effect.gen(function* () {
+          while (true) {
+            const current = yield* Ref.get(state);
+            if (current.cursor >= targetHead) {
+              return;
+            }
+            const allEvents = yield* readCursorBatchThrough(
+              store,
+              current.cursor,
+              targetHead,
+              sink.durable?.batchSize,
+            );
+            if (allEvents.length === 0) {
+              return;
+            }
+            yield* processDurableBatchWithKeepAlive(allEvents);
+          }
+        });
+
+      const processLiveDurable = (event: PositionedEvent) =>
+        Effect.gen(function* () {
+          const current = yield* Ref.get(state);
+          if (event.position.seq <= current.cursor) {
+            return;
+          }
+          if (event.position.seq > current.cursor + 1) {
+            yield* drainDurablesThrough(SequenceNumber.make(event.position.seq - 1));
+          }
+          const afterCatchup = yield* Ref.get(state);
+          if (event.position.seq > afterCatchup.cursor + 1) {
+            yield* Effect.logWarning("EDA sink runner could not catch up before live durable", {
+              cursor: afterCatchup.cursor,
+              eventSeq: event.position.seq,
+              sink: sink.name,
+            });
+            return;
+          }
+          yield* processDurableBatchWithKeepAlive([committedDurableFromPositioned(event)]);
+        });
+
+      const processLiveEphemeral = (event: PositionedEvent) =>
+        Effect.gen(function* () {
+          const before = yield* Ref.get(state);
+          if (event.position.seq < before.cursor) {
+            return;
+          }
+          if (event.position.seq > before.cursor) {
+            yield* drainDurablesThrough(event.position.seq);
+          }
+          const after = yield* Ref.get(state);
+          if (event.position.seq !== after.cursor) {
+            return;
+          }
+          if (
+            sink.ephemeral === undefined ||
+            !matchesInterest(event.event.type, sink.ephemeral.interests)
+          ) {
+            return;
+          }
+          yield* sink.ephemeral
+            .process(event, baseContext([], publishEphemeral, scope, checkpoint))
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logError("EDA sink ephemeral projection failed", {
+                  cause: String(cause),
+                  sink: sink.name,
+                }),
+              ),
+            );
+        });
+
+      const processLiveEvent = (event: PositionedEvent) =>
+        event.event.durability === "durable"
+          ? processLiveDurable(event)
+          : processLiveEphemeral(event);
+
+      const runLoop = Effect.gen(function* () {
+        yield* drainDurablesThrough(initialHead);
+        return yield* Effect.forever(
+          Effect.gen(function* () {
+            const event = yield* PubSub.take(live);
+            yield* processLiveEvent(event);
+          }),
+        );
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logError("EDA sink runner failed", {
+            cause: Cause.pretty(cause),
+            sink: sink.name,
+          }),
+        ),
+      );
+
+      return runLoop;
+    });
 
     return {
       sinks,

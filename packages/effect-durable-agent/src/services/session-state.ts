@@ -2598,7 +2598,7 @@ const makeLiveSessionState = Effect.gen(function* () {
 
   yield* sinkRegistry.startSinkRunners({
     appendDurableBatch,
-    initialHead: (yield* Ref.get(state)).reduced.lastSeq,
+    initialProjection: yield* Ref.get(state),
     publishEphemeral: publishEphemeralCore,
     scope: runtimeScope,
   });
