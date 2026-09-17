@@ -33,6 +33,21 @@ const eventAt = (seq: number, subSeq = 1, delta = "update") =>
   });
 
 describe("sink delivery inbox", () => {
+  makeMethods(it).effect("preserves serialization failure without retaining malformed work", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const inbox = yield* makeSinkInbox(SequenceNumber.make(10));
+        const event = eventAt(10);
+        const malformed = { ...event, event: { ...event.event, payload: { value: 1n } } };
+        const error = yield* inbox.offerEphemeral(malformed).pipe(Effect.flip);
+        assert.strictEqual(error._tag, "SinkEphemeralEncodingError");
+        assert.strictEqual(error.cause instanceof TypeError, true);
+        assert.strictEqual(yield* inbox.poll(SequenceNumber.make(10)), undefined);
+        assert.strictEqual(yield* inbox.offerEphemeral(event), true);
+      }),
+    ),
+  );
+
   makeMethods(it).effect("coalesces heads while preserving ephemeral sequence barriers", () =>
     Effect.scoped(
       Effect.gen(function* () {

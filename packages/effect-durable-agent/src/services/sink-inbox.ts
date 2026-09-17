@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 
 import { SequenceNumber } from "../types/core";
 import type { PositionedEvent } from "../types/events";
@@ -7,6 +8,12 @@ import type { PositionedEvent } from "../types/events";
 /** Durable payloads stay in the log; only bounded best-effort ephemeral work is retained. */
 const ephemeralCapacity = 128;
 const ephemeralByteCapacity = 256 * 1024;
+
+/** An ephemeral update could not be measured as a JSON wire value. */
+export class SinkEphemeralEncodingError extends Schema.TaggedErrorClass<SinkEphemeralEncodingError>()(
+  "SinkEphemeralEncodingError",
+  { cause: Schema.Defect() },
+) {}
 
 /** One ordered step on a sink's serialized delivery lane. */
 type SinkWork =
@@ -30,16 +37,19 @@ export const makeSinkInbox = Effect.fnUntraced(function* (initialHead: SequenceN
     });
 
   const offerEphemeral = (event: PositionedEvent) =>
-    Effect.try(() => {
-      const bytes = new TextEncoder().encode(JSON.stringify(event)).byteLength;
-      if (pending.length >= ephemeralCapacity || bytes > ephemeralByteCapacity - pendingBytes) {
-        return false;
-      }
-      pending.push({ event, bytes });
-      pendingBytes += bytes;
-      Queue.offerUnsafe(wake, undefined);
-      return true;
-    }).pipe(Effect.catch(() => Effect.succeed(false)));
+    Effect.try({
+      try: () => {
+        const bytes = new TextEncoder().encode(JSON.stringify(event)).byteLength;
+        if (pending.length >= ephemeralCapacity || bytes > ephemeralByteCapacity - pendingBytes) {
+          return false;
+        }
+        pending.push({ event, bytes });
+        pendingBytes += bytes;
+        Queue.offerUnsafe(wake, undefined);
+        return true;
+      },
+      catch: (cause) => new SinkEphemeralEncodingError({ cause }),
+    });
 
   const poll = (cursor: SequenceNumber): Effect.Effect<SinkWork | undefined> =>
     Effect.sync(() => {

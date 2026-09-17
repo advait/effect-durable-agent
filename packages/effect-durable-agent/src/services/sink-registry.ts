@@ -460,15 +460,19 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
               !matchesInterest(event.event.type, sink.ephemeral.interests)
             )
               return Effect.void;
-            return inbox
-              .offerEphemeral(event)
-              .pipe(
-                Effect.flatMap((accepted) =>
-                  accepted
-                    ? Effect.void
-                    : Effect.logWarning("EDA sink ephemeral buffer full", { sink: sink.name }),
-                ),
-              );
+            return Effect.gen(function* () {
+              const accepted = yield* inbox.offerEphemeral(event);
+              if (!accepted) {
+                yield* Effect.logWarning("EDA sink ephemeral buffer full", { sink: sink.name });
+              }
+            }).pipe(
+              Effect.catchTag("SinkEphemeralEncodingError", (error) =>
+                Effect.logWarning("EDA sink ephemeral serialization failed", {
+                  cause: error.cause,
+                  sink: sink.name,
+                }),
+              ),
+            );
           },
           { discard: true },
         ),
