@@ -62,3 +62,19 @@ A local `--expose-gc` probe also advanced all seven live sinks past the shared
 initial projection, dropped the caller reference, and verified through `WeakRef`
 that the old projection was collectible before the sink scopes closed. Runner
 closures retain only their head and delivery capabilities, not the startup input.
+
+## Raw event consumers
+
+A durable sink can set `state: "none"` to receive only `allEvents`, filtered `events`,
+and `throughSeq`. It uses the same bounded inbox, cursor reads, ordered callbacks,
+and checkpoint commits as projected sinks, but never hydrates, folds, or retains
+framework or app state. Sink-owned checkpoint payloads remain available for small
+integration-specific state. `interests: "*"` explicitly selects all event types;
+omitting interests has the same meaning, while an empty array selects none.
+
+A caught-up raw sink performs no history reads until the head advances. A lagging
+raw sink starts reading strictly after its checkpoint; a new or renamed sink starts
+at zero. Resetting a name therefore re-delivers history and requires an idempotent
+consumer, but never reconstructs session state for that sink. Initialization reports
+these consumers as `eda.sinks.raw`, independently of projected reuse/deferred counts.
+The main session runtime still hydrates its own state normally.

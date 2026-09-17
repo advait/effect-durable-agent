@@ -22,7 +22,7 @@ import { EDARuntime, type EDARuntimeShape } from "./runtime";
 import { sequentialUuidV7 } from "./id-generator";
 import { EDAKeepAlive } from "./keep-alive";
 import { EDAReducer, getEDAReducerState } from "./reducer-registry";
-import type { EDASink } from "./sink-registry";
+import type { EDASink, EDASinkContext } from "./sink-registry";
 import { EDASinkName, SinkCheckpointStore } from "./sink-checkpoint-store";
 import { makeEdaTestLayer } from "../testkit/layers";
 import { makeEdaExportingTracer, type EDAExportedSpan } from "./tracing";
@@ -480,7 +480,7 @@ describe("EDASinkRegistry", () => {
       name: "test.checkpoint-state",
       durable: {
         interests: ["ExternalMarker"],
-        process: (_batch, ctx) =>
+        process: (_batch, ctx: EDASinkContext) =>
           Effect.gen(function* () {
             const current = yield* ctx.checkpoint.get(CounterCheckpoint, { count: 0 });
             observed.push(current.count);
@@ -548,7 +548,7 @@ describe("EDASinkRegistry", () => {
       name: "test.final-reply-sink",
       durable: {
         interests: ["AssistantMessageCommitted"],
-        process: (batch, ctx) =>
+        process: (batch, ctx: EDASinkContext) =>
           Effect.gen(function* () {
             for (const event of batch.events) {
               const payload = event.event.payload as { readonly messageId: string };

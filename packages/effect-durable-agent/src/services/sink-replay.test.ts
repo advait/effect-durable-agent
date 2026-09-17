@@ -39,7 +39,13 @@ import { EDAReducer, EDAReducerRegistry } from "./reducer-registry";
 import { SessionContext } from "./session-context";
 import { EDASessionStore, EDASessionStoreError, type EDASessionStoreShape } from "./session-store";
 import { EDASinkName, SinkCheckpointStore } from "./sink-checkpoint-store";
-import { EDASinkRegistry, type EDASink, type EDASinkDurableBatch } from "./sink-registry";
+import {
+  EDASinkRegistry,
+  type EDASink,
+  type EDASinkContext,
+  type EDASinkDurableBatch,
+  type EDASinkRawDurableBatch,
+} from "./sink-registry";
 
 const sessionId = SessionId.make(sequentialUuidV7(1));
 const event = (seq: number) =>
@@ -137,6 +143,76 @@ const waitFor = (test: () => Effect.Effect<boolean, EDASessionStoreError>) =>
   });
 
 describe("paged sink startup replay", () => {
+  for (const cursor of [0, 16, 127, 132]) {
+    makeMethods(it).effect(
+      `delivers raw wildcard events after cursor ${cursor} without hydration`,
+      () =>
+        Effect.gen(function* () {
+          const batches: EDASinkRawDurableBatch[] = [];
+          const reads: number[] = [];
+          const name = EDASinkName.make(`raw.${cursor}`);
+          const sink: EDASink = {
+            name,
+            durable: {
+              state: "none",
+              interests: "*",
+              batchSize: 16,
+              process: (batch) =>
+                Effect.sync(() => {
+                  batches.push(batch);
+                }),
+            },
+          };
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const checkpoints = yield* SinkCheckpointStore;
+              yield* checkpoints.commit(name, SequenceNumber.make(cursor), { preserved: true });
+              const registry = yield* EDASinkRegistry;
+              yield* registry.startSinkRunners({
+                initialProjection: projectionAt(132),
+                scope: yield* Effect.scope,
+                appendDurableBatch: unexpected,
+                publishEphemeral: unexpected,
+              });
+              const store = yield* EDASessionStore;
+              yield* store.append({ entries: [{ event: event(133) }] });
+              yield* registry.notifyDurableHeadAdvanced(SequenceNumber.make(133));
+              yield* waitFor(() =>
+                Effect.gen(function* () {
+                  return (yield* checkpoints.load(name)).afterSeq === 133;
+                }),
+              );
+              assert.deepStrictEqual(
+                batches.flatMap((batch) => batch.events.map((entry) => Number(entry.position.seq))),
+                Array.from({ length: 133 - cursor }, (_, i) => cursor + i + 1),
+              );
+              assert.strictEqual(reads[0], cursor);
+              assert.strictEqual(
+                reads.every((after) => after >= cursor),
+                true,
+              );
+              for (const batch of batches) {
+                assert.strictEqual("stateAfter" in batch, false);
+                assert.strictEqual("reducerStates" in batch, false);
+                assert.deepStrictEqual(batch.events, batch.allEvents);
+              }
+              assert.deepStrictEqual((yield* checkpoints.load(name)).payload, { preserved: true });
+            }).pipe(
+              Effect.provide(
+                harness([sink], (store) => ({
+                  ...store,
+                  eventsAfter: (after) => {
+                    reads.push(after);
+                    return store.eventsAfter(after);
+                  },
+                })),
+              ),
+            ),
+          );
+        }),
+    );
+  }
+
   makeMethods(it).effect(
     "reuses caught-up projections without reads and isolates later sink folds",
     () =>
@@ -470,7 +546,7 @@ describe("paged sink startup replay", () => {
             {
               name: "writer",
               durable: {
-                process: (_, ctx) =>
+                process: (_, ctx: EDASinkContext) =>
                   Effect.gen(function* () {
                     if (!appended) {
                       appended = true;
