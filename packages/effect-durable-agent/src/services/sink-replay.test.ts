@@ -3,9 +3,9 @@ import { describe, it } from "vite-plus/test";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import * as Prompt from "effect/unstable/ai/Prompt";
@@ -173,10 +173,10 @@ describe("paged sink startup replay", () => {
               publishEphemeral: unexpected,
             });
             assert.deepStrictEqual(reads, []);
-            const bus = yield* LiveEventBus;
             for (const seq of [133, 134]) {
               const committed = yield* store.append({ entries: [{ event: event(seq) }] });
-              for (const entry of committed) yield* bus.publish(entry);
+              for (const entry of committed)
+                yield* registry.notifyDurableHeadAdvanced(entry.position.seq);
               yield* waitFor(() =>
                 Effect.gen(function* () {
                   for (const sink of sinks)
@@ -290,7 +290,7 @@ describe("paged sink startup replay", () => {
             });
             const initialization = spans.find((span) => span.name === "agent.sinks.initialize");
             assert.strictEqual(initialization?.attributes["eda.sinks.reused"], 1);
-            assert.strictEqual(initialization?.attributes["eda.sinks.replayed"], 6);
+            assert.strictEqual(initialization?.attributes["eda.sinks.deferred"], 6);
             assert.strictEqual(initialization?.attributes["eda.sinks.empty"], 1);
             yield* waitFor(() =>
               Effect.gen(function* () {
@@ -346,10 +346,11 @@ describe("paged sink startup replay", () => {
   );
 
   makeMethods(it).effect(
-    "fails initialization without committing cursors or delivering partially reconstructed state",
+    "isolates background hydration failure without committing cursors or delivering partial state",
     () =>
       Effect.gen(function* () {
         let delivered = 0;
+        const failedRead = yield* Deferred.make<void>();
         yield* Effect.scoped(
           Effect.gen(function* () {
             const checkpoints = yield* SinkCheckpointStore;
@@ -365,7 +366,9 @@ describe("paged sink startup replay", () => {
                 publishEphemeral: unexpected,
               })
               .pipe(Effect.exit);
-            assert.strictEqual(Exit.isFailure(result), true);
+            assert.strictEqual(Exit.isSuccess(result), true);
+            yield* Deferred.await(failedRead);
+            yield* Effect.yieldNow;
             assert.strictEqual(delivered, 0);
             assert.deepStrictEqual(yield* checkpoints.load(EDASinkName.make("failure")), {
               afterSeq: 64,
@@ -388,16 +391,19 @@ describe("paged sink startup replay", () => {
                 (store) => ({
                   ...store,
                   eventsAfter: (seq) =>
-                    store
-                      .eventsAfter(seq)
-                      .pipe(
-                        Stream.take(16),
-                        Stream.concat(
-                          Stream.fail(
-                            new EDASessionStoreError({ message: "injected page failure" }),
-                          ),
+                    store.eventsAfter(seq).pipe(
+                      Stream.take(16),
+                      Stream.concat(
+                        Stream.fromEffect(
+                          Effect.gen(function* () {
+                            yield* Deferred.succeed(failedRead, undefined);
+                            return yield* new EDASessionStoreError({
+                              message: "injected page failure",
+                            });
+                          }),
                         ),
                       ),
+                    ),
                 }),
               ),
             ),
@@ -418,16 +424,15 @@ describe("paged sink startup replay", () => {
             undefined,
           );
           const registry = yield* EDASinkRegistry;
-          const fiber = yield* registry
-            .startSinkRunners({
-              initialProjection: projectionAt(132),
-              scope: yield* Effect.scope,
-              appendDurableBatch: unexpected,
-              publishEphemeral: unexpected,
-            })
-            .pipe(Effect.forkChild);
+          const runnerScope = yield* Scope.make();
+          yield* registry.startSinkRunners({
+            initialProjection: projectionAt(132),
+            scope: runnerScope,
+            appendDurableBatch: unexpected,
+            publishEphemeral: unexpected,
+          });
           yield* Deferred.await(reading);
-          yield* Fiber.interrupt(fiber);
+          yield* Scope.close(runnerScope, Exit.void);
           assert.strictEqual(
             (yield* checkpoints.load(EDASinkName.make("interrupted"))).afterSeq,
             64,
@@ -479,7 +484,6 @@ describe("paged sink startup replay", () => {
           yield* Effect.scoped(
             Effect.gen(function* () {
               const store = yield* EDASessionStore;
-              const bus = yield* LiveEventBus;
               const checkpoints = yield* SinkCheckpointStore;
               yield* checkpoints.commit(
                 EDASinkName.make("writer"),
@@ -501,7 +505,8 @@ describe("paged sink startup replay", () => {
                     const committed = yield* store.append({
                       entries: events.map((event) => ({ event })),
                     });
-                    for (const entry of committed) yield* bus.publish(entry);
+                    for (const entry of committed)
+                      yield* registry.notifyDurableHeadAdvanced(entry.position.seq);
                     return committed;
                   }),
               });
@@ -608,7 +613,7 @@ describe("paged session recovery", () => {
           assert.strictEqual(hydration[0]?.attributes["sessionId"], sessionId);
           assert.strictEqual(hydration[0]?.attributes["eda.checkpoint.framework_seq"], head);
           assert.strictEqual(initialization[0]?.attributes["eda.sinks.reused"], 7);
-          assert.strictEqual(initialization[0]?.attributes["eda.sinks.replayed"], 0);
+          assert.strictEqual(initialization[0]?.attributes["eda.sinks.deferred"], 0);
           assert.strictEqual(initialization[0]?.attributes["eda.sinks.empty"], 0);
         }).pipe(
           Effect.provide(
