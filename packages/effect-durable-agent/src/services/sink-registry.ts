@@ -35,17 +35,21 @@ import {
 import { annotateEdaSpan } from "./tracing";
 
 /** Cursor-window input delivered to one durable sink drain. */
-export interface EDASinkDurableBatch {
+export interface EDASinkRawDurableBatch {
   /** All durable events replayed for this cursor window, including uninterested events. */
   readonly allEvents: ReadonlyArray<CommittedDurableEvent>;
   /** Events matching the sink's durable interests. */
   readonly events: ReadonlyArray<CommittedDurableEvent>;
+  /** Durable sequence through which the sink may advance after success. */
+  readonly throughSeq: SequenceNumber;
+}
+
+/** Cursor window with framework and app projections, enabled by default. */
+export interface EDASinkDurableBatch extends EDASinkRawDurableBatch {
   /** Authoritative reduced state folded exactly through `throughSeq`. */
   readonly stateAfter: ReducedState;
   /** App-specific durable reducer states folded exactly through `throughSeq`. */
   readonly reducerStates: EDAReducerStateSnapshot;
-  /** Durable sequence through which the sink may advance after success. */
-  readonly throughSeq: SequenceNumber;
 }
 
 /** Typed, sink-owned durable state stored independently from cursor advancement. */
@@ -81,16 +85,34 @@ export interface EDASinkContext {
   readonly forkScoped: (effect: Effect.Effect<unknown, unknown>) => Effect.Effect<void>;
 }
 
-/** Durable sink definition backed by a checkpoint and an app-owned delivery policy. */
-export interface EDADurableSinkDefinition {
-  readonly interests?: ReadonlyArray<EventType | string>;
+/** `"*"` and omission select every event; an array selects exact event types. */
+export type EDASinkInterests = "*" | ReadonlyArray<EventType | string>;
+
+/** Delivery policy shared by raw and projected durable consumers. */
+interface EDADurableSinkOptions {
+  readonly interests?: EDASinkInterests;
   readonly batchSize?: number;
+}
+
+/** Default durable consumer with framework and app projections at each cursor window. */
+export interface EDAProjectedDurableSinkDefinition extends EDADurableSinkOptions {
   readonly process: (batch: EDASinkDurableBatch, ctx: EDASinkContext) => Effect.Effect<void, never>;
 }
 
+/** Raw consumer that never hydrates, folds, or retains a session projection. */
+export interface EDARawDurableSinkDefinition extends EDADurableSinkOptions {
+  readonly process: (
+    batch: EDASinkRawDurableBatch,
+    ctx: EDASinkContext,
+  ) => Effect.Effect<void, never>;
+}
+
+/** Durable sink definition backed by a checkpoint and an app-owned delivery policy. */
+export type EDADurableSinkDefinition = EDAProjectedDurableSinkDefinition;
+
 /** Best-effort live-only sink definition. */
 export interface EDAEphemeralSinkDefinition {
-  readonly interests?: ReadonlyArray<EventType | string>;
+  readonly interests?: EDASinkInterests;
   readonly process: (event: PositionedEvent, ctx: EDASinkContext) => Effect.Effect<void, never>;
 }
 
@@ -103,16 +125,36 @@ export interface EDAEphemeralSinkDefinition {
  * advances. Ephemeral callbacks are best-effort and are only processed after the
  * durable prefix at their anchor sequence has been projected.
  */
-export interface EDASink {
+interface EDASinkOptions {
   readonly name: string;
-  readonly durable?: EDADurableSinkDefinition;
   readonly ephemeral?: EDAEphemeralSinkDefinition;
 }
 
+/** Existing consumers receive framework and app projections unless explicitly opted out. */
+export interface EDAProjectedSink extends EDASinkOptions {
+  readonly state?: "projected";
+  readonly durable?: EDAProjectedDurableSinkDefinition;
+}
+
+/** Raw consumers retain only their cursor and sink-owned checkpoint payload. */
+export interface EDARawSink extends EDASinkOptions {
+  readonly state: "none";
+  readonly durable?: EDARawDurableSinkDefinition;
+}
+
+/** The outer discriminant preserves contextual callback typing for inline default sinks. */
+export type EDASink = EDAProjectedSink | EDARawSink;
+
+/** Projected and raw overloads preserve contextual callback inference and literal names. */
+function makeSink<const Sink extends EDAProjectedSink>(sink: Sink): Sink;
+function makeSink<const Sink extends EDARawSink>(sink: Sink): Sink;
+function makeSink<const Sink extends EDASink>(sink: Sink): Sink;
+function makeSink(sink: EDASink): EDASink {
+  return sink;
+}
+
 /** Convenience constructor preserving a sink's literal name/type information. */
-export const EDASink = {
-  make: <const Sink extends EDASink>(sink: Sink): Sink => sink,
-};
+export const EDASink = { make: makeSink };
 
 /** Session-owned capabilities needed to start all registered sink runners. */
 export interface EDASinkRunnerStartInput {
@@ -161,8 +203,7 @@ export class EDASinkRegistry extends Context.Service<EDASinkRegistry, EDASinkReg
 const defaultBatchSize = 100;
 const sinkCheckpointFormatVersion = 1;
 
-interface DurableRunnerState {
-  readonly cursor: SequenceNumber;
+interface SinkProjection {
   readonly reduced: ReducedState;
   readonly reducerStates: EDAReducerStateSnapshot;
 }
@@ -217,22 +258,24 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
       const checkpointRef = yield* SynchronizedRef.make(storedCheckpoint);
       const checkpoint = makeSinkCheckpoint(checkpointStore, sinkName, checkpointRef);
       const cursor = storedCheckpoint.afterSeq;
+      const cursorRef = yield* Ref.make(cursor);
       if (cursor > initialHead) {
         return yield* new EDASessionStoreError({
           message: `Sink ${sink.name} cursor exceeds session head`,
         });
       }
       // Keep only an exact projection seed; lagging workers reconstruct in their own scope.
-      const state = yield* Ref.make<DurableRunnerState | undefined>(
-        cursor === initialHead
-          ? {
-              cursor,
-              reduced: initialProjection.reduced,
-              reducerStates: initialProjection.reducerStates,
-            }
-          : cursor === 0
-            ? { cursor, reduced: initialReducedState, reducerStates: reducerRegistry.initial }
-            : undefined,
+      const state = yield* Ref.make<SinkProjection | undefined>(
+        sink.state === "none"
+          ? undefined
+          : cursor === initialHead
+            ? {
+                reduced: initialProjection.reduced,
+                reducerStates: initialProjection.reducerStates,
+              }
+            : cursor === 0
+              ? { reduced: initialReducedState, reducerStates: reducerRegistry.initial }
+              : undefined,
       );
       const inbox = yield* makeSinkInbox(initialHead).pipe(Scope.provide(scope));
       deliveries.push({ sink, inbox });
@@ -243,13 +286,11 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
           Stream.takeWhile((event) => event.position.seq <= cursor),
           Stream.chunks,
           Stream.runFold(
-            (): DurableRunnerState => ({
-              cursor,
+            (): SinkProjection => ({
               reduced: initialReducedState,
               reducerStates: reducerRegistry.initial,
             }),
-            (current, page): DurableRunnerState => ({
-              cursor,
+            (current, page): SinkProjection => ({
               reduced: foldReducedState(current.reduced, page),
               reducerStates: reducerRegistry.reduce(current.reducerStates, page),
             }),
@@ -279,8 +320,8 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
           return;
         }
 
-        const current = yield* ensureProjection();
-        const fresh = allEvents.filter((entry) => entry.position.seq > current.cursor);
+        const currentCursor = yield* Ref.get(cursorRef);
+        const fresh = allEvents.filter((entry) => entry.position.seq > currentCursor);
         if (fresh.length === 0) {
           return;
         }
@@ -289,36 +330,54 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
         const last = fresh.at(-1);
         if (last === undefined) return;
         const throughSeq = last.position.seq;
-        const nextReduced = foldReducedState(current.reduced, fresh);
-        const nextReducerStates = reducerRegistry.reduce(current.reducerStates, fresh);
+        const nextProjection =
+          sink.state === "none"
+            ? undefined
+            : yield* Effect.gen(function* () {
+                const current = yield* ensureProjection();
+                return {
+                  reduced: foldReducedState(current.reduced, fresh),
+                  reducerStates: reducerRegistry.reduce(current.reducerStates, fresh),
+                };
+              });
         const eventsForSink =
           durable === undefined ? [] : filterInterested(fresh, durable.interests);
 
         if (durable !== undefined && eventsForSink.length > 0) {
           yield* Effect.gen(function* () {
             const staged: Array<DurableEventEnvelope> = [];
-            const completed = yield* durable
-              .process(
+            const rawBatch: EDASinkRawDurableBatch = {
+              allEvents: fresh,
+              events: eventsForSink,
+              throughSeq,
+            };
+            const context = baseContext(staged, publishEphemeral, scope, checkpoint);
+            const delivery = Effect.gen(function* () {
+              if (sink.durable === undefined) return;
+              if (sink.state === "none") return yield* sink.durable.process(rawBatch, context);
+              // The projected branch owns both construction and delivery of these fields.
+              if (nextProjection === undefined)
+                return yield* Effect.die("Projected sink missing its projection");
+              return yield* sink.durable.process(
                 {
-                  allEvents: fresh,
-                  events: eventsForSink,
-                  stateAfter: nextReduced,
-                  reducerStates: nextReducerStates,
-                  throughSeq,
+                  ...rawBatch,
+                  stateAfter: nextProjection.reduced,
+                  reducerStates: nextProjection.reducerStates,
                 },
-                baseContext(staged, publishEphemeral, scope, checkpoint),
-              )
-              .pipe(
-                Effect.as(true),
-                Effect.catchCause((cause) =>
-                  Cause.hasInterruptsOnly(cause)
-                    ? Effect.failCause(cause)
-                    : Effect.logError("EDA durable sink violated its infallible contract", {
-                        cause: Cause.pretty(cause),
-                        sink: sink.name,
-                      }).pipe(Effect.as(false)),
-                ),
+                context,
               );
+            });
+            const completed = yield* delivery.pipe(
+              Effect.as(true),
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.failCause(cause)
+                  : Effect.logError("EDA durable sink violated its infallible contract", {
+                      cause: Cause.pretty(cause),
+                      sink: sink.name,
+                    }).pipe(Effect.as(false)),
+              ),
+            );
             if (completed && staged.length > 0) {
               yield* annotateEdaSpan({ "eda.sink.staged_events": staged.length });
               yield* appendDurableBatch(staged);
@@ -327,7 +386,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
             Effect.withSpan("agent.sink.drain", {
               attributes: {
                 "eda.sink.name": sink.name,
-                "eda.sink.cursor.before": current.cursor,
+                "eda.sink.cursor.before": currentCursor,
                 "eda.sink.events.read": fresh.length,
                 "eda.sink.events.interested": eventsForSink.length,
                 "eda.sink.cursor.after": throughSeq,
@@ -337,19 +396,16 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
         }
 
         yield* commitSinkCheckpoint(checkpointStore, sinkName, checkpointRef, throughSeq);
-        yield* Ref.set(state, {
-          cursor: throughSeq,
-          reduced: nextReduced,
-          reducerStates: nextReducerStates,
-        });
+        yield* Ref.set(cursorRef, throughSeq);
+        yield* Ref.set(state, nextProjection);
       });
 
       const drainDurablesThrough = Effect.fnUntraced(function* (targetHead: SequenceNumber) {
-        const current = yield* ensureProjection();
-        if (current.cursor >= targetHead) return;
+        const currentCursor = yield* Ref.get(cursorRef);
+        if (currentCursor >= targetHead) return;
         const allEvents = yield* readCursorBatchThrough(
           store,
-          current.cursor,
+          currentCursor,
           targetHead,
           sink.durable?.batchSize,
         );
@@ -363,7 +419,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
 
       const processEphemeral = Effect.fnUntraced(function* (event: PositionedEvent) {
         if (sink.ephemeral === undefined) return;
-        yield* ensureProjection();
+        if (sink.state !== "none") yield* ensureProjection();
         yield* sink.ephemeral
           .process(event, baseContext([], publishEphemeral, scope, checkpoint))
           .pipe(
@@ -380,8 +436,8 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
 
       const runLoop = Effect.forever(
         Effect.gen(function* () {
-          const current = yield* Ref.get(state);
-          const work = yield* inbox.poll(current?.cursor ?? cursor);
+          const currentCursor = yield* Ref.get(cursorRef);
+          const work = yield* inbox.poll(currentCursor);
           if (work === undefined) {
             yield* inbox.awaitWork;
             return;
@@ -407,7 +463,14 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
 
       return {
         runLoop,
-        initialization: cursor === initialHead ? "reused" : cursor > 0 ? "deferred" : "empty",
+        initialization:
+          sink.state === "none"
+            ? "raw"
+            : cursor === initialHead
+              ? "reused"
+              : cursor > 0
+                ? "deferred"
+                : "empty",
       };
     });
 
@@ -423,6 +486,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
             concurrency: 1,
           });
           yield* Effect.annotateCurrentSpan({
+            "eda.sinks.raw": runners.filter((runner) => runner.initialization === "raw").length,
             "eda.sinks.reused": runners.filter((runner) => runner.initialization === "reused")
               .length,
             "eda.sinks.deferred": runners.filter((runner) => runner.initialization === "deferred")
@@ -594,11 +658,12 @@ const readCursorBatchThrough = (
 
 const filterInterested = (
   events: ReadonlyArray<CommittedDurableEvent>,
-  interests: ReadonlyArray<EventType | string> | undefined,
+  interests: EDASinkInterests | undefined,
 ): ReadonlyArray<CommittedDurableEvent> =>
   events.filter((event) => matchesInterest(event.event.type, interests));
 
 const matchesInterest = (
   type: EventType | string,
-  interests: ReadonlyArray<EventType | string> | undefined,
-): boolean => interests === undefined || interests.some((interest) => interest === type);
+  interests: EDASinkInterests | undefined,
+): boolean =>
+  interests === undefined || interests === "*" || interests.some((interest) => interest === type);
