@@ -42,7 +42,6 @@ import { EDASinkName, SinkCheckpointStore } from "./sink-checkpoint-store";
 import {
   EDASinkRegistry,
   type EDASink,
-  type EDASinkContext,
   type EDASinkDurableBatch,
   type EDASinkRawDurableBatch,
 } from "./sink-registry";
@@ -153,8 +152,8 @@ describe("paged sink startup replay", () => {
           const name = EDASinkName.make(`raw.${cursor}`);
           const sink: EDASink = {
             name,
+            state: "none",
             durable: {
-              state: "none",
               interests: "*",
               batchSize: 16,
               process: (batch) =>
@@ -546,7 +545,7 @@ describe("paged sink startup replay", () => {
             {
               name: "writer",
               durable: {
-                process: (_, ctx: EDASinkContext) =>
+                process: (_, ctx) =>
                   Effect.gen(function* () {
                     if (!appended) {
                       appended = true;

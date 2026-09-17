@@ -96,13 +96,11 @@ interface EDADurableSinkOptions {
 
 /** Default durable consumer with framework and app projections at each cursor window. */
 export interface EDAProjectedDurableSinkDefinition extends EDADurableSinkOptions {
-  readonly state?: "projected";
   readonly process: (batch: EDASinkDurableBatch, ctx: EDASinkContext) => Effect.Effect<void, never>;
 }
 
 /** Raw consumer that never hydrates, folds, or retains a session projection. */
 export interface EDARawDurableSinkDefinition extends EDADurableSinkOptions {
-  readonly state: "none";
   readonly process: (
     batch: EDASinkRawDurableBatch,
     ctx: EDASinkContext,
@@ -110,9 +108,7 @@ export interface EDARawDurableSinkDefinition extends EDADurableSinkOptions {
 }
 
 /** Durable sink definition backed by a checkpoint and an app-owned delivery policy. */
-export type EDADurableSinkDefinition =
-  | EDAProjectedDurableSinkDefinition
-  | EDARawDurableSinkDefinition;
+export type EDADurableSinkDefinition = EDAProjectedDurableSinkDefinition;
 
 /** Best-effort live-only sink definition. */
 export interface EDAEphemeralSinkDefinition {
@@ -129,19 +125,29 @@ export interface EDAEphemeralSinkDefinition {
  * advances. Ephemeral callbacks are best-effort and are only processed after the
  * durable prefix at their anchor sequence has been projected.
  */
-export interface EDASink {
+interface EDASinkOptions {
   readonly name: string;
-  readonly durable?: EDADurableSinkDefinition;
   readonly ephemeral?: EDAEphemeralSinkDefinition;
 }
 
+/** Existing consumers receive framework and app projections unless explicitly opted out. */
+export interface EDAProjectedSink extends EDASinkOptions {
+  readonly state?: "projected";
+  readonly durable?: EDAProjectedDurableSinkDefinition;
+}
+
+/** Raw consumers retain only their cursor and sink-owned checkpoint payload. */
+export interface EDARawSink extends EDASinkOptions {
+  readonly state: "none";
+  readonly durable?: EDARawDurableSinkDefinition;
+}
+
+/** The outer discriminant preserves contextual callback typing for inline default sinks. */
+export type EDASink = EDAProjectedSink | EDARawSink;
+
 /** Projected and raw overloads preserve contextual callback inference and literal names. */
-function makeSink<
-  const Sink extends EDASink & { readonly durable?: EDAProjectedDurableSinkDefinition },
->(sink: Sink): Sink;
-function makeSink<const Sink extends EDASink & { readonly durable: EDARawDurableSinkDefinition }>(
-  sink: Sink,
-): Sink;
+function makeSink<const Sink extends EDAProjectedSink>(sink: Sink): Sink;
+function makeSink<const Sink extends EDARawSink>(sink: Sink): Sink;
 function makeSink<const Sink extends EDASink>(sink: Sink): Sink;
 function makeSink(sink: EDASink): EDASink {
   return sink;
@@ -260,7 +266,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
       }
       // Keep only an exact projection seed; lagging workers reconstruct in their own scope.
       const state = yield* Ref.make<SinkProjection | undefined>(
-        sink.durable?.state === "none"
+        sink.state === "none"
           ? undefined
           : cursor === initialHead
             ? {
@@ -325,7 +331,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
         if (last === undefined) return;
         const throughSeq = last.position.seq;
         const nextProjection =
-          durable?.state === "none"
+          sink.state === "none"
             ? undefined
             : yield* Effect.gen(function* () {
                 const current = yield* ensureProjection();
@@ -347,11 +353,12 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
             };
             const context = baseContext(staged, publishEphemeral, scope, checkpoint);
             const delivery = Effect.gen(function* () {
-              if (durable.state === "none") return yield* durable.process(rawBatch, context);
+              if (sink.durable === undefined) return;
+              if (sink.state === "none") return yield* sink.durable.process(rawBatch, context);
               // The projected branch owns both construction and delivery of these fields.
               if (nextProjection === undefined)
                 return yield* Effect.die("Projected sink missing its projection");
-              return yield* durable.process(
+              return yield* sink.durable.process(
                 {
                   ...rawBatch,
                   stateAfter: nextProjection.reduced,
@@ -412,7 +419,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
 
       const processEphemeral = Effect.fnUntraced(function* (event: PositionedEvent) {
         if (sink.ephemeral === undefined) return;
-        if (sink.durable?.state !== "none") yield* ensureProjection();
+        if (sink.state !== "none") yield* ensureProjection();
         yield* sink.ephemeral
           .process(event, baseContext([], publishEphemeral, scope, checkpoint))
           .pipe(
@@ -457,7 +464,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
       return {
         runLoop,
         initialization:
-          sink.durable?.state === "none"
+          sink.state === "none"
             ? "raw"
             : cursor === initialHead
               ? "reused"

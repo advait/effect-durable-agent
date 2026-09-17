@@ -4,7 +4,7 @@ All notable changes to Effect Durable Agent will be documented in this file.
 
 ## 0.1.0-alpha.15
 
-- Add `durable.state: "none"` for raw consumers: no sink projection hydration, folding,
+- Add `state: "none"` for raw consumers: no sink projection hydration, folding,
   or retention, with the same ordered delivery and checkpoint protocol.
 - Add explicit `interests: "*"` for durable and ephemeral consumers. Omission still
   selects all event types; existing projected sinks and persisted cursors are unchanged.
