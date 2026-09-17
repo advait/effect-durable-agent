@@ -2,6 +2,15 @@
 
 All notable changes to Effect Durable Agent will be documented in this file.
 
+## 0.1.0-alpha.14
+
+- Defer lagging sink projection hydration until delivery. Caught-up sinks reuse the
+  session projection; historical reconstruction is serialized across sink workers.
+- Replace unbounded sink subscriptions with coalesced durable heads and bounded
+  best-effort ephemeral inboxes, preserving position order and durable checkpoints.
+- Add a sink hydration span and report deferred initialization counts. Existing
+  event and checkpoint storage formats remain compatible; no migration is required.
+
 ## 0.1.0-alpha.13
 
 - Add two aggregate startup spans for session hydration and sink initialization,

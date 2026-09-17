@@ -674,16 +674,12 @@ const makeLiveSessionState = Effect.gen(function* () {
           ephemeral: { anchorSeq: head, lastSubSeq: nextSubSeq },
         });
         yield* liveBus.publish(positioned);
+        yield* sinkRegistry.publishEphemeralToSinks(positioned);
         return positioned;
       }),
     );
 
-  const publishEphemeral = (event: EphemeralEventEnvelope) =>
-    Effect.gen(function* () {
-      const positioned = yield* publishEphemeralCore(event);
-      yield* sinkRegistry.publishEphemeralToSinks(positioned, publishEphemeralCore);
-      return positioned;
-    });
+  const publishEphemeral = publishEphemeralCore;
 
   const wakeAfterCommandAdmission = () => Queue.offer(ingressSignals, undefined);
 
