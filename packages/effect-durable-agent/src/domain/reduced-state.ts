@@ -1,4 +1,5 @@
 import { RunSchedulingRequest, RunSchedulingRequestRecord } from "./run-scheduling";
+import { interpretLegacyAttemptForReduction } from "../types/events/durable";
 import * as Schema from "effect/Schema";
 import type * as Prompt from "effect/unstable/ai/Prompt";
 import { addModelUsage, TokenConsumptionState } from "./model-usage";
@@ -817,7 +818,7 @@ export const foldReducedState = (
 
   for (const entry of committed) {
     lastSeq = entry.position.seq;
-    const { event } = entry;
+    const event = interpretLegacyAttemptForReduction(entry.event);
     if (event.namespace !== effectDurableAgentNamespace) {
       continue;
     }
