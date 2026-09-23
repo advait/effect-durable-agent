@@ -909,8 +909,102 @@ export const BaseStateEvent = Schema.Union([
 ]);
 export type BaseStateEvent = typeof BaseStateEvent.Type;
 
-/** Built-in durable event union for framework-owned session facts. */
+/** Retained pre-inference lifecycle facts. Attempt identities remain unchanged in storage and on wire. */
+export const LegacyTurnAttemptStartedEvent = durableEventSchema(
+  makeEventType("TurnAttemptStarted"),
+  Schema.Struct({ runId: RunId, turnId: TurnId, attemptId: InferenceId }),
+);
+
+/** A successful historical provider request; multiple attempts can belong to one historical turn. */
+export const LegacyTurnAttemptCompletedEvent = durableEventSchema(
+  makeEventType("TurnAttemptCompleted"),
+  Schema.Struct({
+    runId: RunId,
+    turnId: TurnId,
+    attemptId: InferenceId,
+    finishReason: Schema.optionalKey(Schema.String),
+    usage: Schema.optionalKey(UsagePayload),
+    responseMetadata: Schema.optionalKey(Schema.Unknown),
+    finishMetadata: Schema.optionalKey(Schema.Unknown),
+  }),
+);
+
+/** Historical assistant content links to the original attempt rather than a renamed event. */
+export const LegacyAssistantMessageCommittedEvent = durableEventSchema(
+  assistantMessageCommittedEventType,
+  Schema.Struct({
+    messageId: MessageId,
+    runId: RunId,
+    turnId: TurnId,
+    attemptId: InferenceId,
+    promptParts: AssistantPromptParts,
+  }),
+);
+
+/** Historical tool decisions retain their attempt and turn references during replay. */
+export const LegacyToolCallCreatedEvent = durableEventSchema(
+  toolCallCreatedEventType,
+  Schema.Struct({
+    runId: RunId,
+    turnId: TurnId,
+    attemptId: InferenceId,
+    toolCallId: ToolCallId,
+    promptPart: ToolCallPromptPart,
+  }),
+);
+
+/** Explicitly supported historical shapes; unknown event types and versions remain errors. */
+export const LegacyAttemptEvent = Schema.Union([
+  LegacyTurnAttemptStartedEvent,
+  LegacyTurnAttemptCompletedEvent,
+  LegacyAssistantMessageCommittedEvent,
+  LegacyToolCallCreatedEvent,
+]);
+
+/**
+ * Interprets retained attempt references solely for domain folding. It never changes the stored
+ * envelope, stream position, or wire event. Historical turns retain all of their attempts;
+ * this deliberately does not split turns or manufacture lifecycle events.
+ */
+export const interpretLegacyAttemptForReduction = (
+  event: DurableEventEnvelope,
+): DurableEventEnvelope => {
+  if (event.namespace !== effectDurableAgentNamespace) return event;
+  if (event.type === "TurnAttemptStarted") {
+    const legacy = Schema.decodeUnknownSync(LegacyTurnAttemptStartedEvent)(event);
+    return {
+      ...legacy,
+      type: inferenceStartedEventType,
+      payload: { ...legacy.payload, inferenceId: legacy.payload.attemptId },
+    };
+  }
+  if (event.type === "TurnAttemptCompleted") {
+    const legacy = Schema.decodeUnknownSync(LegacyTurnAttemptCompletedEvent)(event);
+    return {
+      ...legacy,
+      type: inferenceCompletedEventType,
+      payload: { ...legacy.payload, inferenceId: legacy.payload.attemptId },
+    };
+  }
+  if (
+    (event.type === assistantMessageCommittedEventType ||
+      event.type === toolCallCreatedEventType) &&
+    typeof event.payload === "object" &&
+    event.payload !== null &&
+    "attemptId" in event.payload &&
+    !("inferenceId" in event.payload)
+  ) {
+    const legacy = Schema.decodeUnknownSync(
+      Schema.Union([LegacyAssistantMessageCommittedEvent, LegacyToolCallCreatedEvent]),
+    )(event);
+    return { ...legacy, payload: { ...legacy.payload, inferenceId: legacy.payload.attemptId } };
+  }
+  return event;
+};
+
+/** Built-in durable event union for framework-owned session facts, including retained historical schemas. */
 export const EDADurableEvent = Schema.Union([
+  LegacyAttemptEvent,
   SessionConfiguredEvent,
   RunSchedulingEvent,
   CommandEvent,
@@ -941,7 +1035,9 @@ export const decodeUnknownEDADurableEventSync = (input: unknown): EDADurableEven
 
   switch (envelope.schemaVersion) {
     case schemaV1:
-      return Schema.decodeUnknownSync(EDADurableEventV1)(envelope);
+      return Schema.decodeUnknownSync(EDADurableEventV1)(envelope, {
+        onExcessProperty: "preserve",
+      });
     default:
       throw new Error(
         `Unsupported EDA durable event schemaVersion ${envelope.schemaVersion} for ${envelope.type}`,
