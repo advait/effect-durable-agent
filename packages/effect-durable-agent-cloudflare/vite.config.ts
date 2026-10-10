@@ -20,7 +20,7 @@ export default defineConfig({
       index: "src/index.ts",
       "durable-object": "src/durable-object.ts",
       openai: "src/providers/openai.ts",
-      rpc: "src/rpc-codec.ts",
+      rpc: "src/rpc.ts",
       "session-controller": "src/session-controller.ts",
       storage: "src/durable-object-storage.ts",
     },

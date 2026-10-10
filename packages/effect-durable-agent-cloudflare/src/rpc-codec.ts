@@ -19,14 +19,15 @@ export const encodeEdaRpcDurableEvent = (event: DurableEventEnvelope): DurableEv
   return Schema.decodeUnknownSync(DurableEventEnvelope)(encoded);
 };
 
-const EDARpcSubmittable = Schema.Union([EDACommand, DurableEventEnvelope]);
+export const EDARpcSubmittable = Schema.Union([EDACommand, DurableEventEnvelope]);
 
-export const encodeEdaRpcCommand = (input: EDACommand): unknown =>
+export const encodeEdaRpcCommand = (input: EDACommand): typeof EDACommand.Encoded =>
   Schema.encodeSync(EDACommand)(input);
 
 export const encodeEdaRpcSubmittables = (
   input: ReadonlyArray<EDASubmittable>,
-): ReadonlyArray<unknown> => input.map((item) => Schema.encodeSync(EDARpcSubmittable)(item));
+): ReadonlyArray<typeof EDARpcSubmittable.Encoded> =>
+  input.map((item) => Schema.encodeSync(EDARpcSubmittable)(item));
 
 export const decodeEdaRpcCommand = (
   input: unknown,

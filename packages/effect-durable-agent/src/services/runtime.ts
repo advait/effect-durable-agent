@@ -5,7 +5,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { EDACommand, GrantRunCommand } from "../types/commands";
-import { CommandId, SequenceNumber, durablePosition } from "../types/core";
+import { CommandId, DurablePosition, SequenceNumber, durablePosition } from "../types/core";
 import {
   CommandCompletedEvent,
   CommandFailedEvent,
@@ -45,9 +45,11 @@ export type EDACommandTerminalEvent =
   | CommandCancelledEvent;
 
 /** Committed durable event narrowed to a command terminal boundary. */
-export type CommittedCommandTerminalEvent = CommittedDurableEvent & {
-  readonly event: EDACommandTerminalEvent;
-};
+export const CommittedCommandTerminalEvent = Schema.Struct({
+  position: DurablePosition,
+  event: Schema.Union([CommandCompletedEvent, CommandFailedEvent, CommandCancelledEvent]),
+});
+export type CommittedCommandTerminalEvent = typeof CommittedCommandTerminalEvent.Type;
 
 /** Overloaded public submit API for single commands or ordered durable batches. */
 export interface EDARuntimeSubmit {
