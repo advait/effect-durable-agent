@@ -63,7 +63,7 @@ depends = ["lint:check"]
 [tasks."lint:check"]
 description = "Format-check and lint effect-durable-agent"
 depends = ["install"]
-run = ["pnpm exec vp fmt --check", "pnpm exec vp lint --deny-warnings"]
+run = ["pnpm exec vp fmt --check", "pnpm exec oxlint --config oxlint.config.mjs --deny-warnings"]
 sources = [
   "examples/**/*",
   "package.json",
@@ -77,7 +77,7 @@ sources = [
 [tasks."lint:fix"]
 description = "Fix effect-durable-agent formatting and lint issues"
 depends = ["install"]
-run = ["pnpm exec vp fmt", "pnpm exec vp lint --fix"]
+run = ["pnpm exec vp fmt", "pnpm exec oxlint --config oxlint.config.mjs --fix"]
 
 [tasks.typecheck]
 description = "Alias for ts:check"

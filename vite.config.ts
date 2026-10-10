@@ -7,6 +7,7 @@ import { SpanNames } from "./packages/effect-durable-agent/src/services/span-nam
 export default defineConfig({
   fmt: {
     ignorePatterns: [
+      "testing/**/*.d.ts",
       ".artifacts/**",
       "**/dist/**",
       "**/node_modules/**",
@@ -33,7 +34,6 @@ export default defineConfig({
     ],
     jsPlugins: ["./packages/effect-durable-agent/tooling/oxlint/index.mjs"],
     options: { typeAware: true },
-    // @ts-expect-error @effect/tsgo patches in this plugin, which Oxlint's generated plugin-name union omits: https://github.com/Effect-TS/tsgo/blob/main/docs/README.md
     plugins: ["typescript", "effecttsgo"],
     rules: {
       "typescript/no-explicit-any": "error",

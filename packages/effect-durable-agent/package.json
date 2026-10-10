@@ -1,6 +1,6 @@
 {
   "name": "effect-durable-agent",
-  "version": "0.1.0-alpha.18",
+  "version": "0.1.0-alpha.19",
   "description": "A host-independent, event-sourced durable state-management and execution layer for agentic applications.",
   "keywords": [
     "agents",
@@ -173,8 +173,8 @@
   "scripts": {
     "build": "vp pack",
     "check": "pnpm run lint && pnpm run typecheck",
-    "lint": "vp fmt --check src testing tooling package.json tsconfig.json vite.config.ts && vp lint --deny-warnings src testing vite.config.ts",
-    "lint:fix": "vp fmt src testing tooling package.json tsconfig.json vite.config.ts && vp lint --fix src testing vite.config.ts",
+    "lint": "vp fmt --check src testing tooling package.json tsconfig.json vite.config.ts && pnpm --dir ../.. exec oxlint --config oxlint.config.mjs --deny-warnings packages/effect-durable-agent/src packages/effect-durable-agent/testing packages/effect-durable-agent/vite.config.ts",
+    "lint:fix": "vp fmt src testing tooling package.json tsconfig.json vite.config.ts && pnpm --dir ../.. exec oxlint --config oxlint.config.mjs --fix packages/effect-durable-agent/src packages/effect-durable-agent/testing packages/effect-durable-agent/vite.config.ts",
     "prepack": "vp pack --no-publint",
     "test": "vp test run --passWithNoTests src testing/offline-trace",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -190,18 +190,18 @@
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260813.1",
     "@effect/ai-openai": "4.0.0-beta.102",
-    "@effect/tsgo": "0.31.0",
+    "@effect/tsgo": "0.39.0",
     "@effect/vitest": "4.0.0-beta.102",
     "@types/node": "^25.7.0",
     "effect": "4.0.0-beta.102",
     "esbuild": "^0.28.1",
     "fast-check": "^4.8.0",
-    "oxlint": "1.77.0",
+    "oxlint": "1.79.0",
     "oxlint-tsgolint": "7.0.2001",
     "publint": "^0.3.22",
     "tsx": "4.21.0",
-    "typescript": "^6.0.3",
-    "vite-plus": "^0.1.21",
+    "typescript": "7.0.2",
+    "vite-plus": "0.3.0",
     "vitest": "^4.1.8",
     "wrangler": "^4.114.0"
   }

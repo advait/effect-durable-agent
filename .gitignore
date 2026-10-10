@@ -9,3 +9,4 @@ node_modules/
 .env.*
 !.dev.vars.example
 !.env.example
+testing/**/*.d.ts
