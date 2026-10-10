@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { ReducedStateSchema, MessageRecordSchema } from "../domain/reduced-state-schema";
+import { ReducedStateSchema, QueryMessageRecordSchema } from "../domain/reduced-state-schema";
 import { durableEventEnvelope } from "../types/events/durable";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -22,10 +22,10 @@ import { annotateEdaSpan } from "./tracing";
 /** Authoritative live snapshot for one EDA session plus its derived durable transcript. */
 export const DurableTranscriptMessages = Schema.Array(
   Schema.Union([
-    MessageRecordSchema.members[1],
-    MessageRecordSchema.members[3],
-    MessageRecordSchema.members[4],
-    Schema.Struct({ ...MessageRecordSchema.members[2].fields, consumedSeq: SequenceNumber }),
+    QueryMessageRecordSchema.members[1],
+    QueryMessageRecordSchema.members[3],
+    QueryMessageRecordSchema.members[4],
+    Schema.Struct({ ...QueryMessageRecordSchema.members[2].fields, consumedSeq: SequenceNumber }),
   ]),
 );
 export const EDASessionSnapshot = Schema.Struct({

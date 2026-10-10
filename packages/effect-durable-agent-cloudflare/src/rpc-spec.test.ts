@@ -5,7 +5,13 @@ import * as Schema from "effect/Schema";
 import { initialReducedState } from "effect-durable-agent/domain/reduced-state";
 import { EDASessionSnapshot } from "effect-durable-agent/services/session-query";
 import { SubmitMessageCommand, EDACommand } from "effect-durable-agent/types/commands";
-import { CommandId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
+import {
+  CommandId,
+  MessageId,
+  RunId,
+  SequenceNumber,
+  SessionId,
+} from "effect-durable-agent/types/core";
 import { makeRootEDATraceMetadata } from "effect-durable-agent/types/tracing";
 import { edaSessionRpc } from "./rpc-spec";
 
@@ -39,19 +45,78 @@ describe("deployed EDA RPC formats", () => {
         command,
         admittedSeq: SequenceNumber.make(1),
       };
+      const messageId = MessageId.make("018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6b");
+      const runId = RunId.make("018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6c");
+      const content = [
+        Prompt.textPart({ text: "first", options: { provider: { marker: true } } }),
+        Prompt.textPart({ text: "second" }),
+      ];
+      const files = [
+        ...content,
+        Prompt.filePart({
+          mediaType: "application/octet-stream",
+          data: new Uint8Array([1, 2, 255]),
+        }),
+        Prompt.filePart({
+          mediaType: "text/plain",
+          data: "data:text/plain;base64,aGlzdG9yaWNhbA==",
+        }),
+      ];
+      const user = {
+        _tag: "User",
+        messageId,
+        commandId: command.commandId,
+        content,
+        seq: SequenceNumber.make(1),
+      } satisfies (typeof EDASessionSnapshot.Type.messages)[number];
+      const steering = {
+        _tag: "Steering",
+        messageId,
+        commandId: command.commandId,
+        runId,
+        content: files,
+        seq: SequenceNumber.make(2),
+        consumedSeq: SequenceNumber.make(3),
+      } satisfies (typeof EDASessionSnapshot.Type.messages)[number];
+      const queued = {
+        messageId,
+        commandId: command.commandId,
+        content,
+        submittedSeq: SequenceNumber.make(1),
+        effectiveSeq: SequenceNumber.make(1),
+        disposition: "queue",
+      } satisfies (typeof EDASessionSnapshot.Type.state.commandQueues.pendingQueue)[number];
       const snapshot: EDASessionSnapshot = {
         state: {
           ...initialReducedState,
           commands: new Map([[command.commandId, pending]]),
+          messages: new Map([[messageId, steering]]),
           commandQueues: {
             ...initialReducedState.commandQueues,
             active: undefined,
             pendingCommands: [pending],
             queuedCommands: [pending],
+            pendingQueue: [queued],
+            pendingSteers: [{ ...queued, content: files, disposition: "steer" }],
+            pausedQueue: [queued],
+            steeringByRun: new Map([
+              [
+                runId,
+                [
+                  {
+                    messageId,
+                    commandId: command.commandId,
+                    runId,
+                    content: files,
+                    queuedSeq: SequenceNumber.make(2),
+                  },
+                ],
+              ],
+            ]),
           },
         },
         reducerStates: new Map([["gia.persisted", { version: 1, facts: ["historical"] }]]),
-        messages: [],
+        messages: [user, steering],
       };
       const carrier = { ...pending, command: Schema.encodeSync(EDACommand)(command) };
       const oldWire = {
@@ -68,6 +133,7 @@ describe("deployed EDA RPC formats", () => {
         },
       };
       const encoded = Schema.encodeSync(edaSessionRpc.snapshot.output)(snapshot);
+      assert.deepEqual(encoded, oldWire);
       assert.deepEqual(structuredClone(encoded), structuredClone(oldWire));
       const decoded = Schema.decodeUnknownSync(edaSessionRpc.snapshot.output)(
         structuredClone(oldWire),
@@ -77,6 +143,16 @@ describe("deployed EDA RPC formats", () => {
         SubmitMessageCommand,
       );
       assert.deepEqual(decoded.reducerStates, snapshot.reducerStates);
+      assert.deepEqual(decoded.messages, snapshot.messages);
+      assert.deepEqual(decoded.state.messages, snapshot.state.messages);
+      assert.deepEqual(
+        decoded.state.commandQueues.pendingQueue,
+        snapshot.state.commandQueues.pendingQueue,
+      );
+      assert.deepEqual(
+        structuredClone(Schema.encodeSync(edaSessionRpc.messages.output)(snapshot.messages)),
+        structuredClone(snapshot.messages),
+      );
       assert.throws(() =>
         Schema.decodeUnknownSync(edaSessionRpc.snapshot.output)({
           ...oldWire,

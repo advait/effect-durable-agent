@@ -354,6 +354,21 @@ export const MessageRecordSchema = messageRecordSchema(
   ]),
 );
 
+/** Lossless structured-clone query content; admission string transforms do not apply. */
+export const QueryUserMessageContent = Schema.toType(UserMessageContent);
+
+export const QueryMessageRecordSchema = messageRecordSchema(
+  QueryUserMessageContent,
+  Schema.Union([
+    Schema.toType(PromptTextPart),
+    Schema.toType(PromptFilePart),
+    Schema.toType(PromptReasoningPart),
+    Schema.toType(PromptToolCallPart),
+    Schema.toType(PromptToolResultPart),
+    Schema.toType(PromptToolApprovalRequestPart),
+  ]),
+);
+
 export const JsonMessageRecordSchema = messageRecordSchema(
   JsonUserMessageContent,
   JsonAssistantMessagePart,
@@ -428,7 +443,7 @@ export const PendingSteeringMessageSchema = Schema.Struct({
   messageId: MessageId,
   commandId: CommandId,
   runId: RunId,
-  content: UserMessageContent,
+  content: QueryUserMessageContent,
   queuedSeq: SequenceNumber,
   consumedSeq: Schema.optionalKey(SequenceNumber),
   consumedTurnId: Schema.optionalKey(TurnId),
@@ -438,7 +453,7 @@ export const PendingSteeringMessageSchema = Schema.Struct({
 export const PendingUserMessageSchema = Schema.Struct({
   messageId: MessageId,
   commandId: CommandId,
-  content: UserMessageContent,
+  content: QueryUserMessageContent,
   submittedSeq: SequenceNumber,
   effectiveSeq: SequenceNumber,
   disposition: Schema.Union([Schema.Literal("queue"), Schema.Literal("steer")]),
@@ -468,8 +483,8 @@ export const ReducedStateSchema = Schema.Struct({
   recoveryContinuations: Schema.ReadonlyMap(RunId, RecoveryContinuationRecordSchema),
   turns: Schema.ReadonlyMap(TurnId, TurnRecordSchema),
   inferences: Schema.ReadonlyMap(InferenceId, InferenceRecordSchema),
-  toolCalls: Schema.ReadonlyMap(ToolCallId, ToolCallRecordSchema),
-  messages: Schema.ReadonlyMap(MessageId, MessageRecordSchema),
+  toolCalls: Schema.ReadonlyMap(ToolCallId, Schema.toType(ToolCallRecordSchema)),
+  messages: Schema.ReadonlyMap(MessageId, QueryMessageRecordSchema),
   stopRequests: Schema.ReadonlyMap(CommandId, StopRequestRecordSchema),
   compactions: Schema.ReadonlyMap(CompactionId, CompactionRecordSchema),
   context: ContextRecordSchema,
