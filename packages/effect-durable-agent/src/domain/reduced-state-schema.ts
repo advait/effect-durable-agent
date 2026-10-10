@@ -380,13 +380,6 @@ export const RecoveryContinuationRecordSchema = Schema.Struct({
   seq: SequenceNumber,
 });
 
-/** Structured-clone schema for the existing LifecycleTiming query representation. */
-export const LifecycleTimingSchema = Schema.Struct({
-  startedAtMs: Schema.optionalKey(Schema.Number),
-  terminalAtMs: Schema.optionalKey(Schema.Number),
-  durationMs: Schema.optionalKey(Schema.Number),
-});
-
 /** Structured-clone schema for the existing StopRequestRecord query representation. */
 export const StopRequestRecordSchema = Schema.Struct({
   commandId: CommandId,

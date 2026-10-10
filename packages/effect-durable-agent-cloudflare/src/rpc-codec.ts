@@ -19,6 +19,7 @@ export const encodeEdaRpcDurableEvent = (event: DurableEventEnvelope): DurableEv
   return Schema.decodeUnknownSync(DurableEventEnvelope)(encoded);
 };
 
+/** Command/application-event RPC admission union; controller validation owns admission authorization. */
 export const EDARpcSubmittable = Schema.Union([EDACommand, DurableEventEnvelope]);
 
 export const encodeEdaRpcCommand = (input: EDACommand): typeof EDACommand.Encoded =>
