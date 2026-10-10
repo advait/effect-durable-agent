@@ -415,14 +415,21 @@ export const registerAppEvents = (
 ): EDASessionStoreShape => {
   const namespaces = new Set(eventNamespaces(schema.ast));
   const decode = Schema.decodeUnknownSync(schema);
-  const decodeEntry = (entry: CommittedDurableEvent): CommittedDurableEvent => {
+  const envelopeKey = (event: DurableEventEnvelope): string =>
+    JSON.stringify(Schema.encodeSync(DurableEventEnvelope)(event));
+  const decodeEntry = (
+    entry: CommittedDurableEvent,
+    prepared?: ReadonlyMap<string, DurableEventEnvelope>,
+  ): CommittedDurableEvent => {
     if (entry.event.namespace !== "__foreign" || !namespaces.has(entry.event.envelope.namespace))
       return entry;
     return {
       ...entry,
       event: {
         ...entry.event,
-        decoded: decode(entry.event.envelope, { onExcessProperty: "preserve" }),
+        decoded:
+          prepared?.get(envelopeKey(entry.event.envelope)) ??
+          decode(entry.event.envelope, { onExcessProperty: "preserve" }),
       },
     };
   };
@@ -436,20 +443,39 @@ export const registerAppEvents = (
     });
   const decodeEntries = (entries: ReadonlyArray<CommittedDurableEvent>) =>
     Effect.forEach(entries, decodeEntryEffect);
-  const isEncodedAppEvent = Schema.is(Schema.toEncoded(schema));
   return {
     ...store,
     append: (batch) =>
       Effect.gen(function* () {
-        for (const { event } of batch.entries) {
-          if (namespaces.has(event.namespace) && !isEncodedAppEvent(event)) {
-            return yield* new EDASessionStoreError({
-              message: "Registered app event validation failed",
-            });
-          }
-        }
+        // Idempotent append can return different retained bytes for the same event id.
+        // Reuse a prepared decode only when the complete persisted envelope matches.
+        const prepared = yield* Effect.try({
+          try: () => {
+            const decoded = new Map<string, DurableEventEnvelope>();
+            for (const { event } of batch.entries) {
+              if (!namespaces.has(event.namespace)) continue;
+              const key = envelopeKey(event);
+              if (!decoded.has(key)) {
+                decoded.set(key, decode(event, { onExcessProperty: "preserve" }));
+              }
+            }
+            return decoded;
+          },
+          catch: (cause) =>
+            new EDASessionStoreError({
+              message: `Registered app event decode failed: ${String(cause)}`,
+            }),
+        });
         const committed = yield* store.append(batch);
-        return yield* decodeEntries(committed);
+        return yield* Effect.forEach(committed, (entry) =>
+          Effect.try({
+            try: () => decodeEntry(entry, prepared),
+            catch: (cause) =>
+              new EDASessionStoreError({
+                message: `Registered app event decode failed: ${String(cause)}`,
+              }),
+          }),
+        );
       }),
     eventsAfter: (seq) => store.eventsAfter(seq).pipe(Stream.mapEffect(decodeEntryEffect)),
     loadCommittedEventsBySeq: (seqs) =>
