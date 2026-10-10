@@ -1,3 +1,4 @@
+import { ReducedStateSchema } from "./reduced-state-schema";
 import { RunSchedulingRequest, RunSchedulingRequestRecord } from "./run-scheduling";
 import { interpretLegacyAttemptForReduction } from "../types/events/durable";
 import * as Schema from "effect/Schema";
@@ -6,7 +7,7 @@ import { addModelUsage, TokenConsumptionState } from "./model-usage";
 export { type TokenUsageTotals, TokenConsumptionState } from "./model-usage";
 
 import { assertNever } from "./assert-never";
-import { deriveCommandQueues, emptyCommandQueues, type CommandQueues } from "./command-queues";
+import { deriveCommandQueues, emptyCommandQueues } from "./command-queues";
 import {
   InferenceId,
   CommandId,
@@ -345,28 +346,7 @@ export type ActiveTurnIdentity = {
 };
 
 /** Canonical durable replay product used by queries, recovery, and scheduling. */
-export interface ReducedState {
-  /** Single current authorization reservation; absent after grant or invalidation. */
-  readonly runSchedulingRequest?: RunSchedulingRequestRecord;
-  /** Session execution policy established by configuration or the first historical run. */
-  readonly modelSelection?: ModelSelectionPayload;
-  readonly lastSeq: SequenceNumber;
-  readonly commands: ReadonlyMap<CommandId, CommandRecord>;
-  readonly runs: ReadonlyMap<RunId, RunRecord>;
-  /** Explicit startup-recovery links keyed by replacement physical run id. */
-  readonly recoveryContinuations: ReadonlyMap<RunId, RecoveryContinuationRecord>;
-  readonly turns: ReadonlyMap<TurnId, TurnRecord>;
-  readonly inferences: ReadonlyMap<InferenceId, InferenceRecord>;
-  readonly toolCalls: ReadonlyMap<ToolCallId, ToolCallRecord>;
-  readonly messages: ReadonlyMap<MessageId, MessageRecord>;
-  readonly stopRequests: ReadonlyMap<CommandId, StopRequestRecord>;
-  readonly compactions: ReadonlyMap<CompactionId, CompactionRecord>;
-  readonly context: ContextRecord;
-  /** Rolling model-token usage totals derived from completed provider inferences. */
-  readonly tokenConsumption: TokenConsumptionState;
-  /** Materialized scheduler queues derived from the maps above after every fold. */
-  readonly commandQueues: CommandQueues;
-}
+export type ReducedState = typeof ReducedStateSchema.Type;
 
 /** Durable recovery continuation plus the sequence of its completion barrier. */
 export interface RecoveryContinuationRecord extends RecoveryContinuation {

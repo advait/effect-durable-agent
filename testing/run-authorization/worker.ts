@@ -1,3 +1,4 @@
+import { EDASessionSnapshot } from "effect-durable-agent/services/session-query";
 import { DurableObject } from "cloudflare:workers";
 import { timingSafeEqual } from "node:crypto";
 import * as Effect from "effect/Effect";
@@ -38,7 +39,9 @@ export class AuthorizationSession extends EDASessionDurableObject<RunAuthorizati
     const read = () => super.snapshot(input);
     return Effect.runPromise(
       Effect.gen(function* () {
-        const { state } = yield* Effect.promise(read);
+        const { state } = yield* Schema.decodeUnknownEffect(EDASessionSnapshot)(
+          yield* Effect.promise(read),
+        );
         return {
           lastSeq: state.lastSeq,
           ...(state.runSchedulingRequest === undefined

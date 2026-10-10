@@ -2,6 +2,13 @@
 
 All notable changes to Effect Durable Agent will be documented in this file.
 
+## 0.1.0-alpha.18
+
+- Derive Cloudflare session RPC inputs and outputs from runtime Schemas. Encode command
+  classes before transport and decode committed events, terminal events, and Map-based
+  snapshots at caller boundaries. Existing structured-clone shapes and durable formats
+  remain unchanged.
+
 ## 0.1.0-alpha.17
 
 - Retain typed framework facts after store decode and register application events once

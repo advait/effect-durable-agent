@@ -5,3 +5,5 @@ export * from "./rpc-codec";
 export * from "./runtime/runtime-layer";
 export * from "./session-controller";
 export * from "./websocket/projection";
+
+export * from "./rpc-spec";

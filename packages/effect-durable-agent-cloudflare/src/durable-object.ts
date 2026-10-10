@@ -1,26 +1,20 @@
+import type { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
+import { durableEventEnvelope } from "effect-durable-agent/types/events/durable";
+import { encodeEdaRpcDurableEvent } from "./rpc-codec";
+import {
+  SessionScopedInput,
+  SessionCommandInput,
+  SessionGrantRunInput,
+  SessionBatchInput,
+  SessionBlockInput,
+  SessionOutcomeInput,
+  edaSessionRpc,
+} from "./rpc-spec";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import type { DurableTranscriptMessage } from "effect-durable-agent/domain/message-transcript";
-import {
-  decodeEdaRpcCommand,
-  decodeEdaRpcSubmittables,
-  encodeEdaRpcDurableEvent,
-} from "./rpc-codec";
-import type { EDASessionSnapshot } from "effect-durable-agent/services/session-query";
-import type { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
-import type {
-  CommittedCommandTerminalEvent,
-  EDARuntimeConfig,
-} from "effect-durable-agent/services/runtime";
-import {
-  EDACommand,
-  GrantRunCommand,
-  type EDACommand as EDACommandValue,
-} from "effect-durable-agent/types/commands";
-import type { RunGrantResult, RunRequestOutcome } from "effect-durable-agent/domain/run-scheduling";
-import type { EDASubmittable } from "effect-durable-agent/services/session-state";
+import type { EDARuntimeConfig } from "effect-durable-agent/services/runtime";
 import {
   CommandId,
   RunRequestId,
@@ -42,84 +36,49 @@ import {
   EDA_WEB_SOCKET_PING_MESSAGE,
   EDA_WEB_SOCKET_PONG_MESSAGE,
 } from "effect-durable-agent/websocket";
-import { durableEventEnvelope } from "effect-durable-agent/types/events/durable";
-import type { DurableEventEnvelope } from "effect-durable-agent/types/events";
-
-/** Committed event envelope crossing the structured-clone RPC boundary. */
-type CommittedDurableEventValue = CommittedDurableEvent<DurableEventEnvelope>;
 
 export type { EDAWebSocketProjection } from "./websocket/projection";
 /** Internal Worker-to-object header selecting an app-owned WebSocket projection. */
 export const EDA_WEB_SOCKET_PROJECTION_HEADER = "x-eda-websocket-projection";
 
-/** Raw RPC shape decoded before admitting one session command. */
-export interface EDASessionCommandRpcInput {
-  readonly command: unknown;
-  readonly sessionId: string;
-  readonly trace: unknown;
-}
-
-/** Trusted Worker-to-object scheduler callback; never exposed as ordinary user ingress. */
-export interface EDASessionGrantRunRpcInput {
-  readonly command: unknown;
-  readonly sessionId: string;
-  readonly trace: unknown;
-}
-
-/** Raw RPC shape decoded before admitting a durable command/app-event batch. */
-export interface EDASessionSubmitBatchRpcInput {
-  readonly items: ReadonlyArray<unknown>;
-  readonly sessionId: string;
-  readonly trace: unknown;
-}
-
-/** Raw RPC shape for read/destroy operations that only need a session id. */
-export interface EDASessionScopedRpcInput {
-  readonly sessionId: string;
-  readonly trace: unknown;
-}
-
-/** Raw RPC shape for WebSocket event-stream upgrades with a resume cursor. */
-export interface EDASessionEventsRpcInput {
-  readonly afterSeq?: number;
-  readonly sessionId: string;
-  readonly trace: unknown;
-}
-
-/** Raw RPC shape decoded before blocking on one command terminal event. */
-export interface EDASessionBlockOnCommandRpcInput {
-  readonly afterSeq?: number;
-  readonly commandId: string;
-  readonly sessionId: string;
-  readonly trace: unknown;
-}
-
-/** Raw identity decoded at the trusted reconciliation RPC boundary. */
-export interface EDASessionRunRequestOutcomeRpcInput extends EDASessionScopedRpcInput {
-  readonly requestId: string;
-}
+/** Encoded session RPC inputs, decoded before invoking the controller. */
+export type EDASessionCommandRpcInput = typeof SessionCommandInput.Encoded;
+export type EDASessionGrantRunRpcInput = typeof SessionGrantRunInput.Encoded;
+export type EDASessionSubmitBatchRpcInput = typeof SessionBatchInput.Encoded;
+export type EDASessionScopedRpcInput = typeof SessionScopedInput.Encoded;
+export type EDASessionEventsRpcInput = EDASessionScopedRpcInput & { readonly afterSeq?: number };
+export type EDASessionBlockOnCommandRpcInput = typeof SessionBlockInput.Encoded;
+export type EDASessionRunRequestOutcomeRpcInput = typeof SessionOutcomeInput.Encoded;
 
 /** EDA RPC methods required by the session namespace helper. */
 export interface EDASessionRpcSurface {
   readonly runRequestOutcome: (
     input: EDASessionRunRequestOutcomeRpcInput,
-  ) => Promise<RunRequestOutcome>;
-  readonly grantRun: (input: EDASessionGrantRunRpcInput) => Promise<RunGrantResult>;
-  readonly submit: (input: EDASessionCommandRpcInput) => Promise<CommittedDurableEventValue>;
+  ) => Promise<typeof edaSessionRpc.runRequestOutcome.output.Encoded>;
+  readonly grantRun: (
+    input: EDASessionGrantRunRpcInput,
+  ) => Promise<typeof edaSessionRpc.grantRun.output.Encoded>;
+  readonly submit: (
+    input: EDASessionCommandRpcInput,
+  ) => Promise<typeof edaSessionRpc.submit.output.Encoded>;
   readonly submitBatch: (
     input: EDASessionSubmitBatchRpcInput,
-  ) => Promise<ReadonlyArray<CommittedDurableEventValue>>;
+  ) => Promise<typeof edaSessionRpc.submitBatch.output.Encoded>;
   readonly submitAndBlock: (
     input: EDASessionCommandRpcInput,
-  ) => Promise<CommittedCommandTerminalEvent>;
+  ) => Promise<typeof edaSessionRpc.submitAndBlock.output.Encoded>;
   readonly blockOnCommand: (
     input: EDASessionBlockOnCommandRpcInput,
-  ) => Promise<CommittedCommandTerminalEvent>;
-  readonly snapshot: (input: EDASessionScopedRpcInput) => Promise<EDASessionSnapshot>;
+  ) => Promise<typeof edaSessionRpc.blockOnCommand.output.Encoded>;
+  readonly snapshot: (
+    input: EDASessionScopedRpcInput,
+  ) => Promise<typeof edaSessionRpc.snapshot.output.Encoded>;
   readonly messages: (
     input: EDASessionScopedRpcInput,
-  ) => Promise<ReadonlyArray<DurableTranscriptMessage>>;
-  readonly destroySession: (input: EDASessionScopedRpcInput) => Promise<void>;
+  ) => Promise<typeof edaSessionRpc.messages.output.Encoded>;
+  readonly destroySession: (
+    input: EDASessionScopedRpcInput,
+  ) => Promise<typeof edaSessionRpc.destroySession.output.Encoded>;
 }
 
 /** Constructor options for concrete app subclasses of the EDA Durable Object base. */
@@ -218,9 +177,12 @@ export abstract class EDASessionDurableObject<
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  async submit(input: EDASessionCommandRpcInput): Promise<CommittedDurableEventValue> {
+  async submit(
+    raw: typeof SessionCommandInput.Encoded,
+  ): Promise<typeof edaSessionRpc.submit.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionCommandInput)(raw);
     const committed = await this.#controller.submit({
-      command: await decodeCommand(input.command),
+      command: input.command,
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
     });
@@ -228,72 +190,89 @@ export abstract class EDASessionDurableObject<
   }
 
   /** Reconcile lost grant replies from durable request and run facts. */
-  async runRequestOutcome(input: EDASessionRunRequestOutcomeRpcInput): Promise<RunRequestOutcome> {
-    return await this.#controller.runRequestOutcome({
+  async runRequestOutcome(
+    raw: typeof SessionOutcomeInput.Encoded,
+  ): Promise<typeof edaSessionRpc.runRequestOutcome.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionOutcomeInput)(raw);
+    const result = await this.#controller.runRequestOutcome({
       requestId: Schema.decodeUnknownSync(RunRequestId)(input.requestId),
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
     });
+    return Schema.encodeSync(edaSessionRpc.runRequestOutcome.output)(result);
   }
 
   /** Trusted RPC only: the calling Worker owns scheduler authentication and authorization. */
-  async grantRun(input: EDASessionGrantRunRpcInput): Promise<RunGrantResult> {
-    const command = Schema.decodeUnknownSync(GrantRunCommand)(input.command);
+  async grantRun(
+    raw: typeof SessionGrantRunInput.Encoded,
+  ): Promise<typeof edaSessionRpc.grantRun.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionGrantRunInput)(raw);
+    const command = input.command;
     const result = await this.#controller.grantRun({
       command,
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
     });
-    return result;
+    return Schema.encodeSync(edaSessionRpc.grantRun.output)(result);
   }
 
   async submitBatch(
-    input: EDASessionSubmitBatchRpcInput,
-  ): Promise<ReadonlyArray<CommittedDurableEventValue>> {
+    raw: typeof SessionBatchInput.Encoded,
+  ): Promise<typeof edaSessionRpc.submitBatch.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionBatchInput)(raw);
     const committed = await this.#controller.submitBatch({
-      items: await decodeSubmittables(input.items),
+      items: input.items,
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
     });
     return committed.map(encodeEdaRpcCommittedDurableEvent);
   }
 
-  async submitAndBlock(input: EDASessionCommandRpcInput): Promise<CommittedCommandTerminalEvent> {
+  async submitAndBlock(
+    raw: typeof SessionCommandInput.Encoded,
+  ): Promise<typeof edaSessionRpc.submitAndBlock.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionCommandInput)(raw);
     const committed = await this.#controller.submitAndBlock({
-      command: await decodeCommand(input.command),
+      command: input.command,
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
     });
-    return encodeEdaRpcCommittedDurableEvent(committed) as CommittedCommandTerminalEvent;
+    return Schema.encodeSync(edaSessionRpc.submitAndBlock.output)(committed);
   }
 
   async blockOnCommand(
-    input: EDASessionBlockOnCommandRpcInput,
-  ): Promise<CommittedCommandTerminalEvent> {
+    raw: typeof SessionBlockInput.Encoded,
+  ): Promise<typeof edaSessionRpc.blockOnCommand.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionBlockInput)(raw);
     const committed = await this.#controller.blockOnCommand({
       ...(input.afterSeq === undefined ? {} : { afterSeq: SequenceNumber.make(input.afterSeq) }),
       commandId: CommandId.make(input.commandId),
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
     });
-    return encodeEdaRpcCommittedDurableEvent(committed) as CommittedCommandTerminalEvent;
+    return Schema.encodeSync(edaSessionRpc.blockOnCommand.output)(committed);
   }
 
-  async snapshot(input: EDASessionScopedRpcInput): Promise<EDASessionSnapshot> {
+  async snapshot(
+    raw: typeof SessionScopedInput.Encoded,
+  ): Promise<typeof edaSessionRpc.snapshot.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionScopedInput)(raw);
     const snapshot = await this.#controller.snapshot({
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
     });
-    return encodeEdaRpcSessionSnapshot(snapshot);
+    return Schema.encodeSync(edaSessionRpc.snapshot.output)(snapshot);
   }
 
   async messages(
-    input: EDASessionScopedRpcInput,
-  ): Promise<ReadonlyArray<DurableTranscriptMessage>> {
-    return await this.#controller.messages({
+    raw: typeof SessionScopedInput.Encoded,
+  ): Promise<typeof edaSessionRpc.messages.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionScopedInput)(raw);
+    const result = await this.#controller.messages({
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
     });
+    return Schema.encodeSync(edaSessionRpc.messages.output)(result);
   }
 
   async webSocketMessage(webSocket: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -313,7 +292,10 @@ export abstract class EDASessionDurableObject<
     this.#controller.webSocketError(webSocket);
   }
 
-  async destroySession(input: EDASessionScopedRpcInput): Promise<void> {
+  async destroySession(
+    raw: typeof SessionScopedInput.Encoded,
+  ): Promise<typeof edaSessionRpc.destroySession.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionScopedInput)(raw);
     await this.#controller.destroy({
       sessionId: this.parseSessionId(input.sessionId),
       trace: decodeTraceMetadata(input.trace),
@@ -374,50 +356,12 @@ export const edaRuntimeConfig = (input: {
   ...(input.systemPrompt === undefined ? {} : { systemPrompt: input.systemPrompt }),
 });
 
-/** Encode committed events into structured-clone-safe Durable Object RPC payloads. */
+/** Encode committed events into the existing structured-clone envelope. */
 export const encodeEdaRpcCommittedDurableEvent = (
-  event: CommittedDurableEvent,
-): CommittedDurableEventValue => ({
-  position: event.position,
-  event: encodeEdaRpcDurableEvent(durableEventEnvelope(event.event)),
+  entry: CommittedDurableEvent,
+): typeof edaSessionRpc.submit.output.Encoded => ({
+  position: entry.position,
+  event: encodeEdaRpcDurableEvent(durableEventEnvelope(entry.event)),
 });
-
-/** Encode runtime snapshots into structured-clone-safe Durable Object RPC payloads. */
-export const encodeEdaRpcSessionSnapshot = (snapshot: EDASessionSnapshot): EDASessionSnapshot => ({
-  ...snapshot,
-  reducerStates: new Map(snapshot.reducerStates),
-  state: {
-    ...snapshot.state,
-    commands: new Map(
-      Array.from(snapshot.state.commands, ([commandId, record]) => [
-        commandId,
-        encodeCommandCarrierForRpc(record),
-      ]),
-    ),
-    commandQueues: {
-      ...snapshot.state.commandQueues,
-      activeControlCommands: snapshot.state.commandQueues.activeControlCommands.map(
-        encodeCommandCarrierForRpc,
-      ),
-      pendingCommands: snapshot.state.commandQueues.pendingCommands.map(encodeCommandCarrierForRpc),
-      queuedCommands: snapshot.state.commandQueues.queuedCommands.map(encodeCommandCarrierForRpc),
-    },
-  },
-});
-
-const encodeCommandCarrierForRpc = <A extends { readonly command?: EDACommandValue }>(
-  value: A,
-): A =>
-  value.command === undefined
-    ? value
-    : {
-        ...value,
-        command: Schema.encodeSync(EDACommand)(value.command) as EDACommandValue,
-      };
-
-const decodeCommand = (input: unknown): Promise<EDACommandValue> =>
-  Effect.runPromise(decodeEdaRpcCommand(input));
-
-const decodeSubmittables = (
-  input: ReadonlyArray<unknown>,
-): Promise<ReadonlyArray<EDASubmittable>> => Effect.runPromise(decodeEdaRpcSubmittables(input));
+/** Encode query snapshots without asserting that encoded command values are decoded classes. */
+export const encodeEdaRpcSessionSnapshot = Schema.encodeSync(edaSessionRpc.snapshot.output);

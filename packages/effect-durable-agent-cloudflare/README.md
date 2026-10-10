@@ -36,7 +36,10 @@ request with `EDA_WEB_SOCKET_PROJECTION_HEADER`; the Durable Object still owns
 the accepted socket and persists the app projection state through hibernation.
 Do not build a Worker-side WebSocket bridge for protocol translation.
 
-Durable Object RPC uses structured clone. Encode Schema class instances before
+Durable Object RPC uses structured clone. `edaSessionRpc` exports the input and output
+Schemas for each session method. Public methods accept each input Schema's `Encoded`
+type and return encoded outputs; callers decode responses with the output Schema.
+Snapshot Maps and existing wire fields remain unchanged. Encode Schema class instances before
 passing commands or batches across the Worker-to-object boundary with
 `encodeEdaRpcCommand` or `encodeEdaRpcSubmittables`.
 

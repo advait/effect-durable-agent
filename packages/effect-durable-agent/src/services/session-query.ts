@@ -1,3 +1,5 @@
+import * as Schema from "effect/Schema";
+import { ReducedStateSchema, QueryMessageRecordSchema } from "../domain/reduced-state-schema";
 import { durableEventEnvelope } from "../types/events/durable";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -8,8 +10,6 @@ import * as Stream from "effect/Stream";
 
 import { durableMessageTranscript } from "../domain/message-transcript";
 import type { DurableTranscriptMessage } from "../domain/message-transcript";
-import type { ReducedState } from "../domain/reduced-state";
-import type { EDAReducerStateSnapshot } from "./reducer-registry";
 import { RunRequestOutcome } from "../domain/run-scheduling";
 import { effectDurableAgentNamespace } from "../types/events";
 import { type RunRequestId, SequenceNumber } from "../types/core";
@@ -19,12 +19,22 @@ import { LiveEventBus } from "./live-event-bus";
 import { SessionState } from "./session-state";
 import { annotateEdaSpan } from "./tracing";
 
+/** Reconnect-safe transcript query preserving the existing structured-clone Prompt parts. */
+export const DurableTranscriptMessages = Schema.Array(
+  Schema.Union([
+    QueryMessageRecordSchema.members[1],
+    QueryMessageRecordSchema.members[3],
+    QueryMessageRecordSchema.members[4],
+    Schema.Struct({ ...QueryMessageRecordSchema.members[2].fields, consumedSeq: SequenceNumber }),
+  ]),
+);
 /** Authoritative live snapshot for one EDA session plus its derived durable transcript. */
-export interface EDASessionSnapshot {
-  readonly state: ReducedState;
-  readonly reducerStates: EDAReducerStateSnapshot;
-  readonly messages: ReadonlyArray<DurableTranscriptMessage>;
-}
+export const EDASessionSnapshot = Schema.Struct({
+  state: ReducedStateSchema,
+  reducerStates: Schema.ReadonlyMap(Schema.String, Schema.Unknown),
+  messages: DurableTranscriptMessages,
+});
+export type EDASessionSnapshot = typeof EDASessionSnapshot.Type;
 
 /** Read-only query facade over authoritative live state and reconnect-safe event streams. */
 export interface EDASessionQueryShape {
