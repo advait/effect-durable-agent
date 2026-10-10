@@ -19,7 +19,7 @@ import { LiveEventBus } from "./live-event-bus";
 import { SessionState } from "./session-state";
 import { annotateEdaSpan } from "./tracing";
 
-/** Authoritative live snapshot for one EDA session plus its derived durable transcript. */
+/** Reconnect-safe transcript query preserving the existing structured-clone Prompt parts. */
 export const DurableTranscriptMessages = Schema.Array(
   Schema.Union([
     QueryMessageRecordSchema.members[1],
@@ -28,6 +28,7 @@ export const DurableTranscriptMessages = Schema.Array(
     Schema.Struct({ ...QueryMessageRecordSchema.members[2].fields, consumedSeq: SequenceNumber }),
   ]),
 );
+/** Authoritative live snapshot for one EDA session plus its derived durable transcript. */
 export const EDASessionSnapshot = Schema.Struct({
   state: ReducedStateSchema,
   reducerStates: Schema.ReadonlyMap(Schema.String, Schema.Unknown),

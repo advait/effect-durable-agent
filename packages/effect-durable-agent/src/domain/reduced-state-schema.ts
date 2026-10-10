@@ -357,6 +357,7 @@ export const MessageRecordSchema = messageRecordSchema(
 /** Lossless structured-clone query content; admission string transforms do not apply. */
 export const QueryUserMessageContent = Schema.toType(UserMessageContent);
 
+/** Message query records preserve Prompt-part arrays and their structured-clone fields. */
 export const QueryMessageRecordSchema = messageRecordSchema(
   QueryUserMessageContent,
   Schema.Union([

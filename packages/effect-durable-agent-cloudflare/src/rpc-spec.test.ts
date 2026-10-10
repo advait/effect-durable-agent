@@ -7,6 +7,9 @@ import { EDASessionSnapshot } from "effect-durable-agent/services/session-query"
 import { SubmitMessageCommand, EDACommand } from "effect-durable-agent/types/commands";
 import {
   CommandId,
+  InferenceId,
+  ToolCallId,
+  TurnId,
   MessageId,
   RunId,
   SequenceNumber,
@@ -78,6 +81,25 @@ describe("deployed EDA RPC formats", () => {
         seq: SequenceNumber.make(2),
         consumedSeq: SequenceNumber.make(3),
       } satisfies (typeof EDASessionSnapshot.Type.messages)[number];
+      const assistantId = MessageId.make("018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6d");
+      const toolCallId = ToolCallId.make("018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6e");
+      const toolResult = Prompt.toolResultPart({
+        id: toolCallId,
+        name: "fixture-tool",
+        isFailure: false,
+        result: { historical: [1, 2] },
+        options: { provider: { marker: true } },
+      });
+      const assistant = {
+        _tag: "Assistant",
+        messageId: assistantId,
+        inferenceId: InferenceId.make("018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6f"),
+        turnId: TurnId.make("018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b70"),
+        runId,
+        seq: SequenceNumber.make(4),
+        content: { text: "firstsecond", reasoning: "historical reasoning" },
+        promptParts: [...files, Prompt.reasoningPart({ text: "historical reasoning" }), toolResult],
+      } satisfies (typeof EDASessionSnapshot.Type.messages)[number];
       const queued = {
         messageId,
         commandId: command.commandId,
@@ -90,7 +112,24 @@ describe("deployed EDA RPC formats", () => {
         state: {
           ...initialReducedState,
           commands: new Map([[command.commandId, pending]]),
-          messages: new Map([[messageId, steering]]),
+          messages: new Map([
+            [messageId, steering],
+            [assistantId, assistant],
+          ]),
+          toolCalls: new Map([
+            [
+              toolCallId,
+              {
+                toolCallId,
+                terminal: {
+                  _tag: "Completed",
+                  result: toolResult.result,
+                  seq: SequenceNumber.make(4),
+                  promptPart: toolResult,
+                },
+              },
+            ],
+          ]),
           commandQueues: {
             ...initialReducedState.commandQueues,
             active: undefined,
@@ -116,7 +155,7 @@ describe("deployed EDA RPC formats", () => {
           },
         },
         reducerStates: new Map([["gia.persisted", { version: 1, facts: ["historical"] }]]),
-        messages: [user, steering],
+        messages: [user, steering, assistant],
       };
       const carrier = { ...pending, command: Schema.encodeSync(EDACommand)(command) };
       const oldWire = {

@@ -16,24 +16,30 @@ import {
 import { RunGrantResult, RunRequestOutcome } from "effect-durable-agent/domain/run-scheduling";
 import { EDARpcSubmittable } from "./rpc-codec";
 
+/** Names the session isolation boundary and carries caller trace metadata. */
 export const SessionScopedInput = Schema.Struct({ sessionId: SessionId, trace: EDATraceMetadata });
+/** Ordinary command admission; controller validation excludes trusted scheduler grants. */
 export const SessionCommandInput = Schema.Struct({
   ...SessionScopedInput.fields,
   command: EDACommand,
 });
+/** Trusted scheduler permission for a reserved run; ordinary command ingress cannot grant it. */
 export const SessionGrantRunInput = Schema.Struct({
   ...SessionScopedInput.fields,
   command: GrantRunCommand,
 });
+/** Atomic ordered admission of ordinary commands and application events for one session. */
 export const SessionBatchInput = Schema.Struct({
   ...SessionScopedInput.fields,
   items: Schema.Array(EDARpcSubmittable),
 });
+/** Waits for one command terminal after an optional durable replay position. */
 export const SessionBlockInput = Schema.Struct({
   ...SessionScopedInput.fields,
   afterSeq: Schema.optionalKey(SequenceNumber),
   commandId: CommandId,
 });
+/** Reconciles a scheduler request against the named session’s authoritative state. */
 export const SessionOutcomeInput = Schema.Struct({
   ...SessionScopedInput.fields,
   requestId: RunRequestId,
