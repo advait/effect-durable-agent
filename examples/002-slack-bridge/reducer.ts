@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { durableEventEnvelope } from "effect-durable-agent/types/events/durable";
 
 import type { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
 import { EDAReducer } from "effect-durable-agent/services/reducer-registry";
@@ -71,7 +72,7 @@ export const reduceSlackBridgeState = (
   state: SlackBridgeState,
   entry: CommittedDurableEvent,
 ): SlackBridgeState => {
-  const event = entry.event;
+  const event = durableEventEnvelope(entry.event);
 
   if (event.type === commandAdmittedEventType && Schema.is(CommandAdmittedPayload)(event.payload)) {
     return rememberCommandIdempotency(state, event.payload);

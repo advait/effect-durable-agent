@@ -4,6 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import { type DecodedDurableEvent } from "../types/events/durable";
+import { selectCommittedEvent } from "./session-store";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -15,7 +17,6 @@ import { EventId, SessionId, SequenceNumber } from "../types/core";
 import type {
   DurableEventEnvelope,
   EphemeralEventEnvelope,
-  EventType,
   PositionedEvent,
 } from "../types/events";
 import type { EDASessionStoreShape } from "./session-store";
@@ -35,17 +36,17 @@ import {
 import { annotateEdaSpan } from "./tracing";
 
 /** Cursor-window input delivered to one durable sink drain. */
-export interface EDASinkRawDurableBatch {
+export interface EDASinkRawDurableBatch<E = DecodedDurableEvent> {
   /** All durable events replayed for this cursor window, including uninterested events. */
   readonly allEvents: ReadonlyArray<CommittedDurableEvent>;
   /** Events matching the sink's durable interests. */
-  readonly events: ReadonlyArray<CommittedDurableEvent>;
+  readonly events: ReadonlyArray<CommittedDurableEvent<E>>;
   /** Durable sequence through which the sink may advance after success. */
   readonly throughSeq: SequenceNumber;
 }
 
 /** Cursor window with framework and app projections, enabled by default. */
-export interface EDASinkDurableBatch extends EDASinkRawDurableBatch {
+export interface EDASinkDurableBatch<E = DecodedDurableEvent> extends EDASinkRawDurableBatch<E> {
   /** Authoritative reduced state folded exactly through `throughSeq`. */
   readonly stateAfter: ReducedState;
   /** App-specific durable reducer states folded exactly through `throughSeq`. */
@@ -85,8 +86,8 @@ export interface EDASinkContext {
   readonly forkScoped: (effect: Effect.Effect<unknown, unknown>) => Effect.Effect<void>;
 }
 
-/** `"*"` and omission select every event; an array selects exact event types. */
-export type EDASinkInterests = "*" | ReadonlyArray<EventType | string>;
+/** `"*"` and omission select every fact; a schema selects and narrows matching envelopes. */
+export type EDASinkInterests = "*" | Schema.Codec<DurableEventEnvelope, unknown, never, never>;
 
 /** Delivery policy shared by raw and projected durable consumers. */
 interface EDADurableSinkOptions {
@@ -112,7 +113,9 @@ export type EDADurableSinkDefinition = EDAProjectedDurableSinkDefinition;
 
 /** Best-effort live-only sink definition. */
 export interface EDAEphemeralSinkDefinition {
-  readonly interests?: EDASinkInterests;
+  readonly interests?:
+    | "*"
+    | Schema.Codec<import("../types/events").EventEnvelope, unknown, never, never>;
   readonly process: (event: PositionedEvent, ctx: EDASinkContext) => Effect.Effect<void, never>;
 }
 
@@ -154,7 +157,50 @@ function makeSink(sink: EDASink): EDASink {
 }
 
 /** Convenience constructor preserving a sink's literal name/type information. */
-export const EDASink = { make: makeSink };
+export const EDASink = {
+  make: makeSink,
+  /** The live-event schema owns both subscription filtering and callback typing. */
+  forEphemeralEvents: <E extends import("../types/events").EventEnvelope>(
+    interests: Schema.Codec<E, unknown, never, never>,
+    process: (event: PositionedEvent<E>, ctx: EDASinkContext) => Effect.Effect<void, never>,
+  ): EDAEphemeralSinkDefinition => ({
+    interests,
+    process: (entry, ctx) =>
+      Schema.is(interests)(entry.event)
+        ? process({ position: entry.position, event: entry.event }, ctx)
+        : Effect.void,
+  }),
+  /** One schema selects and narrows the facts delivered to a projected durable consumer. */
+  forEvents: <E extends DurableEventEnvelope>(
+    interests: Schema.Codec<E, unknown, never, never>,
+    sink: Omit<EDAProjectedSink, "durable"> & {
+      readonly durable: {
+        readonly batchSize?: number;
+        readonly process: (
+          batch: EDASinkDurableBatch<E>,
+          ctx: EDASinkContext,
+        ) => Effect.Effect<void, never>;
+      };
+    },
+  ): EDAProjectedSink => ({
+    ...sink,
+    durable: {
+      ...sink.durable,
+      interests,
+      process: (batch, ctx) =>
+        sink.durable.process(
+          {
+            ...batch,
+            events: batch.events.flatMap((entry) => {
+              const selected = selectCommittedEvent(interests, entry);
+              return selected === undefined ? [] : [selected];
+            }),
+          },
+          ctx,
+        ),
+    },
+  }),
+};
 
 /** Session-owned capabilities needed to start all registered sink runners. */
 export interface EDASinkRunnerStartInput {
@@ -521,7 +567,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
           ({ sink, inbox }) => {
             if (
               sink.ephemeral === undefined ||
-              !matchesInterest(event.event.type, sink.ephemeral.interests)
+              !matchesInterest(event.event, sink.ephemeral.interests)
             )
               return Effect.void;
             return Effect.gen(function* () {
@@ -660,10 +706,17 @@ const filterInterested = (
   events: ReadonlyArray<CommittedDurableEvent>,
   interests: EDASinkInterests | undefined,
 ): ReadonlyArray<CommittedDurableEvent> =>
-  events.filter((event) => matchesInterest(event.event.type, interests));
+  events.filter(
+    (entry) =>
+      interests === undefined ||
+      interests === "*" ||
+      selectCommittedEvent(interests, entry) !== undefined,
+  );
 
 const matchesInterest = (
-  type: EventType | string,
-  interests: EDASinkInterests | undefined,
-): boolean =>
-  interests === undefined || interests === "*" || interests.some((interest) => interest === type);
+  event: import("../types/events").EventEnvelope,
+  interests:
+    | "*"
+    | Schema.Codec<import("../types/events").EventEnvelope, unknown, never, never>
+    | undefined,
+): boolean => interests === undefined || interests === "*" || Schema.is(interests)(event);

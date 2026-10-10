@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 import { configDefaults } from "vite-plus/test/config";
 
@@ -51,6 +52,8 @@ export default defineConfig({
     target: "es2022",
   },
   test: {
+    alias: { vitest: fileURLToPath(import.meta.resolve("vite-plus/test")) },
+    server: { deps: { inline: ["@effect/vitest"] } },
     exclude: [...configDefaults.exclude],
   },
 });

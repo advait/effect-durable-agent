@@ -2,6 +2,17 @@
 
 All notable changes to Effect Durable Agent will be documented in this file.
 
+## 0.1.0-alpha.17
+
+- Retain typed framework facts after store decode and register application events once
+  through runtime `appEvents`. Foreign namespaces remain explicitly opaque.
+- Select and narrow durable sinks and reducers from event Schemas; remove string-list
+  subscriptions. Tool context exposes run/turn identity and typed journal queries.
+- Preserve event-log encoding, checkpoint formats, sink names/cursors, and RPC/WebSocket
+  envelopes, including retained legacy attempt events and excess payload fields.
+- Enable explicit-any, non-null-assertion, and unsafe-type-assertion lint rules, with
+  exact-file exemptions for existing assertions outside the event boundary.
+
 ## 0.1.0-alpha.15
 
 - Add `state: "none"` for raw consumers: no sink projection hydration, folding,

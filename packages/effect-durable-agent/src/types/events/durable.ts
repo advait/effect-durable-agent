@@ -19,6 +19,7 @@ import {
 } from "../core";
 import {
   DurableEventEnvelope,
+  ForeignDurableEvent,
   FailurePayload,
   ModelSelectionPayload,
   ProviderPartId,
@@ -967,44 +968,45 @@ export const LegacyAttemptEvent = Schema.Union([
  * this deliberately does not split turns or manufacture lifecycle events.
  */
 export const interpretLegacyAttemptForReduction = (
-  event: DurableEventEnvelope,
-): DurableEventEnvelope => {
-  if (event.namespace !== effectDurableAgentNamespace) return event;
+  event: EDADurableEvent,
+): CurrentEDADurableEvent => {
   if (event.type === "TurnAttemptStarted") {
-    const legacy = Schema.decodeUnknownSync(LegacyTurnAttemptStartedEvent)(event);
     return {
-      ...legacy,
+      ...event,
       type: inferenceStartedEventType,
-      payload: { ...legacy.payload, inferenceId: legacy.payload.attemptId },
+      payload: { ...event.payload, inferenceId: event.payload.attemptId },
     };
   }
   if (event.type === "TurnAttemptCompleted") {
-    const legacy = Schema.decodeUnknownSync(LegacyTurnAttemptCompletedEvent)(event);
     return {
-      ...legacy,
+      ...event,
       type: inferenceCompletedEventType,
-      payload: { ...legacy.payload, inferenceId: legacy.payload.attemptId },
+      payload: { ...event.payload, inferenceId: event.payload.attemptId },
     };
   }
-  if (
-    (event.type === assistantMessageCommittedEventType ||
-      event.type === toolCallCreatedEventType) &&
-    typeof event.payload === "object" &&
-    event.payload !== null &&
-    "attemptId" in event.payload &&
-    !("inferenceId" in event.payload)
-  ) {
-    const legacy = Schema.decodeUnknownSync(
-      Schema.Union([LegacyAssistantMessageCommittedEvent, LegacyToolCallCreatedEvent]),
-    )(event);
-    return { ...legacy, payload: { ...legacy.payload, inferenceId: legacy.payload.attemptId } };
+  if (Schema.is(AssistantMessageCommittedEvent)(event) || Schema.is(ToolCallCreatedEvent)(event)) {
+    return event;
+  }
+  if (isLegacyAssistant(event)) {
+    return { ...event, payload: { ...event.payload, inferenceId: event.payload.attemptId } };
+  }
+  if (isLegacyToolCall(event)) {
+    return { ...event, payload: { ...event.payload, inferenceId: event.payload.attemptId } };
   }
   return event;
 };
 
+const isLegacyAssistant = (
+  event: EDADurableEvent,
+): event is typeof LegacyAssistantMessageCommittedEvent.Type =>
+  event.type === assistantMessageCommittedEventType && "attemptId" in event.payload;
+const isLegacyToolCall = (
+  event: EDADurableEvent,
+): event is typeof LegacyToolCallCreatedEvent.Type =>
+  event.type === toolCallCreatedEventType && "attemptId" in event.payload;
+
 /** Built-in durable event union for framework-owned session facts, including retained historical schemas. */
-export const EDADurableEvent = Schema.Union([
-  LegacyAttemptEvent,
+export const CurrentEDADurableEvent = Schema.Union([
   SessionConfiguredEvent,
   RunSchedulingEvent,
   CommandEvent,
@@ -1018,6 +1020,9 @@ export const EDADurableEvent = Schema.Union([
   ContextAndCompactionEvent,
   BaseStateEvent,
 ]);
+export type CurrentEDADurableEvent = typeof CurrentEDADurableEvent.Type;
+/** Retained historical facts remain readable without rewriting the event journal. */
+export const EDADurableEvent = Schema.Union([LegacyAttemptEvent, CurrentEDADurableEvent]);
 export type EDADurableEvent = typeof EDADurableEvent.Type;
 
 /** Current V1 framework durable event schema. Future versions route beside this alias. */
@@ -1026,7 +1031,10 @@ export type EDADurableEventV1 = typeof EDADurableEventV1.Type;
 
 /** Decode one framework-owned durable event through the namespace/type/version router. */
 export const decodeUnknownEDADurableEventSync = (input: unknown): EDADurableEvent => {
-  const envelope = Schema.decodeUnknownSync(DurableEventEnvelope)(input);
+  return decodeFrameworkEnvelope(Schema.decodeUnknownSync(DurableEventEnvelope)(input));
+};
+
+const decodeFrameworkEnvelope = (envelope: DurableEventEnvelope): EDADurableEvent => {
   if (envelope.namespace !== effectDurableAgentNamespace) {
     throw new Error(
       `EDADurableEvent decoder only accepts namespace ${effectDurableAgentNamespace}; received ${envelope.namespace}`,
@@ -1053,3 +1061,20 @@ export const decodeUnknownEDADurableEvent = (
     try: () => decodeUnknownEDADurableEventSync(input),
     catch: (error) => error,
   });
+
+/** Decoded internal facts distinguish framework events from explicitly opaque foreign envelopes. */
+export const DecodedDurableEvent = Schema.Union([EDADurableEvent, ForeignDurableEvent]);
+export type DecodedDurableEvent = typeof DecodedDurableEvent.Type;
+
+/** Restore the original envelope at persistence and protocol boundaries. */
+export const durableEventEnvelope = (
+  event: DecodedDurableEvent | DurableEventEnvelope,
+): DurableEventEnvelope =>
+  "envelope" in event && Schema.is(ForeignDurableEvent)(event) ? event.envelope : event;
+
+/** Decode a durable envelope once at the store boundary, preserving foreign namespaces opaquely. */
+export const decodeDurableEventSync = (input: unknown): DecodedDurableEvent => {
+  const envelope = Schema.decodeUnknownSync(DurableEventEnvelope)(input);
+  if (envelope.namespace === effectDurableAgentNamespace) return decodeFrameworkEnvelope(envelope);
+  return { ...envelope, namespace: "__foreign", type: "Foreign", _tag: "Foreign", envelope };
+};

@@ -1,3 +1,4 @@
+import type { EDAAppEvents } from "effect-durable-agent/services/session-store";
 import type { RunScheduler } from "effect-durable-agent/services/run-scheduler";
 import type { ModelResolver } from "effect-durable-agent/services/model-resolver";
 import * as Effect from "effect/Effect";
@@ -44,6 +45,7 @@ export type EDATracerFactory = (input: { readonly sessionId: SessionId }) => Tra
 /** Configuration owned by the lazy per-isolate Effect runtime. */
 export interface EDASessionRuntimeOptions {
   readonly background?: DurableObjectBackgroundWaiter;
+  readonly appEvents?: EDAAppEvents;
   readonly config: EDARuntimeConfig;
   readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
   readonly compactionPolicyLayer?: Layer.Layer<CompactionPolicy>;
@@ -150,6 +152,7 @@ export class EDASessionRuntime {
   private async build(sessionId: SessionId): Promise<RuntimeState> {
     const runtime = ManagedRuntime.make(
       makeEDADurableObjectRuntimeLayer({
+        appEvents: this.options.appEvents,
         config: this.options.config,
         compactionExecutorLayer: this.options.compactionExecutorLayer,
         compactionPolicyLayer: this.options.compactionPolicyLayer,

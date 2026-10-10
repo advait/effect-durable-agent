@@ -1,6 +1,11 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 
 export default defineConfig({
+  test: {
+    alias: { vitest: fileURLToPath(import.meta.resolve("vite-plus/test")) },
+    server: { deps: { inline: ["@effect/vitest"] } },
+  },
   pack: {
     deps: {
       neverBundle: [

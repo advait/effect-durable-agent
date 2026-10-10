@@ -15,6 +15,8 @@ import {
 } from "../types/events";
 import {
   CommittedDurableEvent,
+  EDASessionStore,
+  queryCommittedEvents,
   EDASessionStoreError,
   hasEDASessionStoreError,
 } from "./session-store";
@@ -94,6 +96,7 @@ const makeLiveToolExecutor = Effect.gen(function* () {
   const ids = yield* IdGenerator;
   const registry = yield* EDAToolRegistry;
   const session = yield* SessionContext;
+  const store = yield* EDASessionStore;
 
   const failToolCall = (
     input: ExecuteToolCallInput,
@@ -135,6 +138,9 @@ const makeLiveToolExecutor = Effect.gen(function* () {
                 created.event.payload.promptPart.params,
                 {
                   toolCallId: created.event.payload.toolCallId,
+                  runId: created.event.payload.runId,
+                  turnId: created.event.payload.turnId,
+                  queryEvents: (schema, options) => queryCommittedEvents(store, schema, options),
                   sessionId: session.sessionId,
                   makeEventId: ids.makeEventId,
                   emitDurable: input.eventSink.appendDurable,

@@ -6,7 +6,7 @@ import * as Stream from "effect/Stream";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
 
-import { EventId, SessionId, ToolCallId } from "../types/core";
+import { EventId, SessionId, ToolCallId, RunId, TurnId } from "../types/core";
 import { DurableEventEnvelope, ToolName } from "../types/events";
 import type { CommittedDurableEvent, EDASessionStoreError } from "./session-store";
 
@@ -20,6 +20,14 @@ export type EDAModelToolkit = Toolkit.WithHandler<Record<string, Tool.Any>>;
 export interface EDAToolExecutionContext {
   /** Framework-owned tool-call identity for this execution. */
   readonly toolCallId: ToolCallId;
+  /** Run and turn that durably created this tool call. */
+  readonly runId: RunId;
+  readonly turnId: TurnId;
+  /** Read typed facts from this session journal. */
+  readonly queryEvents: <E extends DurableEventEnvelope>(
+    schema: Schema.Codec<E, unknown, never, never>,
+    options?: { readonly limit?: number },
+  ) => Effect.Effect<ReadonlyArray<CommittedDurableEvent<E>>, EDASessionStoreError>;
   /** Session identity fixed for this runtime instance. */
   readonly sessionId: SessionId;
   /** Mint an app durable event id for tool-emitted facts. */

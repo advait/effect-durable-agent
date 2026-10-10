@@ -17,7 +17,13 @@ import { RunSchedulingWakeup } from "./run-scheduling-wakeup";
 import { SessionContext } from "./session-context";
 import { SessionEventObserver } from "./session-event-observer";
 import { EDASessionQuery } from "./session-query";
-import { EDASessionStore, EDASessionStoreError } from "./session-store";
+import * as Effect from "effect/Effect";
+import {
+  registerAppEvents,
+  type EDAAppEvents,
+  EDASessionStore,
+  EDASessionStoreError,
+} from "./session-store";
 import { SessionState, type SessionCommandAdmissionError } from "./session-state";
 import { SinkCheckpointStore } from "./sink-checkpoint-store";
 import { EDASinkRegistry, type EDASink } from "./sink-registry";
@@ -32,6 +38,8 @@ import { TurnRunner } from "./turn-runner";
  * checkpoint, and lifecycle layers. Platform SDK types never cross this boundary.
  */
 export interface EDARuntimeLayerOptions {
+  /** Complete application event union with literal namespaces, decoded once at the store boundary. */
+  readonly appEvents?: EDAAppEvents;
   readonly config: EDARuntimeConfig;
   readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
   readonly compactionPolicyLayer?: Layer.Layer<CompactionPolicy>;
@@ -53,6 +61,7 @@ export interface EDARuntimeLayerOptions {
 
 /** Compose the complete platform-neutral EDA service graph for one session. */
 export const makeEDARuntimeLayer = ({
+  appEvents,
   config,
   compactionExecutorLayer,
   compactionPolicyLayer,
@@ -71,7 +80,15 @@ export const makeEDARuntimeLayer = ({
   toolRegistry,
   tracer,
 }: EDARuntimeLayerOptions): Layer.Layer<EDARuntime, SessionCommandAdmissionError> => {
-  const Store = sessionStoreLayer;
+  const Store =
+    appEvents === undefined
+      ? sessionStoreLayer
+      : Layer.effect(
+          EDASessionStore,
+          Effect.gen(function* () {
+            return registerAppEvents(yield* EDASessionStore, appEvents);
+          }),
+        ).pipe(Layer.provide(sessionStoreLayer));
   const Models = modelResolverLayer;
   const EventObserver = sessionEventObserverLayer ?? SessionEventObserver.Noop;
   const Bus = LiveEventBus.Live.pipe(Layer.provide(EventObserver));
@@ -136,7 +153,7 @@ export const makeEDARuntimeLayer = ({
     Layer.provideMerge(Layer.mergeAll(Factory, Models, Registry, Ids)),
   );
   const ToolExec = ToolExecutor.Live.pipe(
-    Layer.provideMerge(Layer.mergeAll(Factory, Registry, Ids, Session)),
+    Layer.provideMerge(Layer.mergeAll(Factory, Registry, Ids, Session, Store)),
   );
   const Turn = TurnRunner.Live.pipe(
     Layer.provideMerge(Layer.mergeAll(InferenceRunnerLayer, ToolExec, Factory, Ids)),

@@ -982,18 +982,21 @@ describe("EDASessionController", () => {
 
   it("hydrates app reducer state from checkpoint plus tail when the host is recreated", async () => {
     const storage = new FakeDurableObjectStorage();
-    const reducer = EDAReducer.make<{ readonly seen: ReadonlyArray<string> }>({
+    const appEvents = Schema.Struct({
+      ...DurableEventEnvelope.fields,
+      namespace: Schema.Literal("test-app"),
+      type: Schema.Literal("ExternalFact"),
+      payload: Schema.Struct({ value: Schema.String }),
+    });
+    const reducer = EDAReducer.forEvents(appEvents, {
       name: "test.app-events",
       schemaVersion: 1,
       initial: { seen: [] },
       stateSchema: Schema.Struct({ seen: Schema.Array(Schema.String) }),
-      reduce: (state, event) =>
-        event.event.type === EventType.make("ExternalFact")
-          ? { seen: [...state.seen, String((event.event.payload as { value: string }).value)] }
-          : state,
+      reduce: (state, event) => ({ seen: [...state.seen, event.event.payload.value] }),
     });
     await Effect.runPromise(EDASessionController.migrate(storage));
-    const firstHost = makeHost(storage, { reducers: [reducer] });
+    const firstHost = makeHost(storage, { appEvents, reducers: [reducer] });
 
     await firstHost.submitBatch({
       sessionId: SessionId.make(SESSION_ID),
@@ -1002,7 +1005,7 @@ describe("EDASessionController", () => {
     });
     await firstHost.dispose();
 
-    const recreated = makeHost(storage, { reducers: [reducer] });
+    const recreated = makeHost(storage, { appEvents, reducers: [reducer] });
     await recreated.snapshot({ sessionId: SessionId.make(SESSION_ID) });
     await waitForReducerCheckpointRow(storage, reducer.name, (row) => row.through_seq === 1);
     await recreated.submitBatch({

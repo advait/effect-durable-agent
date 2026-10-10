@@ -565,14 +565,14 @@ The current examples show the intended shape:
 
 ### Sinks
 
-`EDASinkRegistry` has two lanes.
+`EDASinkRegistry` has two lanes. Register an application durable-event Schema once with runtime `appEvents`; store reads decode registered facts before consumers run. Unregistered namespaces remain explicit opaque foreign envelopes. `CommittedDurableEvent<E>` retains the consumer’s event type, and `EDAReducer.forEvents` selects typed reducer input from one Schema. Tool execution context supplies the creating `runId` and `turnId`, plus `queryEvents(schema, options)` for typed journal reads.
 
 Durable lane:
 
 - named sink with one durable checkpoint in `_eda_sink_cursors`
 - reads durable windows after its cursor
 - folds framework `ReducedState` and app reducer states through the batch
-- filters by `interests`
+- filters by the event Schema passed to `EDASink.forEvents`; that same Schema narrows `batch.events`
 - calls `process(batch, ctx)`
 - exposes `ctx.checkpoint.get(schema, initial)` and `ctx.checkpoint.save(schema, state)` for typed sink-owned state
 - serializes state-only saves with cursor commits, including writes from scoped background sink work

@@ -1,3 +1,4 @@
+import { makeRootEDAEventTrace } from "../types/tracing";
 import { assert } from "@effect/vitest";
 import * as Prompt from "effect/unstable/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
@@ -76,7 +77,11 @@ const committed = (seq: number, type: string, payload: unknown) => {
     eventId: EventId.make(`018f6bd5-2f2a-7b1e-${(0x9000 + seq).toString(16)}-1f2e3d4c5b6a`),
     sessionId: SESSION_ID,
     createdAtMs: UnixEpochMillis.make(1_715_000_000_000 + seq),
-    payload,
+    payload:
+      type === "RunStarted" && typeof payload === "object" && payload !== null
+        ? { trace: makeEDARunTrace(), ...payload }
+        : payload,
+    trace: makeRootEDAEventTrace(),
   } as EDADurableEvent;
 
   return CommittedDurableEvent.make({

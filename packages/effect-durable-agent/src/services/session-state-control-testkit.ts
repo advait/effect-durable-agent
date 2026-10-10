@@ -204,8 +204,7 @@ export const waitForCommitted = (
 export const hasCommandCompleted =
   (commandId: CommandId) => (committed: ReadonlyArray<CommittedDurableEvent>) =>
     committed.some((entry) => {
-      const payload = entry.event.payload as { readonly commandId?: CommandId };
-      return entry.event.type === "CommandCompleted" && payload.commandId === commandId;
+      return entry.event.type === "CommandCompleted" && entry.event.payload.commandId === commandId;
     });
 
 /** Predicate for waiting on any committed event with the requested type. */

@@ -1,3 +1,4 @@
+import { durableEventEnvelope } from "../types/events/durable";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -132,12 +133,12 @@ describe("EDASinkRegistry", () => {
 
     const { committed, events } = await Effect.runPromise(program);
 
-    expect(committed.map((entry) => entry.event.type)).toEqual([
+    expect(committed.map((entry) => durableEventEnvelope(entry.event).type)).toEqual([
       "CommandAdmitted",
       "UserMessageSubmitted",
       "ExternalMessageReceived",
     ]);
-    expect(events.map((entry) => entry.event.type).slice(0, 3)).toEqual([
+    expect(events.map((entry) => durableEventEnvelope(entry.event).type).slice(0, 3)).toEqual([
       "CommandAdmitted",
       "UserMessageSubmitted",
       "ExternalMessageReceived",
@@ -155,10 +156,13 @@ describe("EDASinkRegistry", () => {
         externalMessageByCommandId: Schema.ReadonlyMap(Schema.String, Schema.String),
       }),
       reduce: (state, event) => {
-        if (event.event.type !== EventType.make("ExternalMessageReceived")) {
+        if (
+          event.event.namespace !== "__foreign" ||
+          event.event.envelope.type !== "ExternalMessageReceived"
+        ) {
           return state;
         }
-        const payload = event.event.payload as {
+        const payload = durableEventEnvelope(event.event).payload as {
           readonly commandId: string;
           readonly externalMessageId: string;
         };
@@ -174,7 +178,7 @@ describe("EDASinkRegistry", () => {
     const sink: EDASink = {
       name: "test.reducer-reader",
       durable: {
-        interests: ["TurnCompleted"],
+        interests: eventInterest("TurnCompleted"),
         process: (batch) =>
           Effect.sync(() => {
             observed.push(
@@ -226,7 +230,7 @@ describe("EDASinkRegistry", () => {
     const sink: EDASink = {
       name: "test.slow-final-reply-sink",
       durable: {
-        interests: ["AssistantMessageCommitted"],
+        interests: eventInterest("AssistantMessageCommitted"),
         process: () =>
           Effect.gen(function* () {
             sinkStarted = true;
@@ -284,14 +288,18 @@ describe("EDASinkRegistry", () => {
     const sink: EDASink = {
       name: "test.mixed-live-slack-like-sink",
       durable: {
-        interests: [assistantMessageCommittedEventType],
+        interests: eventInterest(assistantMessageCommittedEventType),
         process: () =>
           Effect.sync(() => {
             observed.push("durable-final");
           }),
       },
       ephemeral: {
-        interests: [textDeltaEventType],
+        interests: Schema.Struct({
+          ...DurableEventEnvelope.fields,
+          durability: Schema.Literal("ephemeral"),
+          type: Schema.Literal(textDeltaEventType),
+        }),
         process: () =>
           Effect.gen(function* () {
             observed.push("ephemeral-start");
@@ -334,10 +342,10 @@ describe("EDASinkRegistry", () => {
     const sink: EDASink = {
       name: "test.turn-summary-sink",
       durable: {
-        interests: ["TurnCompleted"],
+        interests: eventInterest("TurnCompleted"),
         process: (batch) =>
           Effect.sync(() => {
-            processed.push(batch.events.map((entry) => entry.event.type));
+            processed.push(batch.events.map((entry) => durableEventEnvelope(entry.event).type));
           }),
       },
     };
@@ -373,10 +381,10 @@ describe("EDASinkRegistry", () => {
     const sink: EDASink = {
       name: "test.external-marker-sink",
       durable: {
-        interests: ["ExternalMarker"],
+        interests: eventInterest("ExternalMarker"),
         process: (batch) =>
           Effect.sync(() => {
-            processed.push(batch.allEvents.map((entry) => entry.event.type));
+            processed.push(batch.allEvents.map((entry) => durableEventEnvelope(entry.event).type));
           }),
       },
     };
@@ -429,7 +437,7 @@ describe("EDASinkRegistry", () => {
     const sink: EDASink = {
       name: "test.defective-marker-sink",
       durable: {
-        interests: ["ExternalMarker"],
+        interests: eventInterest("ExternalMarker"),
         process: () =>
           Effect.sync(() => {
             calls += 1;
@@ -479,7 +487,7 @@ describe("EDASinkRegistry", () => {
     const sink: EDASink = {
       name: "test.checkpoint-state",
       durable: {
-        interests: ["ExternalMarker"],
+        interests: eventInterest("ExternalMarker"),
         process: (_batch, ctx) =>
           Effect.gen(function* () {
             const current = yield* ctx.checkpoint.get(CounterCheckpoint, { count: 0 });
@@ -547,11 +555,13 @@ describe("EDASinkRegistry", () => {
     const sink: EDASink = {
       name: "test.final-reply-sink",
       durable: {
-        interests: ["AssistantMessageCommitted"],
+        interests: eventInterest("AssistantMessageCommitted"),
         process: (batch, ctx) =>
           Effect.gen(function* () {
             for (const event of batch.events) {
-              const payload = event.event.payload as { readonly messageId: string };
+              const payload = durableEventEnvelope(event.event).payload as {
+                readonly messageId: string;
+              };
               yield* ctx.stageDurable(
                 appEvent({
                   id: deliveredEventId++,
@@ -571,7 +581,9 @@ describe("EDASinkRegistry", () => {
         yield* waitUntil("first staged delivery", () =>
           replayAll(runtime).pipe(
             Effect.map((events) =>
-              events.some((entry) => entry.event.type === "ExternalReplyDelivered"),
+              events.some(
+                (entry) => durableEventEnvelope(entry.event).type === "ExternalReplyDelivered",
+              ),
             ),
           ),
         );
@@ -581,7 +593,9 @@ describe("EDASinkRegistry", () => {
           replayAll(runtime).pipe(
             Effect.map(
               (events) =>
-                events.filter((entry) => entry.event.type === "ExternalReplyDelivered").length >= 2,
+                events.filter(
+                  (entry) => durableEventEnvelope(entry.event).type === "ExternalReplyDelivered",
+                ).length >= 2,
             ),
           ),
         );
@@ -603,12 +617,18 @@ describe("EDASinkRegistry", () => {
     );
 
     const { events, afterSecond } = await Effect.runPromise(program);
-    const delivered = events.filter((entry) => entry.event.type === "ExternalReplyDelivered");
+    const delivered = events.filter(
+      (entry) => durableEventEnvelope(entry.event).type === "ExternalReplyDelivered",
+    );
     const deliveredAfterSecond = afterSecond.filter(
-      (entry) => entry.event.type === "ExternalReplyDelivered",
+      (entry) => durableEventEnvelope(entry.event).type === "ExternalReplyDelivered",
     );
 
     expect(delivered).toHaveLength(1);
     expect(deliveredAfterSecond).toHaveLength(2);
   });
 });
+
+/** Schema-selected fixture interest, including application events opaque to the framework. */
+const eventInterest = (type: string) =>
+  Schema.Struct({ ...DurableEventEnvelope.fields, type: Schema.Literal(type) });

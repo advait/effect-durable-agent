@@ -1,3 +1,5 @@
+import { it as effectIt } from "@effect/vitest";
+import { durableEventEnvelope } from "effect-durable-agent/types/events";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
@@ -512,7 +514,7 @@ const runEDASessionStoreContract = (contract: EDASessionStoreContract) => {
         }),
       );
 
-      expectFailure(exit, "SummaryCreated requires summary payload");
+      expectFailure(exit, "summary");
     });
 
     it("commits batches atomically, preserving input order and duplicate positions", () => {
@@ -689,6 +691,69 @@ const runEDASessionStoreContract = (contract: EDASessionStoreContract) => {
 };
 
 describe("EDASessionStore", () => {
+  effectIt.effect(
+    "replays retained event rows without changing their bytes or envelope encoding",
+    () =>
+      Effect.gen(function* () {
+        const fakeSql = makeFakeDurableObjectSql();
+        const persisted = [
+          {
+            seq: 1,
+            event_id: EVENT_ID_A,
+            namespace: "effect-durable-agent",
+            type: "TurnCompleted",
+            schema_version: 1,
+            created_at_ms: 1715000000000,
+            trace_json:
+              '{"span":{"traceId":"0123456789abcdef0123456789abcdef","spanId":"0123456789abcdef","sampled":true,"tracestate":null},"links":[]}',
+            fact_json:
+              '{"runId":"018f6bd5-2f2a-7b1e-9f1a-1f2e3d4c5b6a","turnId":"018f6bd5-2f2a-7b1e-af1a-1f2e3d4c5b6a","usage":{"inputTokens":3},"retainedExtra":"unchanged"}',
+          },
+          {
+            seq: 2,
+            event_id: EVENT_ID_B,
+            namespace: "retained.external",
+            type: "TurnCompleted",
+            schema_version: 1,
+            created_at_ms: 1715000000001,
+            trace_json:
+              '{"span":{"traceId":"0123456789abcdef0123456789abcdef","spanId":"0123456789abcdef","sampled":true,"tracestate":null},"links":[]}',
+            fact_json: '{"opaque":"foreign tag collision"}',
+          },
+        ];
+        const store = yield* DurableObjectSessionStore.make({
+          sessionId: SessionId.make(SESSION_ID),
+          storage: fakeSql.storage,
+        });
+        fakeSql.eventRows.push(...persisted);
+        const before = JSON.stringify(fakeSql.eventRows);
+        const replay = yield* store.eventsAfter(SequenceNumber.make(0)).pipe(Stream.runCollect);
+        expect(JSON.stringify(fakeSql.eventRows)).toBe(before);
+        expect(replay[0]?.event.type).toBe("TurnCompleted");
+        expect(replay[1]?.event.type).toBe("Foreign");
+        for (const [index, entry] of replay.entries()) {
+          const row = persisted[index];
+          if (row === undefined) return yield* Effect.die(new Error("Missing persisted fixture"));
+          const original = DurableEventEnvelope.make({
+            namespace: row.namespace,
+            type: row.type,
+            schemaVersion: row.schema_version,
+            durability: "durable",
+            eventId: EventId.make(row.event_id),
+            sessionId: SessionId.make(SESSION_ID),
+            createdAtMs: UnixEpochMillis.make(row.created_at_ms),
+            trace: JSON.parse(row.trace_json),
+            payload: JSON.parse(row.fact_json),
+          });
+          expect(durableEventEnvelope(entry.event)).toEqual(original);
+          expect(Schema.encodeSync(CommittedDurableEvent)(entry)).toEqual({
+            position: entry.position,
+            event: Schema.encodeSync(DurableEventEnvelope)(original),
+          });
+        }
+      }),
+  );
+
   runEDASessionStoreContract({
     name: "InMemory",
     makeStore: (sessionId) =>

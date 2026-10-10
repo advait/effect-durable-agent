@@ -818,12 +818,11 @@ export const foldReducedState = (
 
   for (const entry of committed) {
     lastSeq = entry.position.seq;
-    const event = interpretLegacyAttemptForReduction(entry.event);
-    if (event.namespace !== effectDurableAgentNamespace) {
+    if (entry.event.namespace !== effectDurableAgentNamespace) {
       continue;
     }
 
-    const payload = event.payload as any;
+    const event = interpretLegacyAttemptForReduction(entry.event);
     const seq = entry.position.seq;
     const eventCreatedAtMs = Number(event.createdAtMs);
 
@@ -837,17 +836,18 @@ export const foldReducedState = (
       case runSchedulingDeliveredEventType:
         if (
           runSchedulingRequest !== undefined &&
-          runSchedulingRequest.requestId === payload.requestId
+          runSchedulingRequest.requestId === event.payload.requestId
         ) {
           runSchedulingRequest = { ...runSchedulingRequest, deliveredSeq: seq };
         }
         break;
       case runSchedulingInvalidatedEventType:
       case runSchedulingGrantedEventType:
-        if (runSchedulingRequest?.requestId === payload.requestId) runSchedulingRequest = undefined;
+        if (runSchedulingRequest?.requestId === event.payload.requestId)
+          runSchedulingRequest = undefined;
         break;
       case commandAdmittedEventType: {
-        const { command } = payload;
+        const { command } = event.payload;
         const commandId = requireAdmittedCommandId(command);
         upsert(commands, commandId, { commandId }, (record) => ({
           ...record,
@@ -858,12 +858,12 @@ export const foldReducedState = (
         break;
       }
       case commandStartedEventType: {
-        const { commandId } = payload;
+        const { commandId } = event.payload;
         upsert(commands, commandId, { commandId }, (record) => ({ ...record, startedSeq: seq }));
         break;
       }
       case commandCompletedEventType: {
-        const { commandId } = payload;
+        const { commandId } = event.payload;
         upsert(commands, commandId, { commandId }, (record) => ({
           ...record,
           terminal: { _tag: "Completed", seq } as CommandTerminal,
@@ -871,7 +871,7 @@ export const foldReducedState = (
         break;
       }
       case commandFailedEventType: {
-        const { commandId, error } = payload;
+        const { commandId, error } = event.payload;
         upsert(commands, commandId, { commandId }, (record) => ({
           ...record,
           terminal: { _tag: "Failed", seq, error } as CommandTerminal,
@@ -879,7 +879,7 @@ export const foldReducedState = (
         break;
       }
       case commandCancelledEventType: {
-        const { commandId, reason } = payload;
+        const { commandId, reason } = event.payload;
         upsert(commands, commandId, { commandId }, (record) => ({
           ...record,
           terminal: { _tag: "Cancelled", seq, reason } as CommandTerminal,
@@ -887,8 +887,8 @@ export const foldReducedState = (
         break;
       }
       case runStartedEventType: {
-        const { runId, commandIds, trace } = payload;
-        modelSelection ??= payload.modelSelection;
+        const { runId, commandIds, trace } = event.payload;
+        modelSelection ??= event.payload.modelSelection;
         const terminal = runs.get(runId)?.terminal;
         runs.set(runId, {
           runId,
@@ -896,13 +896,13 @@ export const foldReducedState = (
           startedAtMs: eventCreatedAtMs,
           startedSeq: seq,
           trace,
-          modelSelection: payload.modelSelection,
+          modelSelection: event.payload.modelSelection,
           ...(terminal === undefined ? {} : { terminal }),
         });
         break;
       }
       case runCompletedEventType: {
-        const { runId } = payload;
+        const { runId } = event.payload;
         updateExisting(runs, runId, (record) => ({
           ...record,
           ...terminalTiming(record, eventCreatedAtMs),
@@ -911,7 +911,7 @@ export const foldReducedState = (
         break;
       }
       case runFailedEventType: {
-        const { runId, error } = payload;
+        const { runId, error } = event.payload;
         updateExisting(runs, runId, (record) => ({
           ...record,
           ...terminalTiming(record, eventCreatedAtMs),
@@ -920,7 +920,7 @@ export const foldReducedState = (
         break;
       }
       case runInterruptedEventType: {
-        const { runId, reason } = payload;
+        const { runId, reason } = event.payload;
         updateExisting(runs, runId, (record) => ({
           ...record,
           ...terminalTiming(record, eventCreatedAtMs),
@@ -929,7 +929,7 @@ export const foldReducedState = (
         break;
       }
       case turnStartedEventType: {
-        const { runId, turnId, inputMessageIds } = payload;
+        const { runId, turnId, inputMessageIds } = event.payload;
         const terminal = turns.get(turnId)?.terminal;
         turns.set(turnId, {
           runId,
@@ -947,7 +947,7 @@ export const foldReducedState = (
         break;
       }
       case turnCompletedEventType: {
-        const { turnId, usage } = payload;
+        const { turnId, usage } = event.payload;
         updateExisting(turns, turnId, (record) => ({
           ...record,
           ...terminalTiming(record, eventCreatedAtMs),
@@ -960,7 +960,7 @@ export const foldReducedState = (
         break;
       }
       case turnFailedEventType: {
-        const { turnId, error } = payload;
+        const { turnId, error } = event.payload;
         updateExisting(turns, turnId, (record) => ({
           ...record,
           ...terminalTiming(record, eventCreatedAtMs),
@@ -969,7 +969,7 @@ export const foldReducedState = (
         break;
       }
       case turnStoppedEventType: {
-        const { turnId, reason } = payload;
+        const { turnId, reason } = event.payload;
         updateExisting(turns, turnId, (record) => ({
           ...record,
           ...terminalTiming(record, eventCreatedAtMs),
@@ -978,7 +978,7 @@ export const foldReducedState = (
         break;
       }
       case inferenceStartedEventType: {
-        const { runId, turnId, inferenceId } = payload;
+        const { runId, turnId, inferenceId } = event.payload;
         const terminal = inferences.get(inferenceId)?.terminal;
         inferences.set(inferenceId, {
           runId,
@@ -991,7 +991,7 @@ export const foldReducedState = (
         break;
       }
       case inferenceCompletedEventType: {
-        const { inferenceId, usage } = payload;
+        const { inferenceId, usage } = event.payload;
         const previouslyCompleted = inferences.get(inferenceId)?.terminal?._tag === "Completed";
         updateExisting(inferences, inferenceId, (record) => ({
           ...record,
@@ -1003,13 +1003,13 @@ export const foldReducedState = (
           } as InferenceTerminal,
         }));
         if (!previouslyCompleted && inferences.get(inferenceId)?.terminal?._tag === "Completed") {
-          const model = runs.get(payload.runId)?.modelSelection;
+          const model = runs.get(event.payload.runId)?.modelSelection;
           if (model !== undefined) tokenConsumption = addModelUsage(tokenConsumption, model, usage);
         }
         break;
       }
       case inferenceFailedEventType: {
-        const { inferenceId, error } = payload;
+        const { inferenceId, error } = event.payload;
         updateExisting(inferences, inferenceId, (record) => ({
           ...record,
           ...terminalTiming(record, eventCreatedAtMs),
@@ -1018,7 +1018,7 @@ export const foldReducedState = (
         break;
       }
       case toolCallCreatedEventType: {
-        const { runId, turnId, inferenceId, toolCallId, promptPart } = payload;
+        const { runId, turnId, inferenceId, toolCallId, promptPart } = event.payload;
         upsert(toolCalls, toolCallId, { toolCallId }, (record) => ({
           ...record,
           decision: {
@@ -1037,7 +1037,7 @@ export const foldReducedState = (
         break;
       }
       case toolCallRejectedEventType: {
-        const { runId, turnId, inferenceId, toolCallId, promptPart } = payload;
+        const { runId, turnId, inferenceId, toolCallId, promptPart } = event.payload;
         upsert(toolCalls, toolCallId, { toolCallId }, (record) => ({
           ...record,
           decision: {
@@ -1056,7 +1056,7 @@ export const foldReducedState = (
         break;
       }
       case toolCallStartedEventType: {
-        const { toolCallId } = payload;
+        const { toolCallId } = event.payload;
         upsert(toolCalls, toolCallId, { toolCallId }, (record) => ({
           ...record,
           startedAtMs: eventCreatedAtMs,
@@ -1065,7 +1065,7 @@ export const foldReducedState = (
         break;
       }
       case toolCallCompletedEventType: {
-        const { toolCallId, promptPart } = payload;
+        const { toolCallId, promptPart } = event.payload;
         upsert(toolCalls, toolCallId, { toolCallId }, (record) => ({
           ...record,
           ...terminalTiming(record, eventCreatedAtMs),
@@ -1079,7 +1079,7 @@ export const foldReducedState = (
         break;
       }
       case toolCallFailedEventType: {
-        const { toolCallId, promptPart, error } = payload;
+        const { toolCallId, promptPart, error } = event.payload;
         upsert(toolCalls, toolCallId, { toolCallId }, (record) => ({
           ...record,
           ...terminalTiming(record, eventCreatedAtMs),
@@ -1093,7 +1093,7 @@ export const foldReducedState = (
         break;
       }
       case systemMessageCommittedEventType: {
-        const { messageId, content } = payload;
+        const { messageId, content } = event.payload;
         messages.set(messageId, {
           _tag: "System",
           messageId,
@@ -1104,7 +1104,7 @@ export const foldReducedState = (
         break;
       }
       case userMessageCommittedEventType: {
-        const { commandId, messageId, content } = payload;
+        const { commandId, messageId, content } = event.payload;
         messages.set(messageId, {
           _tag: "User",
           messageId,
@@ -1116,7 +1116,7 @@ export const foldReducedState = (
         break;
       }
       case userMessageSubmittedEventType: {
-        const { commandId, messageId, disposition: requestedDisposition, content } = payload;
+        const { commandId, messageId, disposition: requestedDisposition, content } = event.payload;
         messages.set(messageId, {
           _tag: "User",
           messageId,
@@ -1130,7 +1130,7 @@ export const foldReducedState = (
         break;
       }
       case userMessagePromotedEventType: {
-        const { messageId } = payload;
+        const { messageId } = event.payload;
         const message = messages.get(messageId);
         if (
           (message?._tag === "User" && message.disposition === "queue") ||
@@ -1150,7 +1150,7 @@ export const foldReducedState = (
         break;
       }
       case userMessageCancelledEventType: {
-        const { commandId, messageId, reason } = payload;
+        const { commandId, messageId, reason } = event.payload;
         const message = messages.get(messageId);
         if (message?._tag === "User" || message?._tag === "Steering") {
           messages.set(messageId, {
@@ -1164,11 +1164,11 @@ export const foldReducedState = (
       }
       case messageQueuePausedEventType:
       case pendingMessagesPausedEventType: {
-        const messageIds = payload.messageIds;
+        const messageIds = event.payload.messageIds;
         const interruptionCommandId =
           event.type === messageQueuePausedEventType
-            ? payload.stopCommandId
-            : payload.interruptionCommandId;
+            ? event.payload.stopCommandId
+            : event.payload.interruptionCommandId;
         for (const messageId of messageIds) {
           const message = messages.get(messageId);
           if (
@@ -1187,7 +1187,7 @@ export const foldReducedState = (
         break;
       }
       case steeringMessageQueuedEventType: {
-        const { commandId, messageId, runId, content } = payload;
+        const { commandId, messageId, runId, content } = event.payload;
         messages.set(messageId, {
           _tag: "Steering",
           messageId,
@@ -1200,7 +1200,7 @@ export const foldReducedState = (
         break;
       }
       case steeringMessageCancelledEventType: {
-        const { messageId, reason } = payload;
+        const { messageId, reason } = event.payload;
         const message = messages.get(messageId);
         if (message?._tag === "Steering") {
           messages.set(messageId, { ...message, cancelledSeq: seq, cancellationReason: reason });
@@ -1208,7 +1208,7 @@ export const foldReducedState = (
         break;
       }
       case assistantMessageCommittedEventType: {
-        const { messageId, runId, turnId, inferenceId, promptParts } = payload;
+        const { messageId, runId, turnId, inferenceId, promptParts } = event.payload;
         messages.set(messageId, {
           _tag: "Assistant",
           messageId,
@@ -1223,7 +1223,7 @@ export const foldReducedState = (
         break;
       }
       case assistantMessageImportedEventType: {
-        const { messageId, runId, turnId, inferenceId, promptParts } = payload;
+        const { messageId, runId, turnId, inferenceId, promptParts } = event.payload;
         messages.set(messageId, {
           _tag: "Assistant",
           messageId,
@@ -1239,7 +1239,7 @@ export const foldReducedState = (
         break;
       }
       case assistantPartialCommittedEventType: {
-        const { messageId, runId, turnId, inferenceId, promptParts, reason } = payload;
+        const { messageId, runId, turnId, inferenceId, promptParts, reason } = event.payload;
         messages.set(messageId, {
           _tag: "AssistantPartial",
           messageId,
@@ -1255,7 +1255,7 @@ export const foldReducedState = (
         break;
       }
       case stopTurnRequestedEventType: {
-        const { commandId, runId, turnId } = payload;
+        const { commandId, runId, turnId } = event.payload;
         stopRequests.set(commandId, {
           commandId,
           requestedSeq: seq,
@@ -1266,7 +1266,7 @@ export const foldReducedState = (
         break;
       }
       case stopTurnAppliedEventType: {
-        const { commandId, runId, turnId, inferenceId } = payload;
+        const { commandId, runId, turnId, inferenceId } = event.payload;
         const existing = stopRequests.get(commandId);
         stopRequests.set(commandId, {
           commandId,
@@ -1285,12 +1285,12 @@ export const foldReducedState = (
         break;
       }
       case contextProjectedEventType: {
-        const { contextVersion } = payload;
+        const { contextVersion } = event.payload;
         context = { ...context, version: contextVersion };
         break;
       }
       case compactionRequestedEventType: {
-        const { compactionId, sourceFromSeq, sourceToSeq } = payload;
+        const { compactionId, sourceFromSeq, sourceToSeq } = event.payload;
         upsert(compactions, compactionId, { compactionId }, (record) => ({
           ...record,
           requestedSeq: seq,
@@ -1300,7 +1300,7 @@ export const foldReducedState = (
         break;
       }
       case compactionStartedEventType: {
-        const { compactionId } = payload;
+        const { compactionId } = event.payload;
         upsert(compactions, compactionId, { compactionId }, (record) => ({
           ...record,
           startedSeq: seq,
@@ -1308,7 +1308,7 @@ export const foldReducedState = (
         break;
       }
       case summaryCreatedEventType: {
-        const { compactionId, summaryId, sourceFromSeq, sourceToSeq } = payload;
+        const { compactionId, summaryId, sourceFromSeq, sourceToSeq } = event.payload;
         upsert(compactions, compactionId, { compactionId }, (record) => ({
           ...record,
           summaryCreatedSeq: seq,
@@ -1319,7 +1319,7 @@ export const foldReducedState = (
         break;
       }
       case contextRebasedEventType: {
-        const { compactionId, summaryId, contextVersion, retainedFromContextSeq } = payload;
+        const { compactionId, summaryId, contextVersion, retainedFromContextSeq } = event.payload;
         upsert(compactions, compactionId, { compactionId }, (record) => ({
           ...record,
           summaryId,
@@ -1348,12 +1348,16 @@ export const foldReducedState = (
         break;
       }
       case compactionCompletedEventType: {
-        const { compactionId } = payload;
+        const { compactionId } = event.payload;
         if (
           compactions.get(compactionId)?.terminal?._tag !== "Completed" &&
-          payload.modelSelection !== undefined
+          event.payload.modelSelection !== undefined
         ) {
-          tokenConsumption = addModelUsage(tokenConsumption, payload.modelSelection, payload.usage);
+          tokenConsumption = addModelUsage(
+            tokenConsumption,
+            event.payload.modelSelection,
+            event.payload.usage,
+          );
         }
         upsert(compactions, compactionId, { compactionId }, (record) => ({
           ...record,
@@ -1362,9 +1366,13 @@ export const foldReducedState = (
         break;
       }
       case compactionFailedEventType: {
-        const { compactionId, error } = payload;
-        if (payload.modelSelection !== undefined) {
-          tokenConsumption = addModelUsage(tokenConsumption, payload.modelSelection, payload.usage);
+        const { compactionId, error } = event.payload;
+        if (event.payload.modelSelection !== undefined) {
+          tokenConsumption = addModelUsage(
+            tokenConsumption,
+            event.payload.modelSelection,
+            event.payload.usage,
+          );
         }
         upsert(compactions, compactionId, { compactionId }, (record) => ({
           ...record,
@@ -1377,21 +1385,21 @@ export const foldReducedState = (
         break;
       }
       case recoveryCompletedEventType: {
-        const { continuation } = payload;
+        const { continuation } = event.payload;
         if (continuation !== undefined) {
           recoveryContinuations.set(continuation.replacementRunId, { ...continuation, seq });
         }
         break;
       }
       case sessionConfiguredEventType:
-        modelSelection ??= payload.modelSelection;
+        modelSelection ??= event.payload.modelSelection;
         break;
       case baseStateRequestedEventType:
       case baseStateCreatedEventType:
       case baseStateFailedEventType:
         break;
       default:
-        assertNever(event as never, "reduced-state durable event");
+        assertNever(event, "reduced-state durable event");
     }
   }
 

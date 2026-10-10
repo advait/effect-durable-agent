@@ -9,7 +9,7 @@ import {
   encodeEdaRpcDurableEvent,
 } from "./rpc-codec";
 import type { EDASessionSnapshot } from "effect-durable-agent/services/session-query";
-import type { CommittedDurableEvent as CommittedDurableEventValue } from "effect-durable-agent/services/session-store";
+import type { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
 import type {
   CommittedCommandTerminalEvent,
   EDARuntimeConfig,
@@ -42,6 +42,12 @@ import {
   EDA_WEB_SOCKET_PING_MESSAGE,
   EDA_WEB_SOCKET_PONG_MESSAGE,
 } from "effect-durable-agent/websocket";
+import { durableEventEnvelope } from "effect-durable-agent/types/events/durable";
+import type { DurableEventEnvelope } from "effect-durable-agent/types/events";
+
+/** Committed event envelope crossing the structured-clone RPC boundary. */
+type CommittedDurableEventValue = CommittedDurableEvent<DurableEventEnvelope>;
+
 export type { EDAWebSocketProjection } from "./websocket/projection";
 /** Internal Worker-to-object header selecting an app-owned WebSocket projection. */
 export const EDA_WEB_SOCKET_PROJECTION_HEADER = "x-eda-websocket-projection";
@@ -370,10 +376,10 @@ export const edaRuntimeConfig = (input: {
 
 /** Encode committed events into structured-clone-safe Durable Object RPC payloads. */
 export const encodeEdaRpcCommittedDurableEvent = (
-  event: CommittedDurableEventValue,
+  event: CommittedDurableEvent,
 ): CommittedDurableEventValue => ({
   position: event.position,
-  event: encodeEdaRpcDurableEvent(event.event),
+  event: encodeEdaRpcDurableEvent(durableEventEnvelope(event.event)),
 });
 
 /** Encode runtime snapshots into structured-clone-safe Durable Object RPC payloads. */

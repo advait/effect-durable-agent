@@ -1,11 +1,16 @@
+import type { DurableEventEnvelope } from "../types/events";
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
-import type { CommittedDurableEvent } from "./session-store";
+import { selectCommittedEvent, type CommittedDurableEvent } from "./session-store";
 
 /** Input accepted by the reducer constructor before schema codecs are materialized. */
-export interface EDAReducerDefinition<State, Name extends string = string> {
+export interface EDAReducerDefinition<
+  State,
+  Name extends string = string,
+  E = import("../types/events/durable").DecodedDurableEvent,
+> {
   readonly name: Name;
   readonly initial: State;
   readonly stateSchema: Schema.Codec<State, unknown, never, never>;
@@ -13,7 +18,7 @@ export interface EDAReducerDefinition<State, Name extends string = string> {
   readonly encode?: (state: State) => unknown;
   readonly decode?: (payload: unknown) => State;
   /** Return the next state without mutating the input; projections may be shared across sinks. */
-  reduce(state: State, event: CommittedDurableEvent): State;
+  reduce(state: State, event: CommittedDurableEvent<E>): State;
 }
 
 /** App-specific pure reducer over the durable session event log. */
@@ -30,6 +35,18 @@ export interface EDAReducer<State = unknown, Name extends string = string> {
 
 /** Convenience constructor preserving a reducer's literal name and schema-derived state type. */
 export const EDAReducer = {
+  /** Select and narrow reducer input from one event schema; malformed registered events fail in the store. */
+  forEvents: <E extends DurableEventEnvelope, State, const Name extends string>(
+    events: Schema.Codec<E, unknown, never, never>,
+    reducer: EDAReducerDefinition<State, Name, E>,
+  ): EDAReducer<State, Name> =>
+    EDAReducer.make({
+      ...reducer,
+      reduce: (state, entry) => {
+        const selected = selectCommittedEvent(events, entry);
+        return selected === undefined ? state : reducer.reduce(state, selected);
+      },
+    }),
   make: <State, const Name extends string = string>(
     reducer: EDAReducerDefinition<State, Name>,
   ): EDAReducer<State, Name> => ({
@@ -141,9 +158,9 @@ export const getEDAReducerState = <State, Name extends string>(
   reducer: EDAReducer<State, Name>,
 ): State => {
   const state = snapshot.get(reducer.name);
-  return state === undefined
-    ? reducer.initial
-    : Schema.decodeUnknownSync(reducer.stateSchema)(state);
+  if (state === undefined) return reducer.initial;
+  if (Schema.is(reducer.stateSchema)(state)) return state;
+  throw new Error(`Invalid in-memory reducer state for ${reducer.name}`);
 };
 
 function makeReducerRegistry(reducers: ReadonlyArray<EDAReducer>): EDAReducerRegistryShape {
