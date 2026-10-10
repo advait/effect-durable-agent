@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.19
+
+Align the development toolchain with Gia: TypeScript 7.0.2, Vite Plus 0.3.0, Oxlint 1.79.0 and Effect tsgo 0.39.0. Runtime APIs and persisted state are unchanged.
+
 All notable changes to Effect Durable Agent will be documented in this file.
 
 ## 0.1.0-alpha.18

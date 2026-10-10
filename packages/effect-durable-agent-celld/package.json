@@ -1,6 +1,6 @@
 {
   "name": "effect-durable-agent-celld",
-  "version": "0.1.0-alpha.18",
+  "version": "0.1.0-alpha.19",
   "description": "celld host for effect-durable-agent.",
   "keywords": [
     "agents",
@@ -38,8 +38,8 @@
   "scripts": {
     "build": "vp pack",
     "check": "pnpm run lint && pnpm run typecheck",
-    "lint": "vp fmt --check src testing package.json tsconfig.json vite.config.ts && vp lint --deny-warnings src testing vite.config.ts",
-    "lint:fix": "vp fmt src testing package.json tsconfig.json vite.config.ts && vp lint --fix src testing vite.config.ts",
+    "lint": "vp fmt --check src testing package.json tsconfig.json vite.config.ts && pnpm --dir ../.. exec oxlint --config oxlint.config.mjs --deny-warnings packages/effect-durable-agent-celld/src packages/effect-durable-agent-celld/testing packages/effect-durable-agent-celld/vite.config.ts",
+    "lint:fix": "vp fmt src testing package.json tsconfig.json vite.config.ts && pnpm --dir ../.. exec oxlint --config oxlint.config.mjs --fix packages/effect-durable-agent-celld/src packages/effect-durable-agent-celld/testing packages/effect-durable-agent-celld/vite.config.ts",
     "prepack": "vp pack --no-publint",
     "test": "vp test run --passWithNoTests src",
     "test:integration": "vp test run testing/integration/host-conformance.test.ts",
@@ -62,7 +62,7 @@
     "@cloudflare/workers-types": "5.20260813.1",
     "@effect/ai-openai": "4.0.0-beta.102",
     "effect": "4.0.0-beta.102",
-    "vite-plus": "^0.1.21",
+    "vite-plus": "0.3.0",
     "vitest": "^4.1.8"
   }
 }

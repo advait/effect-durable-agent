@@ -218,17 +218,15 @@ describe("paged sink startup replay", () => {
       Effect.gen(function* () {
         const deliveries: Array<Array<EDASinkDurableBatch>> = [[], []];
         const reads: Array<number> = [];
-        const sinks = deliveries.map(
-          (batches, i): EDASink => ({
-            name: `caught-up.${i}`,
-            durable: {
-              process: (batch) =>
-                Effect.sync(() => {
-                  batches.push(batch);
-                }),
-            },
-          }),
-        );
+        const sinks = deliveries.map((batches, i): EDASink => ({
+          name: `caught-up.${i}`,
+          durable: {
+            process: (batch) =>
+              Effect.sync(() => {
+                batches.push(batch);
+              }),
+          },
+        }));
         yield* Effect.scoped(
           Effect.gen(function* () {
             const store = yield* EDASessionStore;
@@ -315,35 +313,31 @@ describe("paged sink startup replay", () => {
         const cursors = [0, 1, 15, 16, 17, 63, 64, 132];
         const delivered = cursors.map(() => new Array<number>());
         const failures: Array<string> = [];
-        const sinks = cursors.map(
-          (_, i): EDASink => ({
-            name: `replay.${i}`,
-            durable: {
-              batchSize: 5,
-              interests: eventInterest("UserMessageCommitted"),
-              process: (batch) =>
-                Effect.sync(() => {
-                  // Record assertions outside the runner: sink defects are intentionally caught by its contract.
-                  try {
-                    assert.deepStrictEqual(
-                      batch.stateAfter,
-                      reduceCommittedEvents(all.slice(0, batch.throughSeq)),
-                    );
-                    assert.strictEqual(batch.reducerStates.get(counter.name), batch.throughSeq);
-                    assert.strictEqual(
-                      batch.events.every((entry) => entry.event.type === "UserMessageCommitted"),
-                      true,
-                    );
-                    delivered[i]?.push(
-                      ...batch.allEvents.map((entry) => Number(entry.position.seq)),
-                    );
-                  } catch (error) {
-                    failures.push(String(error));
-                  }
-                }),
-            },
-          }),
-        );
+        const sinks = cursors.map((_, i): EDASink => ({
+          name: `replay.${i}`,
+          durable: {
+            batchSize: 5,
+            interests: eventInterest("UserMessageCommitted"),
+            process: (batch) =>
+              Effect.sync(() => {
+                // Record assertions outside the runner: sink defects are intentionally caught by its contract.
+                try {
+                  assert.deepStrictEqual(
+                    batch.stateAfter,
+                    reduceCommittedEvents(all.slice(0, batch.throughSeq)),
+                  );
+                  assert.strictEqual(batch.reducerStates.get(counter.name), batch.throughSeq);
+                  assert.strictEqual(
+                    batch.events.every((entry) => entry.event.type === "UserMessageCommitted"),
+                    true,
+                  );
+                  delivered[i]?.push(...batch.allEvents.map((entry) => Number(entry.position.seq)));
+                } catch (error) {
+                  failures.push(String(error));
+                }
+              }),
+          },
+        }));
         let all: ReadonlyArray<import("./session-store").CommittedDurableEvent> = [];
         yield* Effect.scoped(
           Effect.gen(function* () {
@@ -628,10 +622,10 @@ describe("paged session recovery", () => {
         ),
       };
       const reads: Array<number> = [];
-      const sinks = Array.from(
-        { length: 7 },
-        (_, i): EDASink => ({ name: `runtime.${i}`, durable: { process: unexpected } }),
-      );
+      const sinks = Array.from({ length: 7 }, (_, i): EDASink => ({
+        name: `runtime.${i}`,
+        durable: { process: unexpected },
+      }));
       const storeLayer = Layer.effect(
         EDASessionStore,
         Effect.gen(function* () {
