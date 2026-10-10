@@ -1,3 +1,4 @@
+import type { EDAAppEvents } from "effect-durable-agent/services/session-store";
 import type { RunScheduler } from "effect-durable-agent/services/run-scheduler";
 import { RunSchedulingWakeup } from "effect-durable-agent/services/run-scheduling-wakeup";
 import { EDASessionStoreError } from "effect-durable-agent/services/session-store";
@@ -37,6 +38,7 @@ export type EDASessionDurableObjectStorage = DurableObjectSessionStorage &
 
 /** Host adapters and application policy needed to build one session runtime. */
 export interface EDADurableObjectRuntimeLayerOptions {
+  readonly appEvents?: EDAAppEvents;
   readonly config: EDARuntimeConfig;
   readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
   readonly compactionPolicyLayer?: Layer.Layer<CompactionPolicy>;
@@ -56,6 +58,7 @@ export interface EDADurableObjectRuntimeLayerOptions {
 
 /** Compose the platform-neutral runtime with Cloudflare persistence and lifecycle adapters. */
 export const makeEDADurableObjectRuntimeLayer = ({
+  appEvents,
   config,
   compactionExecutorLayer,
   compactionPolicyLayer,
@@ -75,6 +78,7 @@ export const makeEDADurableObjectRuntimeLayer = ({
   const lifecycle = keepAlive ?? new DurableObjectKeepAlive(storage);
   const keepAliveLayer = EDAKeepAlive.FromAcquire(() => lifecycle.acquire());
   return makeEDARuntimeLayer({
+    appEvents,
     config,
     compactionExecutorLayer,
     compactionPolicyLayer,

@@ -34,7 +34,6 @@ import {
   NonNegativeInt,
   ProviderPartId,
   ToolName,
-  UsagePayload,
 } from "../types/events";
 import {
   CommittedDurableEvent,
@@ -599,7 +598,7 @@ const inferenceUsageAttributes = (terminal: InferenceRunTerminal) => {
   }
   const completed = terminal.committed.find((entry) => entry.event.type === "InferenceCompleted");
   return usageAttributes(
-    (completed?.event.payload as { readonly usage?: UsagePayload } | undefined)?.usage,
+    completed?.event.type === "InferenceCompleted" ? completed.event.payload.usage : undefined,
   );
 };
 

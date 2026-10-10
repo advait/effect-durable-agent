@@ -1,3 +1,4 @@
+import { makeEDARunTrace, makeRootEDAEventTrace } from "../types/tracing";
 import * as fc from "fast-check";
 import * as Prompt from "effect/unstable/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
@@ -143,7 +144,11 @@ const committed = (position: number, type: string, payload: unknown) => {
     eventId: eventId(position),
     sessionId,
     createdAtMs: UnixEpochMillis.make(1_715_000_000_000 + position),
-    payload,
+    payload:
+      type === "RunStarted" && typeof payload === "object" && payload !== null
+        ? { trace: makeEDARunTrace(), ...payload }
+        : payload,
+    trace: makeRootEDAEventTrace(),
   } as EDADurableEvent;
 
   return CommittedDurableEvent.make({ position: durablePosition(seq(position)), event });

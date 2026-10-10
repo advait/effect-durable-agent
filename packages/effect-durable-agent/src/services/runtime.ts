@@ -7,19 +7,14 @@ import * as Stream from "effect/Stream";
 import { EDACommand, GrantRunCommand } from "../types/commands";
 import { CommandId, SequenceNumber, durablePosition } from "../types/core";
 import {
+  CommandCompletedEvent,
+  CommandFailedEvent,
+  CommandCancelledEvent,
   ModelSelectionPayload,
   NonNegativeInt,
   SystemPromptText,
-  commandCancelledEventType,
-  commandCompletedEventType,
-  commandFailedEventType,
 } from "../types/events";
-import type {
-  CommandCancelledEvent,
-  CommandCompletedEvent,
-  CommandFailedEvent,
-  PositionedEvent,
-} from "../types/events";
+import type { PositionedEvent } from "../types/events";
 import { SessionState } from "./session-state";
 import type {
   EDASubmittable,
@@ -175,26 +170,31 @@ const makeLiveRuntime = (config: EDARuntimeConfig) =>
 
 const isCommandTerminalFor =
   (commandId: CommandId) =>
-  (event: PositionedEvent): boolean => {
+  (
+    event: PositionedEvent,
+  ): event is PositionedEvent & { readonly event: EDACommandTerminalEvent } => {
     if (
-      event.event.type !== commandCompletedEventType &&
-      event.event.type !== commandFailedEventType &&
-      event.event.type !== commandCancelledEventType
+      !Schema.is(CommandCompletedEvent)(event.event) &&
+      !Schema.is(CommandFailedEvent)(event.event) &&
+      !Schema.is(CommandCancelledEvent)(event.event)
     ) {
       return false;
     }
-    return (event.event.payload as { readonly commandId: CommandId }).commandId === commandId;
+    return event.event.payload.commandId === commandId;
   };
 
-const toCommittedCommandTerminal = (event: PositionedEvent): CommittedCommandTerminalEvent =>
-  CommittedDurableEvent.make({
-    position: durablePosition(event.position.seq),
-    event: event.event as EDACommandTerminalEvent,
-  }) as CommittedCommandTerminalEvent;
+const toCommittedCommandTerminal = (
+  event: PositionedEvent & { readonly event: EDACommandTerminalEvent },
+): CommittedCommandTerminalEvent => ({
+  position: durablePosition(event.position.seq),
+  event: event.event,
+});
 
 const commandIdFromCommandAdmitted = (committed: CommittedDurableEvent): CommandId => {
-  const commandId = (committed.event.payload as { readonly command?: EDACommand }).command
-    ?.commandId;
+  const commandId =
+    committed.event.type === "CommandAdmitted"
+      ? committed.event.payload.command.commandId
+      : undefined;
   if (commandId === undefined) {
     throw new Error("CommandAdmitted event is missing a framework commandId");
   }

@@ -320,7 +320,7 @@ describe("paged sink startup replay", () => {
             name: `replay.${i}`,
             durable: {
               batchSize: 5,
-              interests: ["UserMessageCommitted"],
+              interests: eventInterest("UserMessageCommitted"),
               process: (batch) =>
                 Effect.sync(() => {
                   // Record assertions outside the runner: sink defects are intentionally caught by its contract.
@@ -823,3 +823,7 @@ describe("paged session recovery", () => {
     }
   }
 });
+
+/** Schema-selected fixture interest, including application events opaque to the framework. */
+const eventInterest = (type: string) =>
+  Schema.Struct({ ...DurableEventEnvelope.fields, type: Schema.Literal(type) });

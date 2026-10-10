@@ -1,3 +1,5 @@
+import { CommandAdmittedEvent } from "../types/events";
+import { durableEventEnvelope } from "../types/events/durable";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -65,7 +67,6 @@ import {
   NonNegativeInt,
   PositionedEvent,
   SystemPromptText,
-  commandAdmittedEventType,
   turnFailedEventType,
   type ToolCallFailedPayload,
   type TurnFailedEvent,
@@ -591,7 +592,12 @@ const makeLiveSessionState = Effect.gen(function* () {
         ephemeral: current.ephemeral,
       });
       for (const entry of fresh) {
-        yield* liveBus.publish(PositionedEvent.make(entry));
+        yield* liveBus.publish(
+          PositionedEvent.make({
+            position: entry.position,
+            event: durableEventEnvelope(entry.event),
+          }),
+        );
       }
       return { head: nextReduced.lastSeq } satisfies PublishedDurables;
     });
@@ -716,8 +722,12 @@ const makeLiveSessionState = Effect.gen(function* () {
 
       const existing = yield* findExistingCommandAdmission(command);
       if (existing !== undefined) {
-        rememberPreparedCommand(existing.event, preparedByIdempotencyKey, preparedByCommandId);
-        return [existing.event];
+        rememberPreparedCommand(
+          durableEventEnvelope(existing.event),
+          preparedByIdempotencyKey,
+          preparedByCommandId,
+        );
+        return [durableEventEnvelope(existing.event)];
       }
 
       const commandId = command.commandId ?? (yield* ids.makeCommandId());
@@ -2667,7 +2677,7 @@ const hydrateFrameworkReducedState = (
 
 const hydrateAppReducerStates = (
   store: EDASessionStoreShape,
-  reducers: ReadonlyArray<EDAReducer<any>>,
+  reducers: ReadonlyArray<EDAReducer>,
 ): Effect.Effect<HydratedAppReducerStates, EDASessionStoreError> =>
   Effect.gen(function* () {
     const entries = yield* Effect.forEach(reducers, (reducer) =>
@@ -2750,10 +2760,10 @@ const rememberPreparedCommand = (
   preparedByIdempotencyKey: Map<string, DurableEventEnvelope>,
   preparedByCommandId: Map<string, DurableEventEnvelope>,
 ): void => {
-  if (event.type !== commandAdmittedEventType) {
+  if (!Schema.is(CommandAdmittedEvent)(event)) {
     return;
   }
-  const command = (event.payload as { readonly command?: EDACommand }).command;
+  const command = event.payload.command;
   if (command?.idempotencyKey !== undefined) {
     preparedByIdempotencyKey.set(command.idempotencyKey, event);
   }

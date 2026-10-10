@@ -1,3 +1,10 @@
+import * as Schema from "effect/Schema";
+import {
+  TurnStartedEvent,
+  TurnCompletedEvent,
+  TurnFailedEvent,
+  TurnStoppedEvent,
+} from "../types/events";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -7,13 +14,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { TurnId } from "../types/core";
-import {
-  PositionedEvent,
-  turnCompletedEventType,
-  turnFailedEventType,
-  turnStartedEventType,
-  turnStoppedEventType,
-} from "../types/events";
+import { PositionedEvent } from "../types/events";
 import { SessionEventObserver, type SessionEventObserverShape } from "./session-event-observer";
 
 /** Conservative raw-delta cap for one open turn's live-only reconnect replay. */
@@ -91,20 +92,20 @@ const nextActiveTurnReplay = (
   state: ActiveTurnEphemeralReplay,
   event: PositionedEvent,
 ): ActiveTurnEphemeralReplay => {
-  if (event.event.type === turnStartedEventType) {
+  if (Schema.is(TurnStartedEvent)(event.event)) {
     return {
-      turnId: (event.event.payload as { readonly turnId: TurnId }).turnId,
+      turnId: event.event.payload.turnId,
       events: [],
       overflowed: false,
     };
   }
 
   if (
-    event.event.type === turnCompletedEventType ||
-    event.event.type === turnFailedEventType ||
-    event.event.type === turnStoppedEventType
+    Schema.is(TurnCompletedEvent)(event.event) ||
+    Schema.is(TurnFailedEvent)(event.event) ||
+    Schema.is(TurnStoppedEvent)(event.event)
   ) {
-    const turnId = (event.event.payload as { readonly turnId?: TurnId }).turnId;
+    const turnId = event.event.payload.turnId;
     return turnId === undefined || state.turnId === undefined || turnId === state.turnId
       ? { events: [], overflowed: false }
       : state;

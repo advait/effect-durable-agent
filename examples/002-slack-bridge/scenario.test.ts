@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Prompt from "effect/unstable/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
@@ -215,7 +216,7 @@ const frameworkEvent = (seq: number, type: EventType, payload: unknown): Committ
   );
 
 const committed = (seq: number, event: DurableEventEnvelope): CommittedDurableEvent =>
-  CommittedDurableEvent.make({
+  Schema.decodeUnknownSync(CommittedDurableEvent)({
     position: durablePosition(SequenceNumber.make(seq)),
     event,
   });

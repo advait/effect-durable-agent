@@ -13,6 +13,8 @@ import {
 } from "effect-durable-agent/types/core";
 import { CompactionSummaryArtifact } from "effect-durable-agent/domain/context-projection";
 import {
+  SummaryCreatedPayload,
+  ContextRebasedPayload,
   DurableEventEnvelope,
   assistantMessageCommittedEventType,
   assistantMessageImportedEventType,
@@ -23,7 +25,7 @@ import {
   commandFailedEventType,
   commandStartedEventType,
   contextRebasedEventType,
-  decodeUnknownEDADurableEventSync,
+  decodeDurableEventSync,
   effectDurableAgentNamespace,
   steeringMessageQueuedEventType,
   summaryCreatedEventType,
@@ -600,28 +602,20 @@ const rowToCommittedDurableEvent = (
   sql: DurableObjectSqlStorage,
   row: DurableObjectEventRow,
   sessionId: SessionId,
-): CommittedDurableEvent =>
-  CommittedDurableEvent.make({
-    position: durablePosition(SequenceNumber.make(row.seq)),
-    event: decodeDurableEvent({
-      namespace: row.namespace,
-      type: row.type,
-      schemaVersion: row.schema_version,
-      durability: "durable",
-      eventId: row.event_id,
-      sessionId,
-      createdAtMs: row.created_at_ms,
-      trace: JSON.parse(row.trace_json),
-      payload: readLogicalPayload(sql, row),
-    }),
-  });
-
-const decodeDurableEvent = (input: unknown): DurableEventEnvelope => {
-  const event = Schema.decodeUnknownSync(DurableEventEnvelope)(input);
-  return event.namespace === effectDurableAgentNamespace
-    ? decodeUnknownEDADurableEventSync(event)
-    : event;
-};
+): CommittedDurableEvent => ({
+  position: durablePosition(SequenceNumber.make(row.seq)),
+  event: decodeDurableEventSync({
+    namespace: row.namespace,
+    type: row.type,
+    schemaVersion: row.schema_version,
+    durability: "durable",
+    eventId: row.event_id,
+    sessionId,
+    createdAtMs: row.created_at_ms,
+    trace: JSON.parse(row.trace_json),
+    payload: readLogicalPayload(sql, row),
+  }),
+});
 
 interface EncodedEventLogRow {
   readonly eventId: string;
@@ -679,7 +673,7 @@ const eventLogFactPayload = (namespace: string, type: string, payload: unknown):
     return payload;
   }
 
-  const record = payload as Record<string, unknown>;
+  const record = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown))(payload);
   switch (type) {
     case commandAdmittedEventType:
       return { command: commandFact(record.command) };
@@ -725,9 +719,13 @@ const pick = (
 };
 
 const readCommandIdFromFact = (row: DurableObjectEventRow): string => {
-  const commandId = (
-    JSON.parse(row.fact_json) as { readonly command?: { readonly commandId?: unknown } }
-  ).command?.commandId;
+  const {
+    command: { commandId },
+  } = Schema.decodeUnknownSync(
+    Schema.Struct({
+      command: Schema.Struct({ commandId: Schema.String }),
+    }),
+  )(JSON.parse(row.fact_json));
   if (typeof commandId !== "string") {
     throw new Error(`CommandAdmitted fact at seq ${row.seq} missing command.commandId`);
   }
@@ -908,8 +906,9 @@ const writeCommandInputProjection = (
     return;
   }
   const encoded = Schema.encodeSync(DurableEventEnvelope)(event);
-  const command = (encoded.payload as { readonly command?: { readonly commandId?: unknown } })
-    .command;
+  const { command } = Schema.decodeUnknownSync(
+    Schema.Struct({ command: Schema.Record(Schema.String, Schema.Unknown) }),
+  )(encoded.payload);
   const commandId = command?.commandId;
   if (commandId === undefined) {
     throw new Error("CommandAdmitted missing command.commandId");
@@ -951,7 +950,9 @@ const writeMessageProjection = (
   }
 
   const encoded = Schema.encodeSync(DurableEventEnvelope)(event);
-  const messageId = (encoded.payload as { readonly messageId?: unknown }).messageId;
+  const { messageId } = Schema.decodeUnknownSync(Schema.Struct({ messageId: Schema.Unknown }))(
+    encoded.payload,
+  );
   if (messageId === undefined) {
     throw new Error(`${event.type} missing messageId`);
   }
@@ -988,11 +989,7 @@ const writeSummaryProjection = (
     return;
   }
 
-  const payload = event.payload as {
-    readonly compactionId?: unknown;
-    readonly summaryId?: unknown;
-    readonly summary?: unknown;
-  };
+  const payload = Schema.decodeUnknownSync(SummaryCreatedPayload)(event.payload);
   const summaryId = payload.summaryId;
   if (summaryId === undefined) {
     throw new Error("SummaryCreated missing summaryId");
@@ -1036,11 +1033,7 @@ const writeContextRebaseProjection = (
     return;
   }
 
-  const payload = event.payload as {
-    readonly compactionId?: unknown;
-    readonly retainedFromContextSeq?: unknown;
-    readonly summaryId?: unknown;
-  };
+  const payload = Schema.decodeUnknownSync(ContextRebasedPayload)(event.payload);
   if (payload.summaryId === undefined) {
     throw new Error("ContextRebased missing summaryId");
   }

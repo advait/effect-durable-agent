@@ -176,7 +176,7 @@ export interface EdaTestLayerOptions {
   /** Override compaction executor; defaults to disabled. */
   readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
   /** App-specific durable metadata reducers. */
-  readonly reducers?: ReadonlyArray<EDAReducer<any>>;
+  readonly reducers?: ReadonlyArray<EDAReducer>;
   /** Override state-to-LLM context projection. */
   readonly promptProjectorLayer?: Layer.Layer<EDAPromptProjector>;
   /** App-provided EDA sinks. */
@@ -277,7 +277,7 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
     Layer.provideMerge(Layer.mergeAll(Factory, Models, Registry, Ids)),
   );
   const ToolExec = ToolExecutor.Live.pipe(
-    Layer.provideMerge(Layer.mergeAll(Factory, Registry, Ids, Session)),
+    Layer.provideMerge(Layer.mergeAll(Factory, Registry, Ids, Session, Store)),
   );
   const Turn = TurnRunner.Live.pipe(
     Layer.provideMerge(Layer.mergeAll(InferenceRunnerLayer, ToolExec, Factory, Ids)),

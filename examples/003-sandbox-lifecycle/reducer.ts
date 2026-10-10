@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { durableEventEnvelope } from "effect-durable-agent/types/events/durable";
 
 import type { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
 import { EDAReducer } from "effect-durable-agent/services/reducer-registry";
@@ -121,7 +122,7 @@ export const reduceSandboxLifecycleState = (
   state: SandboxLifecycleState,
   entry: CommittedDurableEvent,
 ): SandboxLifecycleState => {
-  const event = entry.event;
+  const event = durableEventEnvelope(entry.event);
 
   if (event.type === toolCallCreatedEventType && Schema.is(ToolCallCreatedPayload)(event.payload)) {
     return rememberToolCallCreated(state, event.payload);

@@ -14,13 +14,11 @@ import {
   inferenceCompletedEventType,
   inferenceFailedEventType,
   ModelSelectionPayload,
+  ToolCallCreatedEvent,
   NonNegativeInt,
-  UsagePayload,
-  toolCallCreatedEventType,
   toolCallRejectedEventType,
 } from "../types/events";
 import type {
-  ToolCallCreatedEvent,
   ToolCallFailedPayload,
   ToolCallRejectedEvent,
   InferenceCompletedEvent,
@@ -439,25 +437,35 @@ const requireFrameworkCreatedToolCalls = (created: ReadonlyArray<CommittedToolCa
 const turnUsageAttributes = (result: TurnRunResult) =>
   result.outcome._tag === "TurnRunCompleted"
     ? usageAttributes(
-        (result.outcome.committed.event.payload as { readonly usage?: UsagePayload }).usage,
+        result.outcome.committed.event.type === "TurnCompleted"
+          ? result.outcome.committed.event.payload.usage
+          : undefined,
       )
     : {};
 
 const isInferenceCompleted = (
   committed: CommittedDurableEvent,
-): committed is CommittedInferenceCompleted => committed.event.type === inferenceCompletedEventType;
+): committed is CommittedInferenceCompleted =>
+  committed.event.namespace === "effect-durable-agent" &&
+  committed.event.type === inferenceCompletedEventType;
 
 const isInferenceFailed = (
   committed: CommittedDurableEvent,
-): committed is CommittedInferenceFailed => committed.event.type === inferenceFailedEventType;
+): committed is CommittedInferenceFailed =>
+  committed.event.namespace === "effect-durable-agent" &&
+  committed.event.type === inferenceFailedEventType;
 
 const isToolCallCreated = (
   committed: CommittedDurableEvent,
-): committed is CommittedToolCallCreated => committed.event.type === toolCallCreatedEventType;
+): committed is CommittedToolCallCreated =>
+  committed.event.namespace === "effect-durable-agent" &&
+  Schema.is(ToolCallCreatedEvent)(committed.event);
 
 const isToolCallRejected = (
   committed: CommittedDurableEvent,
-): committed is CommittedToolCallRejected => committed.event.type === toolCallRejectedEventType;
+): committed is CommittedToolCallRejected =>
+  committed.event.namespace === "effect-durable-agent" &&
+  committed.event.type === toolCallRejectedEventType;
 
 const isToolDecisionBoundary = (
   committed: CommittedDurableEvent,

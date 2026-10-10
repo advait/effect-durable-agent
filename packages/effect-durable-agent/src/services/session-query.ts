@@ -1,9 +1,9 @@
+import { durableEventEnvelope } from "../types/events/durable";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import type * as Scope from "effect/Scope";
-import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { durableMessageTranscript } from "../domain/message-transcript";
@@ -11,15 +11,7 @@ import type { DurableTranscriptMessage } from "../domain/message-transcript";
 import type { ReducedState } from "../domain/reduced-state";
 import type { EDAReducerStateSnapshot } from "./reducer-registry";
 import { RunRequestOutcome } from "../domain/run-scheduling";
-import {
-  RunSchedulingRequestedPayload,
-  RunSchedulingGrantedPayload,
-  RunSchedulingInvalidatedPayload,
-  RunCompletedPayload,
-  RunFailedPayload,
-  RunInterruptedPayload,
-  effectDurableAgentNamespace,
-} from "../types/events";
+import { effectDurableAgentNamespace } from "../types/events";
 import { type RunRequestId, SequenceNumber } from "../types/core";
 import { PositionedEvent } from "../types/events";
 import { EDASessionStore, EDASessionStoreError } from "./session-store";
@@ -102,49 +94,27 @@ export class EDASessionQuery extends Context.Service<EDASessionQuery, EDASession
                 if (event.namespace !== effectDurableAgentNamespace) return;
                 switch (event.type) {
                   case "RunSchedulingRequested":
-                    if (
-                      Schema.decodeUnknownSync(RunSchedulingRequestedPayload)(event.payload)
-                        .requestId === requestId
-                    )
-                      outcome = { _tag: "Waiting" };
+                    if (event.payload.requestId === requestId) outcome = { _tag: "Waiting" };
                     break;
                   case "RunSchedulingInvalidated":
-                    if (
-                      Schema.decodeUnknownSync(RunSchedulingInvalidatedPayload)(event.payload)
-                        .requestId === requestId
-                    )
-                      outcome = { _tag: "Invalidated" };
+                    if (event.payload.requestId === requestId) outcome = { _tag: "Invalidated" };
                     break;
                   case "RunSchedulingGranted": {
-                    const grant = Schema.decodeUnknownSync(RunSchedulingGrantedPayload)(
-                      event.payload,
-                    );
+                    const grant = event.payload;
                     if (grant.requestId === requestId)
                       outcome = { _tag: "Granted", runId: grant.runId, status: "Running" };
                     break;
                   }
                   case "RunCompleted":
-                    if (
-                      outcome._tag === "Granted" &&
-                      Schema.decodeUnknownSync(RunCompletedPayload)(event.payload).runId ===
-                        outcome.runId
-                    )
+                    if (outcome._tag === "Granted" && event.payload.runId === outcome.runId)
                       outcome = { ...outcome, status: "Completed" };
                     break;
                   case "RunFailed":
-                    if (
-                      outcome._tag === "Granted" &&
-                      Schema.decodeUnknownSync(RunFailedPayload)(event.payload).runId ===
-                        outcome.runId
-                    )
+                    if (outcome._tag === "Granted" && event.payload.runId === outcome.runId)
                       outcome = { ...outcome, status: "Failed" };
                     break;
                   case "RunInterrupted":
-                    if (
-                      outcome._tag === "Granted" &&
-                      Schema.decodeUnknownSync(RunInterruptedPayload)(event.payload).runId ===
-                        outcome.runId
-                    )
+                    if (outcome._tag === "Granted" && event.payload.runId === outcome.runId)
                       outcome = { ...outcome, status: "Interrupted" };
                     break;
                 }
@@ -165,7 +135,10 @@ export class EDASessionQuery extends Context.Service<EDASessionQuery, EDASession
             const replay = yield* store.eventsAfter(afterSeq).pipe(
               Stream.filter((entry) => entry.position.seq <= replayHead),
               Stream.map((entry) =>
-                PositionedEvent.make({ position: entry.position, event: entry.event }),
+                PositionedEvent.make({
+                  position: entry.position,
+                  event: durableEventEnvelope(entry.event),
+                }),
               ),
               Stream.runCollect,
               Effect.map((events) => Array.from(events)),
@@ -204,7 +177,10 @@ export class EDASessionQuery extends Context.Service<EDASessionQuery, EDASession
               Stream.filter((entry) => entry.position.seq <= head),
               Stream.take(limit),
               Stream.map((entry) =>
-                PositionedEvent.make({ position: entry.position, event: entry.event }),
+                PositionedEvent.make({
+                  position: entry.position,
+                  event: durableEventEnvelope(entry.event),
+                }),
               ),
               Stream.runCollect,
               Effect.map((events) => Array.from(events)),

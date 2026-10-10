@@ -70,7 +70,7 @@ and `throughSeq`. It uses the same bounded inbox, cursor reads, ordered callback
 and checkpoint commits as projected sinks, but never hydrates, folds, or retains
 framework or app state. Sink-owned checkpoint payloads remain available for small
 integration-specific state. `interests: "*"` explicitly selects all event types;
-omitting interests has the same meaning, while an empty array selects none.
+omitting interests has the same meaning. Event Schema unions select specific facts through `EDASink.forEvents`.
 
 A caught-up raw sink performs no history reads until the head advances. A lagging
 raw sink starts reading strictly after its checkpoint; a new or renamed sink starts

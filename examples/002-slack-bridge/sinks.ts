@@ -1,14 +1,13 @@
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
-import * as Schema from "effect/Schema";
 
 import { getEDAReducerState } from "effect-durable-agent/services/reducer-registry";
 import { EDASink } from "effect-durable-agent/services/sink-registry";
 import {
+  AssistantMessageCommittedEvent,
   AssistantMessageCommittedPayload,
   UnixEpochMillis,
-  assistantMessageCommittedEventType,
 } from "effect-durable-agent/types/events";
 import {
   OutboundSlackIdempotencyKey,
@@ -41,16 +40,15 @@ export interface SlackClient {
  * future retries and all clients can see the durable delivery fact.
  */
 export const makeSlackReplySink = (client: SlackClient): EDASink =>
-  EDASink.make({
+  EDASink.forEvents(AssistantMessageCommittedEvent, {
     name: "example.slack.reply-delivery",
     durable: {
-      interests: [assistantMessageCommittedEventType],
       process: (batch, ctx) =>
         Effect.gen(function* () {
           const state = getEDAReducerState(batch.reducerStates, SlackBridgeReducer);
 
           for (const entry of batch.events) {
-            const assistant = decodeAssistantMessage(entry.event.payload);
+            const assistant = entry.event.payload;
             if (assistant === undefined) {
               continue;
             }
@@ -114,9 +112,6 @@ export const loggingSlackClient: SlackClient = {
       return SlackMessageTs.make(`reply-${input.idempotencyKey}`);
     }),
 };
-
-const decodeAssistantMessage = (payload: unknown): AssistantMessageCommittedPayload | undefined =>
-  Schema.is(AssistantMessageCommittedPayload)(payload) ? payload : undefined;
 
 export const renderAssistantText = (payload: AssistantMessageCommittedPayload): string => {
   const text = payload.promptParts

@@ -60,6 +60,17 @@ export const DurableEventEnvelope = Schema.Struct({
 });
 export type DurableEventEnvelope = typeof DurableEventEnvelope.Type;
 
+/** Opaque facts from namespaces outside the framework; the original envelope owns all bytes. */
+export const ForeignDurableEvent = Schema.Struct({
+  ...DurableEventEnvelope.fields,
+  namespace: Schema.Literal("__foreign"),
+  type: Schema.Literal("Foreign"),
+  _tag: Schema.Literal("Foreign"),
+  envelope: DurableEventEnvelope,
+  decoded: Schema.optionalKey(Schema.Unknown),
+});
+export type ForeignDurableEvent = typeof ForeignDurableEvent.Type;
+
 /** Common envelope narrowed to live-only ephemeral events. */
 export const EphemeralEventEnvelope = Schema.Struct({
   ...EventEnvelope.fields,
@@ -72,10 +83,13 @@ export const PositionedEvent = Schema.Struct({
   position: Position,
   event: EventEnvelope,
 });
-export type PositionedEvent = typeof PositionedEvent.Type;
+export type PositionedEvent<E = EventEnvelope> = {
+  readonly position: typeof Position.Type;
+  readonly event: E;
+};
 
 /** Built-in framework event namespace. */
-export const effectDurableAgentNamespace = EventNamespace.make("effect-durable-agent");
+export const effectDurableAgentNamespace = "effect-durable-agent";
 
 /** Initial schema version for built-in event payloads. */
 export const schemaV1 = SchemaVersion.make(1);

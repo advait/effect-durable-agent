@@ -4,9 +4,17 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
+import type * as SchemaAST from "effect/SchemaAST";
 import * as Stream from "effect/Stream";
 
-import { type CommandIdempotencyKey, type EDACommand } from "../types/commands";
+import {
+  DecodedDurableEvent,
+  decodeDurableEventSync,
+  durableEventEnvelope,
+} from "../types/events/durable";
+
+import { type CommandIdempotencyKey } from "../types/commands";
 import { CompactionSummaryArtifact } from "../domain/context-projection";
 import {
   CommandId,
@@ -23,13 +31,29 @@ import {
   summaryCreatedEventType,
 } from "../types/events";
 
-/** A durable event after the store has assigned its replay position. */
-export const CommittedDurableEvent = Schema.Struct({
-  position: DurablePosition,
-  event: DurableEventEnvelope,
-});
-export type CommittedDurableEvent = typeof CommittedDurableEvent.Type;
+export type CommittedDurableEvent<E = DecodedDurableEvent> = {
+  readonly position: typeof DurablePosition.Type;
+  readonly event: E;
+};
 
+/** A durable event after the store has assigned its replay position. */
+export const CommittedDurableEvent: Schema.Codec<
+  CommittedDurableEvent,
+  {
+    readonly position: typeof DurablePosition.Encoded;
+    readonly event: typeof DurableEventEnvelope.Encoded;
+  },
+  never,
+  never
+> = Schema.Struct({
+  position: DurablePosition,
+  event: DurableEventEnvelope.pipe(
+    Schema.decodeTo(Schema.declare<DecodedDurableEvent>(Schema.is(DecodedDurableEvent)), {
+      decode: SchemaGetter.transform(decodeDurableEventSync),
+      encode: SchemaGetter.transform(durableEventEnvelope),
+    }),
+  ),
+});
 /**
  * Store-level failure surfaced by durable append, replay, and hydration APIs.
  *
@@ -210,10 +234,10 @@ const seedCommittedEvents = (
       throw new Error(`Duplicate seed eventId ${event.eventId}`);
     }
     seen.add(event.eventId);
-    return CommittedDurableEvent.make({
+    return {
       position: durablePosition(SequenceNumber.make(index + 1)),
-      event,
-    });
+      event: decodeDurableEventSync(DurableEventEnvelope.make(event)),
+    };
   });
 };
 
@@ -225,9 +249,9 @@ const summariesFromCommittedEvents = (
     if (event.type !== summaryCreatedEventType) {
       continue;
     }
-    const payload = event.payload as { readonly summary?: unknown };
+    const payload = event.payload;
     if (payload.summary !== undefined) {
-      const summary = CompactionSummaryArtifact.make(payload.summary as never);
+      const summary = Schema.decodeUnknownSync(CompactionSummaryArtifact)(payload.summary);
       summaries.set(summary.summaryId, summary);
     }
   }
@@ -273,30 +297,27 @@ const makeInMemoryStore = (
             continue;
           }
 
-          const committed = CommittedDurableEvent.make({
+          const committed: CommittedDurableEvent = {
             position: durablePosition(SequenceNumber.make(nextEntries.length + 1)),
-            event,
-          });
+            event: decodeDurableEventSync(DurableEventEnvelope.make(event)),
+          };
           nextEntries.push(committed);
           committedEvents.push(committed);
 
-          if (event.type === summaryCreatedEventType) {
-            const payload = event.payload as {
-              readonly summary?: unknown;
-              readonly summaryId?: CompactionSummaryArtifact["summaryId"];
-            };
+          if (committed.event.type === summaryCreatedEventType) {
+            const payload = committed.event.payload;
             if (payload.summary === undefined) {
               throw new Error("SummaryCreated requires summary payload");
             }
-            const summary = CompactionSummaryArtifact.make(payload.summary as never);
+            const summary = Schema.decodeUnknownSync(CompactionSummaryArtifact)(payload.summary);
             if (payload.summaryId !== undefined && summary.summaryId !== payload.summaryId) {
               throw new Error("SummaryCreated summaryId does not match summary payload");
             }
             nextSummaries.set(summary.summaryId, summary);
           }
 
-          if (event.type === contextRebasedEventType) {
-            const payload = event.payload as { readonly summaryId?: SummaryId };
+          if (committed.event.type === contextRebasedEventType) {
+            const payload = committed.event.payload;
             if (payload.summaryId === undefined || !nextSummaries.has(payload.summaryId)) {
               throw new Error(
                 `ContextRebased references unknown summaryId ${String(payload.summaryId)}`,
@@ -364,7 +385,7 @@ const commandAdmissionMatches = (
   if (entry.event.type !== commandAdmittedEventType) {
     return false;
   }
-  const admitted = (entry.event.payload as { readonly command?: EDACommand }).command;
+  const admitted = entry.event.payload.command;
   if (admitted === undefined) {
     return false;
   }
@@ -373,3 +394,98 @@ const commandAdmissionMatches = (
   }
   return input.commandId !== undefined && admitted.commandId === input.commandId;
 };
+
+/** App schemas are registered once; known namespaces fail at the store boundary when malformed. */
+export type EDAAppEvents = Schema.Codec<DurableEventEnvelope, unknown, never, never>;
+
+const eventNamespaces = (ast: SchemaAST.AST): ReadonlyArray<string> => {
+  if (ast._tag === "Union") return ast.types.flatMap(eventNamespaces);
+  if (ast._tag === "Objects") {
+    const namespace = ast.propertySignatures.find((field) => field.name === "namespace")?.type;
+    if (namespace?._tag === "Literal" && typeof namespace.literal === "string")
+      return [namespace.literal];
+  }
+  throw new Error("App event schemas must be a union of structs with literal namespaces");
+};
+
+/** Attach the app decoder to every event-returning store operation without changing storage bytes. */
+export const registerAppEvents = (
+  store: EDASessionStoreShape,
+  schema: EDAAppEvents,
+): EDASessionStoreShape => {
+  const namespaces = new Set(eventNamespaces(schema.ast));
+  const decode = Schema.decodeUnknownSync(schema);
+  const decodeEntry = (entry: CommittedDurableEvent): CommittedDurableEvent => {
+    if (entry.event.namespace !== "__foreign" || !namespaces.has(entry.event.envelope.namespace))
+      return entry;
+    return {
+      ...entry,
+      event: {
+        ...entry.event,
+        decoded: decode(entry.event.envelope, { onExcessProperty: "preserve" }),
+      },
+    };
+  };
+  const decodeEntryEffect = (entry: CommittedDurableEvent) =>
+    Effect.try({
+      try: () => decodeEntry(entry),
+      catch: (cause) =>
+        new EDASessionStoreError({
+          message: `Registered app event decode failed: ${String(cause)}`,
+        }),
+    });
+  const decodeEntries = (entries: ReadonlyArray<CommittedDurableEvent>) =>
+    Effect.forEach(entries, decodeEntryEffect);
+  const isEncodedAppEvent = Schema.is(Schema.toEncoded(schema));
+  return {
+    ...store,
+    append: (batch) =>
+      Effect.gen(function* () {
+        for (const { event } of batch.entries) {
+          if (namespaces.has(event.namespace) && !isEncodedAppEvent(event)) {
+            return yield* new EDASessionStoreError({
+              message: "Registered app event validation failed",
+            });
+          }
+        }
+        const committed = yield* store.append(batch);
+        return yield* decodeEntries(committed);
+      }),
+    eventsAfter: (seq) => store.eventsAfter(seq).pipe(Stream.mapEffect(decodeEntryEffect)),
+    loadCommittedEventsBySeq: (seqs) =>
+      store.loadCommittedEventsBySeq(seqs).pipe(Effect.flatMap(decodeEntries)),
+    findCommandAdmission: (input) =>
+      store
+        .findCommandAdmission(input)
+        .pipe(
+          Effect.flatMap((entry) =>
+            entry === undefined ? Effect.succeed(undefined) : decodeEntryEffect(entry),
+          ),
+        ),
+  };
+};
+
+/** Narrow an already decoded fact from one schema, without decoding its payload again. */
+export const selectCommittedEvent = <E extends DurableEventEnvelope>(
+  schema: Schema.Codec<E, unknown, never, never>,
+  entry: CommittedDurableEvent,
+): CommittedDurableEvent<E> | undefined => {
+  const event =
+    entry.event.namespace === "__foreign"
+      ? (entry.event.decoded ?? entry.event.envelope)
+      : entry.event;
+  return Schema.is(schema)(event) ? { position: entry.position, event } : undefined;
+};
+
+/** Typed journal read available to tools and application services without private SQL access. */
+export const queryCommittedEvents = <E extends DurableEventEnvelope>(
+  store: EDASessionStoreShape,
+  schema: Schema.Codec<E, unknown, never, never>,
+  options: { readonly afterSeq?: SequenceNumber; readonly limit?: number } = {},
+): Effect.Effect<ReadonlyArray<CommittedDurableEvent<E>>, EDASessionStoreError> =>
+  store.eventsAfter(options.afterSeq ?? SequenceNumber.make(0)).pipe(
+    Stream.map((entry) => selectCommittedEvent(schema, entry)),
+    Stream.filter((entry): entry is CommittedDurableEvent<E> => entry !== undefined),
+    Stream.take(options.limit ?? Number.MAX_SAFE_INTEGER),
+    Stream.runCollect,
+  );
