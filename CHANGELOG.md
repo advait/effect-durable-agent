@@ -10,10 +10,17 @@ to `4.0.3`, with Effect tsgo 0.51.1 and Oxlint 1.87.0.
 - Add `idGeneratorLayer` to the core and Cloudflare runtime options so hosts can own lifecycle
   identity generation. It defaults to `IdGenerator.Live`.
 - Effect 4.0 removed `onExcessProperty: "preserve"`. Framework and registered application facts
-  now decode with the default policy and explicitly re-attach payload fields this version does not
-  model, so the excess-field guarantee from alpha.17 still holds.
+  now decode with the default policy and explicitly re-attach payload fields their schema does not
+  model, so the excess-field guarantee from alpha.17 still holds. Keys a schema consumes, such as
+  renamed keys, are not re-attached.
 - Framework tool-result prompt parts set `providerExecuted: false`, which stable Effect requires.
   Stored parts without the field still decode to `false`.
+- With `disableToolCallResolution`, stable Effect streams tool-call `params` in their encoded
+  form, so `ToolCallCreated.promptPart.params` now persist encoded. This only differs for tools
+  whose parameter schemas transform values.
+- Effect AI telemetry follows current GenAI conventions, for example `gen_ai.provider.name`
+  instead of `gen_ai.system` and `effect.ai.tool_choice` instead of `toolChoice`.
+- `EDAOpenAiModelConfig` follows the stable `@effect/ai-openai` configuration type.
 - `@effect/vitest` 4 declares Vitest 5. The workspace keeps Vitest 4.1 because
   `@cloudflare/vitest-pool-workers` does not support Vitest 5 yet, and allows that one peer range.
 

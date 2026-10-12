@@ -133,6 +133,31 @@ describe("event envelope", () => {
     expect(Schema.encodeSync(DurableEventEnvelope)(durableEventEnvelope(decoded))).toEqual(written);
   });
 
+  it("replays tool results stored by alpha.19 without providerExecuted", () => {
+    const stored = {
+      ...validEnvelope,
+      type: "ToolCallCompleted",
+      payload: {
+        toolCallId: TOOL_CALL_ID,
+        promptPart: {
+          type: "tool-result",
+          id: "tool-1",
+          name: "noop",
+          isFailure: false,
+          result: { ok: true },
+        },
+      },
+    };
+
+    const decoded = decodeUnknownEDADurableEventSync(stored);
+    if (decoded.type !== "ToolCallCompleted") throw new Error("Expected ToolCallCompleted");
+
+    expect(decoded.payload.promptPart.providerExecuted).toBe(false);
+    expect(
+      Schema.encodeSync(DurableEventEnvelope)(durableEventEnvelope(decoded)).payload,
+    ).toMatchObject({ promptPart: { ...stored.payload.promptPart, providerExecuted: false } });
+  });
+
   it("rejects unsupported framework durable event schema versions", () => {
     expect(() =>
       decodeUnknownEDADurableEventSync({

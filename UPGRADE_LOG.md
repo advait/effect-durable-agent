@@ -9,7 +9,8 @@
 - Updated Effect tsgo from `0.39.0` to `0.51.1`, which requires Oxlint `1.87.0` and
   `oxlint-tsgolint` `7.0.2003`
 - Kept Vitest 4.1: `@effect/vitest` 4 declares Vitest 5, but `@cloudflare/vitest-pool-workers`
-  0.23 supports only Vitest 4.1. The root manifest allows that single peer range; all suites run.
+  (pinned at 0.18.8; 0.23 is the latest) supports only Vitest 4.1. The root manifest allows that
+  single peer range; all suites run.
 
 ## Migration notes
 

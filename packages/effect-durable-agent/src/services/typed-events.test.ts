@@ -79,6 +79,44 @@ it.effect("keeps registered app fact fields that its schema does not model", () 
   }).pipe(Effect.provide(EDASessionStore.InMemory(sessionId))),
 );
 
+const renamedEvent = Schema.Struct({
+  ...DurableEventEnvelope.fields,
+  namespace: Schema.Literal("test.renamed"),
+  type: Schema.Literal("RenamedFact"),
+  payload: Schema.Struct({ fooBar: Schema.String }).pipe(Schema.encodeKeys({ fooBar: "foo_bar" })),
+});
+
+it.effect("treats keys consumed by a registered schema as known, not excess", () =>
+  Effect.gen(function* () {
+    const underlying = yield* EDASessionStore;
+    yield* underlying.append({
+      entries: [
+        {
+          event: DurableEventEnvelope.make({
+            namespace: "test.renamed",
+            type: "RenamedFact",
+            schemaVersion: 1,
+            durability: "durable",
+            eventId: EventId.make("018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"),
+            sessionId,
+            createdAtMs: UnixEpochMillis.make(1),
+            payload: JSON.parse('{"foo_bar":"v","other":1,"__proto__":{"polluted":true}}'),
+          }),
+        },
+      ],
+    });
+    const replay = yield* registerAppEvents(underlying, renamedEvent)
+      .eventsAfter(SequenceNumber.make(0))
+      .pipe(Stream.runCollect);
+    const entry = replay[0];
+    if (entry === undefined) return yield* Effect.die(new Error("Missing renamed fact"));
+    const payload = selectCommittedEvent(renamedEvent, entry)?.event.payload;
+    assert.deepStrictEqual(Object.keys(payload ?? {}).sort(), ["__proto__", "fooBar", "other"]);
+    assert.strictEqual(payload?.fooBar, "v");
+    assert.strictEqual(Object.getPrototypeOf(payload), Object.prototype);
+  }).pipe(Effect.provide(EDASessionStore.InMemory(sessionId))),
+);
+
 it.effect(
   "rejects malformed registered facts before append and when replaying retained bytes",
   () =>
