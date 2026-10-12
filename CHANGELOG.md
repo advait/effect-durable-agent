@@ -12,7 +12,9 @@ to `4.0.3`, with Effect tsgo 0.51.1 and Oxlint 1.87.0.
 - Effect 4.0 removed `onExcessProperty: "preserve"`. Framework and registered application facts
   now decode with the default policy and explicitly re-attach payload fields their schema does not
   model, so the excess-field guarantee from alpha.17 still holds. Keys a schema consumes, such as
-  renamed keys, are not re-attached. Replay only re-encodes events whose decode dropped a key.
+  renamed keys, are not re-attached. Unknown fields nested under a renamed key, or inside a
+  decoded `Option` or class instance, are not retained. Replay only re-encodes events whose
+  decode dropped a key, so events written by a newer version cost one extra encode.
 - Framework tool-result prompt parts set `providerExecuted: false`, which stable Effect requires.
   Stored parts without the field still decode to `false`.
 - With `disableToolCallResolution`, stable Effect streams tool-call `params` in their encoded
