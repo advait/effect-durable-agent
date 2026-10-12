@@ -117,6 +117,47 @@ it.effect("treats keys consumed by a registered schema as known, not excess", ()
   }).pipe(Effect.provide(EDASessionStore.InMemory(sessionId))),
 );
 
+const decodeOnlyEvent = Schema.Struct({
+  ...DurableEventEnvelope.fields,
+  namespace: Schema.Literal("test.decode-only"),
+  type: Schema.Literal("DecodeOnlyFact"),
+  payload: Schema.Struct({ count: Schema.Number }).pipe(
+    Schema.decodeTo(Schema.Struct({ count: Schema.Number }), {
+      decode: SchemaGetter.passthrough(),
+      encode: SchemaGetter.forbidden(() => "decode-only"),
+    }),
+  ),
+});
+
+it.effect("keeps unmodelled fields of registered facts whose schema cannot encode", () =>
+  Effect.gen(function* () {
+    const underlying = yield* EDASessionStore;
+    yield* underlying.append({
+      entries: [
+        {
+          event: DurableEventEnvelope.make({
+            namespace: "test.decode-only",
+            type: "DecodeOnlyFact",
+            schemaVersion: 1,
+            durability: "durable",
+            eventId: EventId.make("018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"),
+            sessionId,
+            createdAtMs: UnixEpochMillis.make(1),
+            payload: { count: 1, writtenByNewerVersion: "kept" },
+          }),
+        },
+      ],
+    });
+    const replay = yield* registerAppEvents(underlying, decodeOnlyEvent)
+      .eventsAfter(SequenceNumber.make(0))
+      .pipe(Stream.runCollect);
+    const entry = replay[0];
+    if (entry === undefined) return yield* Effect.die(new Error("Missing decode-only fact"));
+    const retained = { count: 1, writtenByNewerVersion: "kept" };
+    assert.deepStrictEqual(selectCommittedEvent(decodeOnlyEvent, entry)?.event.payload, retained);
+  }).pipe(Effect.provide(EDASessionStore.InMemory(sessionId))),
+);
+
 it.effect(
   "rejects malformed registered facts before append and when replaying retained bytes",
   () =>

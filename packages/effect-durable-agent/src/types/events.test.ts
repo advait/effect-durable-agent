@@ -54,6 +54,9 @@ const RUN_TRACE = {
   links: [],
 };
 
+/** Decoded prompt parts carry Effect's part marker and options; alpha.19 re-encoded them too. */
+const promptPartMarker = "~effect/ai/Prompt/Part";
+
 const validEnvelope = {
   namespace: "effect-durable-agent",
   type: "CommandAdmitted",
@@ -153,9 +156,36 @@ describe("event envelope", () => {
     if (decoded.type !== "ToolCallCompleted") throw new Error("Expected ToolCallCompleted");
 
     expect(decoded.payload.promptPart.providerExecuted).toBe(false);
-    expect(
-      Schema.encodeSync(DurableEventEnvelope)(durableEventEnvelope(decoded)).payload,
-    ).toMatchObject({ promptPart: { ...stored.payload.promptPart, providerExecuted: false } });
+    expect(Schema.encodeSync(DurableEventEnvelope)(durableEventEnvelope(decoded)).payload).toEqual({
+      ...stored.payload,
+      promptPart: {
+        ...stored.payload.promptPart,
+        options: {},
+        providerExecuted: false,
+        [promptPartMarker]: promptPartMarker,
+      },
+    });
+  });
+
+  it("keeps unmodelled fields on user text parts that encode back to a string", () => {
+    const written = {
+      ...validEnvelope,
+      type: "UserMessageCommitted",
+      payload: {
+        commandId: COMMAND_ID,
+        messageId: MESSAGE_ID,
+        content: [{ type: "text", text: "hi", partFieldFromNewerVersion: 1 }],
+      },
+    };
+
+    const decoded = decodeUnknownEDADurableEventSync(written);
+
+    expect(Schema.encodeSync(DurableEventEnvelope)(durableEventEnvelope(decoded)).payload).toEqual({
+      ...written.payload,
+      content: [
+        { ...written.payload.content[0], options: {}, [promptPartMarker]: promptPartMarker },
+      ],
+    });
   });
 
   it("rejects unsupported framework durable event schema versions", () => {

@@ -12,12 +12,15 @@ to `4.0.3`, with Effect tsgo 0.51.1 and Oxlint 1.87.0.
 - Effect 4.0 removed `onExcessProperty: "preserve"`. Framework and registered application facts
   now decode with the default policy and explicitly re-attach payload fields their schema does not
   model, so the excess-field guarantee from alpha.17 still holds. Keys a schema consumes, such as
-  renamed keys, are not re-attached.
+  renamed keys, are not re-attached. Replay only re-encodes events whose decode dropped a key.
 - Framework tool-result prompt parts set `providerExecuted: false`, which stable Effect requires.
   Stored parts without the field still decode to `false`.
 - With `disableToolCallResolution`, stable Effect streams tool-call `params` in their encoded
   form, so `ToolCallCreated.promptPart.params` now persist encoded. This only differs for tools
   whose parameter schemas transform values.
+- Stable `Prompt.fromResponseParts` copies stream metadata into assistant text-part `options`, so
+  new `AssistantMessageCommitted` text parts persist provider options such as an OpenAI item id,
+  and replayed requests include them.
 - Effect AI telemetry follows current GenAI conventions, for example `gen_ai.provider.name`
   instead of `gen_ai.system` and `effect.ai.tool_choice` instead of `toolChoice`.
 - `EDAOpenAiModelConfig` follows the stable `@effect/ai-openai` configuration type.
