@@ -1,7 +1,7 @@
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
-import * as Response from "effect/unstable/ai/Response";
+import * as Response from "effect/ai/Response";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { SessionStateShape } from "./session-state";

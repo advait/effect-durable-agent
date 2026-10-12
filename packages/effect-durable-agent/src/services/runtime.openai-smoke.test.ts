@@ -4,8 +4,8 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
-import * as Prompt from "effect/unstable/ai/Prompt";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as Prompt from "effect/ai/Prompt";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import { describe, expect, it } from "vite-plus/test";
 
 import { SubmitMessageCommand } from "../types/commands";

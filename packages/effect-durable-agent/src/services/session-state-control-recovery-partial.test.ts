@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
 
 import {

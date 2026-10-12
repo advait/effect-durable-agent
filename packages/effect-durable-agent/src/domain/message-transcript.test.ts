@@ -1,4 +1,4 @@
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -262,6 +262,7 @@ describe("message-transcript", () => {
       id: "tool-call-1",
       name: "noop",
       isFailure: false,
+      providerExecuted: false,
       result: { ok: true },
     });
 
@@ -343,12 +344,14 @@ describe("message-transcript", () => {
       id: "tool-call-slow",
       name: "ordered",
       isFailure: false,
+      providerExecuted: false,
       result: { label: "slow" },
     });
     const fastResultPart = Prompt.toolResultPart({
       id: "tool-call-fast",
       name: "ordered",
       isFailure: false,
+      providerExecuted: false,
       result: { label: "fast" },
     });
 
@@ -441,6 +444,7 @@ describe("message-transcript", () => {
       id: "tool-call-1",
       name: "noop",
       isFailure: true,
+      providerExecuted: false,
       result: { message: "tool call cancelled: interrupted" },
     });
     const assistantPromptParts: ReadonlyArray<Prompt.AssistantMessagePart> = [

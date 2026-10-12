@@ -1,7 +1,7 @@
 import { assert } from "@effect/vitest";
 import { describe, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import { CommittedDurableEvent } from "../services/session-store";
 import { decodeUnknownEDADurableEventSync } from "../types/events";
 import { makeEDARunTrace, makeRootEDAEventTrace } from "../types/tracing";

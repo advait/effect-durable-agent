@@ -5,7 +5,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 
 import { assertNeverError } from "../domain/assert-never";
 import { RunId, TurnId } from "../types/core";
@@ -412,6 +412,7 @@ const toolFailurePromptPartFromCreated = (
       id: created.event.payload.promptPart.id,
       name: created.event.payload.promptPart.name,
       isFailure: true,
+      providerExecuted: false,
       result,
     }),
     id: created.event.payload.promptPart.id,

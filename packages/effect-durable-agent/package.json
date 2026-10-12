@@ -1,6 +1,6 @@
 {
   "name": "effect-durable-agent",
-  "version": "0.1.0-alpha.19",
+  "version": "0.1.0-alpha.20",
   "description": "A host-independent, event-sourced durable state-management and execution layer for agentic applications.",
   "keywords": [
     "agents",
@@ -185,19 +185,19 @@
     "tag": "alpha"
   },
   "peerDependencies": {
-    "effect": "4.0.0-beta.102"
+    "effect": "4.0.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260813.1",
-    "@effect/ai-openai": "4.0.0-beta.102",
-    "@effect/tsgo": "0.39.0",
-    "@effect/vitest": "4.0.0-beta.102",
+    "@effect/ai-openai": "4.0.3",
+    "@effect/tsgo": "0.51.1",
+    "@effect/vitest": "4.0.3",
     "@types/node": "^25.7.0",
-    "effect": "4.0.0-beta.102",
+    "effect": "4.0.3",
     "esbuild": "^0.28.1",
     "fast-check": "^4.8.0",
-    "oxlint": "1.79.0",
-    "oxlint-tsgolint": "7.0.2001",
+    "oxlint": "1.87.0",
+    "oxlint-tsgolint": "7.0.2003",
     "publint": "^0.3.22",
     "tsx": "4.21.0",
     "typescript": "7.0.2",

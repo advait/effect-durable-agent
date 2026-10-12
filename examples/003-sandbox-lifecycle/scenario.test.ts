@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -161,6 +161,7 @@ const sandboxScenarioEvents = (): ReadonlyArray<CommittedDurableEvent> => [
         id: "tool-call-1",
         name: "runSandboxTask",
         isFailure: false,
+        providerExecuted: false,
         result: { ok: true },
       }),
     }),

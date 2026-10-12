@@ -6,11 +6,11 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import type * as AiError from "effect/unstable/ai/AiError";
+import type * as AiError from "effect/ai/AiError";
 import { ModelResolver } from "./model-resolver";
 import { makeUsagePayload } from "./provider-usage";
-import * as Prompt from "effect/unstable/ai/Prompt";
-import * as Response from "effect/unstable/ai/Response";
+import * as Prompt from "effect/ai/Prompt";
+import * as Response from "effect/ai/Response";
 
 import { assertNeverError } from "../domain/assert-never";
 import type {
@@ -112,7 +112,7 @@ export const InferenceRunResult = Schema.Struct({
 export type InferenceRunResult = typeof InferenceRunResult.Type;
 
 /** Failure for provider sideband parts without current EDA storage/UI semantics. */
-export class UnsupportedInferencePart extends Schema.TaggedErrorClass<UnsupportedInferencePart>()(
+export class UnsupportedInferencePart extends Schema.TaggedError<UnsupportedInferencePart>()(
   "UnsupportedInferencePart",
   {
     partType: Schema.String,

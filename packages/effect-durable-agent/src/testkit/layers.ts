@@ -3,9 +3,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
-import * as LanguageModel from "effect/unstable/ai/LanguageModel";
-import type * as Prompt from "effect/unstable/ai/Prompt";
-import * as Response from "effect/unstable/ai/Response";
+import * as LanguageModel from "effect/ai/LanguageModel";
+import type * as Prompt from "effect/ai/Prompt";
+import * as Response from "effect/ai/Response";
 
 import { SessionId } from "../types/core";
 import { type DurableEventEnvelope, UnixEpochMillis } from "../types/events";
@@ -43,6 +43,8 @@ export const makeFixedClock = (nowMs: number): Clock.Clock => ({
   currentTimeMillis: Effect.sync(() => nowMs),
   currentTimeNanosUnsafe: () => BigInt(nowMs) * 1_000_000n,
   currentTimeNanos: Effect.sync(() => BigInt(nowMs) * 1_000_000n),
+  monotonicTimeNanosUnsafe: () => BigInt(nowMs) * 1_000_000n,
+  monotonicTimeNanos: Effect.sync(() => BigInt(nowMs) * 1_000_000n),
   sleep: () => Effect.void,
 });
 
@@ -94,7 +96,7 @@ export const makeLanguageModelLayer = (options: TestModelParts | TestLanguageMod
                 )
               : stream;
           }),
-        )) as LanguageModel.Service["streamText"];
+        )) as LanguageModel.LanguageModel["streamText"];
       const generateText = ((input: { readonly prompt: Prompt.RawInput }) =>
         Effect.sync(() => {
           config.onGenerateText?.({ prompt: input.prompt });
@@ -106,10 +108,11 @@ export const makeLanguageModelLayer = (options: TestModelParts | TestLanguageMod
               ? config.generateText({ prompt: input.prompt })
               : config.generateText;
           return new LanguageModel.GenerateTextResponse([Response.makePart("text", { text })]);
-        })) as LanguageModel.Service["generateText"];
+        })) as unknown as LanguageModel.LanguageModel["generateText"];
       return {
+        [LanguageModel.TypeId]: LanguageModel.TypeId,
         generateText,
-        generateObject: unused as LanguageModel.Service["generateObject"],
+        generateObject: unused as LanguageModel.LanguageModel["generateObject"],
         streamText,
       };
     }),

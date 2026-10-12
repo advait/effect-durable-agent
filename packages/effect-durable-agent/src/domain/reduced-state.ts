@@ -2,7 +2,7 @@ import { ReducedStateSchema } from "./reduced-state-schema";
 import { RunSchedulingRequest, RunSchedulingRequestRecord } from "./run-scheduling";
 import { interpretLegacyAttemptForReduction } from "../types/events/durable";
 import * as Schema from "effect/Schema";
-import type * as Prompt from "effect/unstable/ai/Prompt";
+import type * as Prompt from "effect/ai/Prompt";
 import { addModelUsage, TokenConsumptionState } from "./model-usage";
 export { type TokenUsageTotals, TokenConsumptionState } from "./model-usage";
 

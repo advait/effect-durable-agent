@@ -4,9 +4,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
-import * as Prompt from "effect/unstable/ai/Prompt";
-import * as Tool from "effect/unstable/ai/Tool";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as Prompt from "effect/ai/Prompt";
+import * as Tool from "effect/ai/Tool";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import { describe, expect, it } from "vite-plus/test";
 
 import {

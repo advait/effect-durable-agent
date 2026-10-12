@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as Tool from "effect/unstable/ai/Tool";
+import * as Tool from "effect/ai/Tool";
 import { describe, expect, it } from "vite-plus/test";
 
 import { CommittedDurableEvent } from "./session-store";

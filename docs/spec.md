@@ -43,13 +43,13 @@ package manifests plus local `node_modules` before changing API-shaped docs.
 
 | Package | Version | Current role |
 | --- | --- | --- |
-| `effect` | `4.0.0-beta.102` | Core Effect modules and `effect/unstable/ai`. |
-| `@effect/ai-openai` | `4.0.0-beta.102` | OpenAI provider adapter. |
+| `effect` | `4.0.3` | Core Effect modules and `effect/ai`. |
+| `@effect/ai-openai` | `4.0.3` | OpenAI provider adapter. |
 
 Important version facts:
 
 - Services use `Context.Service<Self, Shape>()("key")`, not newer `ServiceMap.Service` examples.
-- Effect AI is imported from `effect/unstable/ai`; there is no separate local `@effect/ai` package.
+- Effect AI is imported from `effect/ai`; there is no separate local `@effect/ai` package.
 - EDA exposes model tools through upstream `Tool` / `Toolkit` values and calls `LanguageModel.streamText(..., { disableToolCallResolution: true })` so the harness owns tool lifecycle.
 - Newly minted lifecycle ids are UUIDv7; session ids also accept UUIDv4 for migrated callers.
 

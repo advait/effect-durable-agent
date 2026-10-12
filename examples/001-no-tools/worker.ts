@@ -1,4 +1,4 @@
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 
 import { CommandIdempotencyKey, SubmitMessageCommand } from "effect-durable-agent/types/commands";
 import { SessionId } from "effect-durable-agent/types/core";

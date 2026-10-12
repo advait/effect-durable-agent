@@ -54,7 +54,7 @@ export class IdGenerator extends Context.Service<IdGenerator, IdGeneratorShape>(
     IdGenerator,
     Effect.gen(function* () {
       const crypto = yield* Crypto.Crypto;
-      return makeIdGenerator(crypto.randomUUIDv7.pipe(Effect.orDie));
+      return makeIdGenerator(crypto.randomUUIDv7().pipe(Effect.orDie));
     }),
   ).pipe(Layer.provide(WebCryptoLive));
 

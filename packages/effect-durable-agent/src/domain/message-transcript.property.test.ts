@@ -1,5 +1,5 @@
 import * as fc from "fast-check";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
 
 import { durableMessageTranscript, durableTranscriptPrompt } from "./message-transcript";
@@ -191,6 +191,7 @@ const validFailedToolCall = (index: number): readonly [ToolCallId, ToolCallRecor
           id: `tool-call-${index}`,
           name: "noop",
           isFailure: true,
+          providerExecuted: false,
           result,
         }),
       },

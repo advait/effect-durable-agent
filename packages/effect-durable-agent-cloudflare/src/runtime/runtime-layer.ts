@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import type * as Tracer from "effect/Tracer";
 
 import { CompactionExecutor, CompactionPolicy } from "effect-durable-agent/services/compaction";
+import type { IdGenerator } from "effect-durable-agent/services/id-generator";
 import { EDAKeepAlive } from "effect-durable-agent/services/keep-alive";
 import { EDAPromptProjector } from "effect-durable-agent/services/prompt-projector";
 import {
@@ -40,6 +41,8 @@ export type EDASessionDurableObjectStorage = DurableObjectSessionStorage &
 export interface EDADurableObjectRuntimeLayerOptions {
   readonly appEvents?: EDAAppEvents;
   readonly config: EDARuntimeConfig;
+  /** Host-owned identity source, shared by every lifecycle service. Defaults to `IdGenerator.Live`. */
+  readonly idGeneratorLayer?: Layer.Layer<IdGenerator>;
   readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
   readonly compactionPolicyLayer?: Layer.Layer<CompactionPolicy>;
   readonly keepAlive?: DurableObjectKeepAlive;
@@ -60,6 +63,7 @@ export interface EDADurableObjectRuntimeLayerOptions {
 export const makeEDADurableObjectRuntimeLayer = ({
   appEvents,
   config,
+  idGeneratorLayer,
   compactionExecutorLayer,
   compactionPolicyLayer,
   keepAlive,
@@ -80,6 +84,7 @@ export const makeEDADurableObjectRuntimeLayer = ({
   return makeEDARuntimeLayer({
     appEvents,
     config,
+    idGeneratorLayer,
     compactionExecutorLayer,
     compactionPolicyLayer,
     keepAliveLayer,

@@ -1,5 +1,5 @@
 import * as Layer from "effect/Layer";
-import type * as LanguageModel from "effect/unstable/ai/LanguageModel";
+import type * as LanguageModel from "effect/ai/LanguageModel";
 
 import { SessionId } from "../../src/types/core";
 import { EDARuntime } from "../../src/services/runtime";

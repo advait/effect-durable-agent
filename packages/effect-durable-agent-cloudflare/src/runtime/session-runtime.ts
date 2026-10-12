@@ -1,3 +1,4 @@
+import type { IdGenerator } from "effect-durable-agent/services/id-generator";
 import type { EDAAppEvents } from "effect-durable-agent/services/session-store";
 import type { RunScheduler } from "effect-durable-agent/services/run-scheduler";
 import type { ModelResolver } from "effect-durable-agent/services/model-resolver";
@@ -47,6 +48,8 @@ export interface EDASessionRuntimeOptions {
   readonly background?: DurableObjectBackgroundWaiter;
   readonly appEvents?: EDAAppEvents;
   readonly config: EDARuntimeConfig;
+  /** Host-owned identity source, shared by every lifecycle service. Defaults to `IdGenerator.Live`. */
+  readonly idGeneratorLayer?: Layer.Layer<IdGenerator>;
   readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
   readonly compactionPolicyLayer?: Layer.Layer<CompactionPolicy>;
   readonly keepAlive?: DurableObjectKeepAlive;
@@ -154,6 +157,7 @@ export class EDASessionRuntime {
       makeEDADurableObjectRuntimeLayer({
         appEvents: this.options.appEvents,
         config: this.options.config,
+        idGeneratorLayer: this.options.idGeneratorLayer,
         compactionExecutorLayer: this.options.compactionExecutorLayer,
         compactionPolicyLayer: this.options.compactionPolicyLayer,
         keepAlive: this.keepAlive,

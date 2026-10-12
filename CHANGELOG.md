@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0-alpha.20
+
+Adopt stable Effect 4: `effect`, `@effect/ai-openai` and `@effect/vitest` move from `4.0.0-beta.102`
+to `4.0.3`, with Effect tsgo 0.51.1 and Oxlint 1.87.0.
+
+- Import Effect AI, HTTP and SQL modules from their stable `effect/<area>` paths, and use the
+  renamed `Schema.TaggedError` and `LanguageModel.LanguageModel` APIs.
+- Add `idGeneratorLayer` to the core and Cloudflare runtime options so hosts can own lifecycle
+  identity generation. It defaults to `IdGenerator.Live`.
+- Effect 4.0 removed `onExcessProperty: "preserve"`. Framework and registered application facts
+  now decode with the default policy and explicitly re-attach payload fields this version does not
+  model, so the excess-field guarantee from alpha.17 still holds.
+- Framework tool-result prompt parts set `providerExecuted: false`, which stable Effect requires.
+  Stored parts without the field still decode to `false`.
+- `@effect/vitest` 4 declares Vitest 5. The workspace keeps Vitest 4.1 because
+  `@cloudflare/vitest-pool-workers` does not support Vitest 5 yet, and allows that one peer range.
+
 ## 0.1.0-alpha.19
 
 Align the development toolchain with Gia: TypeScript 7.0.2, Vite Plus 0.3.0, Oxlint 1.79.0 and Effect tsgo 0.39.0. Runtime APIs and persisted state are unchanged.

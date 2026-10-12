@@ -49,6 +49,9 @@ export default defineConfig({
       "typescript/no-useless-default-assignment": "off",
       // Plugin activation promotes this upstream-disabled diagnostic to a warning.
       "effecttsgo/any-unknown-in-error-context": "off",
+      // EDA is built on Effect AI and HTTP, which Effect 4.0 still tags `@stability unstable`;
+      // the exact Effect pin and lockstep upgrades own that risk instead of per-call warnings.
+      "effecttsgo/unstable-api-usage": "off",
     },
     overrides: [
       {

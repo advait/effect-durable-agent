@@ -1,5 +1,31 @@
 # Dependency Upgrade Log
 
+**Date:** 2026-10-12
+**Project:** Effect Durable Agent
+
+## Summary
+
+- Updated the aligned Effect v4 package set from `4.0.0-beta.102` to stable `4.0.3`
+- Updated Effect tsgo from `0.39.0` to `0.51.1`, which requires Oxlint `1.87.0` and
+  `oxlint-tsgolint` `7.0.2003`
+- Kept Vitest 4.1: `@effect/vitest` 4 declares Vitest 5, but `@cloudflare/vitest-pool-workers`
+  0.23 supports only Vitest 4.1. The root manifest allows that single peer range; all suites run.
+
+## Migration notes
+
+- `effect/unstable/<area>` imports are now `effect/<area>`.
+- `Schema.TaggedErrorClass` is `Schema.TaggedError`; `LanguageModel.Service` is the
+  `LanguageModel.LanguageModel` interface; `Crypto.randomUUIDv7` is a function.
+- `onExcessProperty: "preserve"` was removed upstream. Durable decoding now retains unknown payload
+  fields explicitly through `decodeRetainingExcess`.
+- The `effecttsgo/unstable-api-usage` diagnostic is off: Effect AI and HTTP remain
+  `@stability unstable`, and the exact Effect pin owns that risk.
+- Validation: build, lint, typecheck, unit, property, replay-memory, integration and isolated
+  Worker package checks.
+
+---
+
+
 **Date:** 2026-07-30
 **Project:** Effect Durable Agent
 

@@ -2,9 +2,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
-import * as LanguageModel from "effect/unstable/ai/LanguageModel";
-import type * as Prompt from "effect/unstable/ai/Prompt";
-import type * as Response from "effect/unstable/ai/Response";
+import * as LanguageModel from "effect/ai/LanguageModel";
+import type * as Prompt from "effect/ai/Prompt";
+import type * as Response from "effect/ai/Response";
 
 import { canonicalPrompt } from "./prompt-hash";
 import type { OfflineTraceRecorderShape } from "./trace-recorder";
@@ -66,12 +66,12 @@ export const tracingLanguageModelLayer = (
               ),
             );
           }),
-        )) as LanguageModel.Service["streamText"];
+        )) as LanguageModel.LanguageModel["streamText"];
 
       return {
         ...model,
         streamText,
-      } satisfies LanguageModel.Service;
+      } satisfies LanguageModel.LanguageModel;
     }),
   ).pipe(Layer.provide(base));
 

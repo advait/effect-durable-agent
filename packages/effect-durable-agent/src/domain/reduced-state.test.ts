@@ -1,6 +1,6 @@
 import { makeRootEDAEventTrace } from "../types/tracing";
 import { assert } from "@effect/vitest";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -663,6 +663,7 @@ describe("reduced-state", () => {
           id: ProviderPartId.make("tool-1"),
           name: ToolName.make("noop"),
           isFailure: false,
+          providerExecuted: false,
           result: { heavy },
         }),
       }),
@@ -703,6 +704,7 @@ describe("reduced-state", () => {
           id: ProviderPartId.make("tool-1"),
           name: ToolName.make("noop"),
           isFailure: false,
+          providerExecuted: false,
           result: { ok: true },
         }),
       }),
@@ -782,6 +784,7 @@ describe("reduced-state", () => {
           id: ProviderPartId.make("tool-1"),
           name: ToolName.make("noop"),
           isFailure: true,
+          providerExecuted: false,
           result: { message: "turn stopped" },
         }),
       }),
@@ -832,6 +835,7 @@ describe("reduced-state", () => {
           id: ProviderPartId.make("tool-1"),
           name: ToolName.make("noop"),
           isFailure: true,
+          providerExecuted: false,
           result: {
             message: "Expected params",
             reason: "invalid-params",

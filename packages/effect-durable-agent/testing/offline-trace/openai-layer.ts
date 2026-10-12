@@ -1,7 +1,7 @@
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
 /** Real OpenAI LanguageModel layer for offline trace runs. */
 export const makeOfflineOpenAiLanguageModelLayer = (options: {

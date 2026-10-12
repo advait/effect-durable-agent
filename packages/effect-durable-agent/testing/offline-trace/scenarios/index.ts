@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import * as Tool from "effect/unstable/ai/Tool";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Tool from "effect/ai/Tool";
+import * as Prompt from "effect/ai/Prompt";
 
 import { SubmitMessageCommand } from "../../../src/types/commands";
 import { CommandId } from "../../../src/types/core";

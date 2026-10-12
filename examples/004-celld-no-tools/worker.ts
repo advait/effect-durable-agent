@@ -1,4 +1,4 @@
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import * as Layer from "effect/Layer";
 import { ModelResolver } from "effect-durable-agent/services/model-resolver";
 

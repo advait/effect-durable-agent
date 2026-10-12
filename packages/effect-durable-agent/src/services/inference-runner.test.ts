@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as Response from "effect/unstable/ai/Response";
+import * as Response from "effect/ai/Response";
 import { describe, expect, it } from "vite-plus/test";
 
 import {

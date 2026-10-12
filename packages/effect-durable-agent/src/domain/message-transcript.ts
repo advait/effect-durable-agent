@@ -1,4 +1,4 @@
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 
 import type { ContextProjection } from "./context-projection";
 import type { MessageRecord, ReducedState, ToolCallRecord } from "./reduced-state";

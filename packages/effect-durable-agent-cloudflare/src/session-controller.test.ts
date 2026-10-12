@@ -7,9 +7,9 @@ import {
 } from "effect-durable-agent/services/run-scheduler";
 import { ModelResolver } from "effect-durable-agent/services/model-resolver";
 import * as Layer from "effect/Layer";
-import * as LanguageModel from "effect/unstable/ai/LanguageModel";
-import * as Prompt from "effect/unstable/ai/Prompt";
-import * as Response from "effect/unstable/ai/Response";
+import * as LanguageModel from "effect/ai/LanguageModel";
+import * as Prompt from "effect/ai/Prompt";
+import * as Response from "effect/ai/Response";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { describe, expect, it, vi } from "vite-plus/test";

@@ -3,7 +3,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 
 import { assertNeverError } from "../domain/assert-never";
 import {
@@ -74,7 +74,7 @@ export interface ToolExecutionResult {
 }
 
 /** Failure when tool execution receives a committed event that is not ToolCallCreated. */
-export class ToolExecutionEventNotCreated extends Schema.TaggedErrorClass<ToolExecutionEventNotCreated>()(
+export class ToolExecutionEventNotCreated extends Schema.TaggedError<ToolExecutionEventNotCreated>()(
   "ToolExecutionEventNotCreated",
   { eventType: Schema.String },
 ) {}
@@ -216,6 +216,7 @@ const toolCompletedPromptPart = (
     id: created.event.payload.promptPart.id,
     name: created.event.payload.promptPart.name,
     isFailure: false,
+    providerExecuted: false,
     result,
   }),
   id: created.event.payload.promptPart.id,
@@ -231,6 +232,7 @@ const toolFailedPromptPart = (
     id: created.event.payload.promptPart.id,
     name: created.event.payload.promptPart.name,
     isFailure: true,
+    providerExecuted: false,
     result: error,
   }),
   id: created.event.payload.promptPart.id,

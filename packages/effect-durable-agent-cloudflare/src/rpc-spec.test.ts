@@ -1,4 +1,4 @@
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -87,6 +87,7 @@ describe("deployed EDA RPC formats", () => {
         id: toolCallId,
         name: "fixture-tool",
         isFailure: false,
+        providerExecuted: false,
         result: { historical: [1, 2] },
         options: { provider: { marker: true } },
       });

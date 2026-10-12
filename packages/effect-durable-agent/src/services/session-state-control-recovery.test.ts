@@ -1,15 +1,15 @@
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as LanguageModel from "effect/unstable/ai/LanguageModel";
+import * as LanguageModel from "effect/ai/LanguageModel";
 import { makeMethods } from "@effect/vitest";
 import { ModelResolver } from "./model-resolver";
 import { makeLanguageModelLayer } from "../testkit/layers";
 import type { ModelSelectionPayload } from "../types/events";
 import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
-import * as Prompt from "effect/unstable/ai/Prompt";
-import * as Response from "effect/unstable/ai/Response";
+import * as Prompt from "effect/ai/Prompt";
+import * as Response from "effect/ai/Response";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ResumePendingMessagesCommand } from "../types/commands";

@@ -55,6 +55,30 @@ it.effect(
     }).pipe(Effect.provide(EDASessionStore.InMemory(sessionId))),
 );
 
+it.effect("keeps registered app fact fields that its schema does not model", () =>
+  Effect.gen(function* () {
+    const underlying = yield* EDASessionStore;
+    const written = DurableEventEnvelope.make({
+      namespace: "test.app",
+      type: "AppFact",
+      schemaVersion: 1,
+      durability: "durable",
+      eventId: EventId.make("018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"),
+      sessionId,
+      createdAtMs: UnixEpochMillis.make(1),
+      payload: { count: 42, writtenByNewerVersion: "kept" },
+    });
+    yield* underlying.append({ entries: [{ event: written }] });
+    const replay = yield* registerAppEvents(underlying, appEvent)
+      .eventsAfter(SequenceNumber.make(0))
+      .pipe(Stream.runCollect);
+    const entry = replay[0];
+    if (entry === undefined) return yield* Effect.die(new Error("Missing app fact"));
+    const retained = { count: 42, writtenByNewerVersion: "kept" };
+    assert.deepStrictEqual(selectCommittedEvent(appEvent, entry)?.event.payload, retained);
+  }).pipe(Effect.provide(EDASessionStore.InMemory(sessionId))),
+);
+
 it.effect(
   "rejects malformed registered facts before append and when replaying retained bytes",
   () =>

@@ -30,6 +30,7 @@ import {
   contextRebasedEventType,
   summaryCreatedEventType,
 } from "../types/events";
+import { decodeRetainingExcess } from "../types/events/internal";
 
 export type CommittedDurableEvent<E = DecodedDurableEvent> = {
   readonly position: typeof DurablePosition.Type;
@@ -61,7 +62,7 @@ export const CommittedDurableEvent: Schema.Codec<
  * framework services can treat SQL-backed hosts, in-memory tests, and future adapters
  * as the same durability boundary.
  */
-export class EDASessionStoreError extends Schema.TaggedErrorClass<EDASessionStoreError>()(
+export class EDASessionStoreError extends Schema.TaggedError<EDASessionStoreError>()(
   "EDASessionStoreError",
   {
     message: Schema.String,
@@ -414,7 +415,7 @@ export const registerAppEvents = (
   schema: EDAAppEvents,
 ): EDASessionStoreShape => {
   const namespaces = new Set(eventNamespaces(schema.ast));
-  const decode = Schema.decodeUnknownSync(schema);
+  const decode = decodeRetainingExcess(schema);
   const envelopeKey = (event: DurableEventEnvelope): string =>
     JSON.stringify(Schema.encodeSync(DurableEventEnvelope)(event));
   const decodeEntry = (
@@ -427,9 +428,7 @@ export const registerAppEvents = (
       ...entry,
       event: {
         ...entry.event,
-        decoded:
-          prepared?.get(envelopeKey(entry.event.envelope)) ??
-          decode(entry.event.envelope, { onExcessProperty: "preserve" }),
+        decoded: prepared?.get(envelopeKey(entry.event.envelope)) ?? decode(entry.event.envelope),
       },
     };
   };
@@ -456,7 +455,7 @@ export const registerAppEvents = (
               if (!namespaces.has(event.namespace)) continue;
               const key = envelopeKey(event);
               if (!decoded.has(key)) {
-                decoded.set(key, decode(event, { onExcessProperty: "preserve" }));
+                decoded.set(key, decode(event));
               }
             }
             return decoded;

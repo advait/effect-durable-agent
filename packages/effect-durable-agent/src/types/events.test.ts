@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
 
 import { EventId, SessionId, ToolCallId } from "./core";
@@ -8,6 +8,8 @@ import {
   CommandAdmittedEvent,
   decodeUnknownEDADurableEvent,
   decodeUnknownEDADurableEventSync,
+  DurableEventEnvelope,
+  durableEventEnvelope,
   EDAEphemeralEvent,
   EDADurableEvent,
   effectDurableAgentNamespace,
@@ -116,6 +118,19 @@ describe("event envelope", () => {
     expect(event.payload.command.content).toEqual([
       expect.objectContaining({ type: "text", text: "hello" }),
     ]);
+  });
+
+  it("re-encodes framework facts without dropping payload fields this version does not model", () => {
+    const written = {
+      ...validEnvelope,
+      type: "CommandStarted",
+      payload: { commandId: COMMAND_ID, futurePayloadField: { nested: true } },
+    };
+
+    const decoded = decodeUnknownEDADurableEventSync(written);
+
+    expect(decoded.type).toBe("CommandStarted");
+    expect(Schema.encodeSync(DurableEventEnvelope)(durableEventEnvelope(decoded))).toEqual(written);
   });
 
   it("rejects unsupported framework durable event schema versions", () => {
@@ -315,6 +330,7 @@ describe("event envelope", () => {
           id: "tool-1",
           name: "runBash",
           isFailure: true,
+          providerExecuted: false,
           result: {
             message: "Expected string",
             reason: "invalid-params",
@@ -329,6 +345,7 @@ describe("event envelope", () => {
           id: "tool-1",
           name: "runBash",
           isFailure: false,
+          providerExecuted: false,
           result: { exitCode: 0 },
         }),
       }),
@@ -339,6 +356,7 @@ describe("event envelope", () => {
           id: "tool-1",
           name: "runBash",
           isFailure: true,
+          providerExecuted: false,
           result: error,
         }),
       }),
@@ -459,6 +477,7 @@ describe("event envelope", () => {
           id: "tool-1",
           name: "runBash",
           isFailure: true,
+          providerExecuted: false,
           result: {
             message: "Expected string",
             reason: "bad-json",
