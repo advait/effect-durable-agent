@@ -1,4 +1,4 @@
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import * as Schema from "effect/Schema";
 
 import { CommandId, MessageId, RunRequestId } from "./core";

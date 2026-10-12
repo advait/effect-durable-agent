@@ -1,4 +1,4 @@
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import * as Schema from "effect/Schema";
 
 import { CompactionId, ContextVersion, SequenceNumber, SummaryId } from "../types/core";

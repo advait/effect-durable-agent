@@ -20,7 +20,7 @@ export {
 } from "../domain/run-scheduling";
 
 /** Recoverable failure delivering a persisted request; it never acknowledges that request. */
-export class RunSchedulingDeliveryError extends Schema.TaggedErrorClass<RunSchedulingDeliveryError>()(
+export class RunSchedulingDeliveryError extends Schema.TaggedError<RunSchedulingDeliveryError>()(
   "RunSchedulingDeliveryError",
   {
     message: Schema.String,

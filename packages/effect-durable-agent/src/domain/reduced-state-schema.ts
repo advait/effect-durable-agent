@@ -1,6 +1,6 @@
 import { TokenConsumptionState } from "./model-usage";
 import { RunSchedulingRequestRecord } from "./run-scheduling";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 export {

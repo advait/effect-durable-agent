@@ -1,6 +1,6 @@
 import { makeEDARunTrace, makeRootEDAEventTrace } from "../types/tracing";
 import * as fc from "fast-check";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
 
 import { deriveCommandQueues } from "./command-queues";
@@ -234,6 +234,7 @@ const committedFromSpec = (spec: EventSpec, position: number): CommittedDurableE
           id: ProviderPartId.make(`part-${spec.toolSlot}`),
           name: ToolName.make("noop"),
           isFailure: false,
+          providerExecuted: false,
           result: { ok: true },
         }),
       });

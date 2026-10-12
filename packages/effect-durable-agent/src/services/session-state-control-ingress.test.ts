@@ -4,8 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
-import * as Prompt from "effect/unstable/ai/Prompt";
-import * as Response from "effect/unstable/ai/Response";
+import * as Prompt from "effect/ai/Prompt";
+import * as Response from "effect/ai/Response";
 import { describe, expect, it } from "vite-plus/test";
 import {
   CancelPendingMessageCommand,

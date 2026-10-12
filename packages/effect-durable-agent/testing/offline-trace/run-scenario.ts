@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
-import type * as LanguageModel from "effect/unstable/ai/LanguageModel";
+import type * as LanguageModel from "effect/ai/LanguageModel";
 
 import { CommandId, SequenceNumber, SessionId } from "../../src/types/core";
 import type { PositionedEvent } from "../../src/types/events";

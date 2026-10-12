@@ -6,10 +6,11 @@ import {
   type RunSchedulingInput,
 } from "effect-durable-agent/services/run-scheduler";
 import { ModelResolver } from "effect-durable-agent/services/model-resolver";
+import { IdGenerator } from "effect-durable-agent/services/id-generator";
 import * as Layer from "effect/Layer";
-import * as LanguageModel from "effect/unstable/ai/LanguageModel";
-import * as Prompt from "effect/unstable/ai/Prompt";
-import * as Response from "effect/unstable/ai/Response";
+import * as LanguageModel from "effect/ai/LanguageModel";
+import * as Prompt from "effect/ai/Prompt";
+import * as Response from "effect/ai/Response";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -124,6 +125,7 @@ const makeHost = <ProjectionState extends object = never>(
     readonly runSchedulerLayer?: Layer.Layer<RunScheduler>;
     readonly compaction?: boolean;
     readonly getWebSockets?: () => ReadonlyArray<WebSocket>;
+    readonly idGeneratorLayer?: Layer.Layer<IdGenerator>;
     readonly keepAlive?: DurableObjectKeepAlive;
     readonly modelLayer?: Layer.Layer<LanguageModel.LanguageModel>;
     readonly parts?: TestModelParts;
@@ -150,6 +152,9 @@ const makeHost = <ProjectionState extends object = never>(
         }
       : {}),
     ...(options.getWebSockets === undefined ? {} : { getWebSockets: options.getWebSockets }),
+    ...(options.idGeneratorLayer === undefined
+      ? {}
+      : { idGeneratorLayer: options.idGeneratorLayer }),
     ...(options.keepAlive === undefined ? {} : { keepAlive: options.keepAlive }),
     modelResolverLayer: ModelResolver.Fixed.pipe(
       Layer.provide(
@@ -318,6 +323,30 @@ describe("makeEDADurableObjectOpenAiModelLayer", () => {
 });
 
 describe("EDASessionController", () => {
+  it("mints session lifecycle identities from a host-owned IdGenerator layer", async () => {
+    const storage = new FakeDurableObjectStorage();
+    await Effect.runPromise(EDASessionController.migrate(storage));
+    const minted: Array<string> = [];
+    const idGeneratorLayer = Layer.effect(
+      IdGenerator,
+      Effect.map(IdGenerator, (live) => ({
+        ...live,
+        makeEventId: () =>
+          live.makeEventId().pipe(Effect.tap((id) => Effect.sync(() => minted.push(id)))),
+      })),
+    ).pipe(Layer.provide(IdGenerator.Live));
+    const host = makeHost(storage, { idGeneratorLayer });
+
+    const terminal = await host.submitAndBlock({
+      command: makeCommand(),
+      sessionId: SessionId.make(SESSION_ID),
+      trace: TRACE,
+    });
+
+    expect(minted).toContain(terminal.event.eventId);
+    await host.dispose();
+  });
+
   makeMethods(it).effect(
     "cold and warm alarms retry one durable request, then wait for a trusted grant with no alarm",
     () =>

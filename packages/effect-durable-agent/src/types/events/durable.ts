@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 
 import { EDACommand, UserMessageContent } from "../commands";
 import {
@@ -31,7 +31,7 @@ import {
   schemaV1,
 } from "./envelope";
 import { RunSchedulingRequest } from "../../domain/run-scheduling";
-import { durableEventSchema } from "./internal";
+import { decodeRetainingExcess, durableEventSchema } from "./internal";
 import { EDARunTrace, makeEDARunTrace } from "../tracing";
 
 /** Establishes a session's execution policy before its first run; not a model-switch operation. */
@@ -1029,6 +1029,9 @@ export type EDADurableEvent = typeof EDADurableEvent.Type;
 export const EDADurableEventV1 = EDADurableEvent;
 export type EDADurableEventV1 = typeof EDADurableEventV1.Type;
 
+/** Framework facts from other EDA versions keep payload fields this version does not model. */
+const decodeEDADurableEventV1 = decodeRetainingExcess(EDADurableEventV1);
+
 /** Decode one framework-owned durable event through the namespace/type/version router. */
 export const decodeUnknownEDADurableEventSync = (input: unknown): EDADurableEvent => {
   return decodeFrameworkEnvelope(Schema.decodeUnknownSync(DurableEventEnvelope)(input));
@@ -1043,9 +1046,7 @@ const decodeFrameworkEnvelope = (envelope: DurableEventEnvelope): EDADurableEven
 
   switch (envelope.schemaVersion) {
     case schemaV1:
-      return Schema.decodeUnknownSync(EDADurableEventV1)(envelope, {
-        onExcessProperty: "preserve",
-      });
+      return decodeEDADurableEventV1(envelope);
     default:
       throw new Error(
         `Unsupported EDA durable event schemaVersion ${envelope.schemaVersion} for ${envelope.type}`,

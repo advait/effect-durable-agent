@@ -10,7 +10,7 @@ const ephemeralCapacity = 128;
 const ephemeralByteCapacity = 256 * 1024;
 
 /** An ephemeral update could not be measured as a JSON wire value. */
-export class SinkEphemeralEncodingError extends Schema.TaggedErrorClass<SinkEphemeralEncodingError>()(
+export class SinkEphemeralEncodingError extends Schema.TaggedError<SinkEphemeralEncodingError>()(
   "SinkEphemeralEncodingError",
   { cause: Schema.Defect() },
 ) {}

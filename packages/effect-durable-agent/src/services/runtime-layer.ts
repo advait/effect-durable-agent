@@ -41,6 +41,8 @@ export interface EDARuntimeLayerOptions {
   /** Complete application event union with literal namespaces, decoded once at the store boundary. */
   readonly appEvents?: EDAAppEvents;
   readonly config: EDARuntimeConfig;
+  /** Host-owned identity source, shared by every lifecycle service. Defaults to `IdGenerator.Live`. */
+  readonly idGeneratorLayer?: Layer.Layer<IdGenerator>;
   readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
   readonly compactionPolicyLayer?: Layer.Layer<CompactionPolicy>;
   readonly keepAliveLayer?: Layer.Layer<EDAKeepAlive>;
@@ -63,6 +65,7 @@ export interface EDARuntimeLayerOptions {
 export const makeEDARuntimeLayer = ({
   appEvents,
   config,
+  idGeneratorLayer,
   compactionExecutorLayer,
   compactionPolicyLayer,
   keepAliveLayer,
@@ -93,7 +96,7 @@ export const makeEDARuntimeLayer = ({
   const EventObserver = sessionEventObserverLayer ?? SessionEventObserver.Noop;
   const Bus = LiveEventBus.Live.pipe(Layer.provide(EventObserver));
   const KeepAlive = keepAliveLayer ?? EDAKeepAlive.Noop;
-  const Ids = IdGenerator.Live;
+  const Ids = idGeneratorLayer ?? IdGenerator.Live;
   const Session = SessionContext.Live(sessionId);
   const Factory = EventFactory.Live.pipe(Layer.provideMerge(Layer.mergeAll(Session, Ids)));
   const PromptProjector = promptProjectorLayer ?? EDAPromptProjector.Default;

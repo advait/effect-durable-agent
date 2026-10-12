@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as Response from "effect/unstable/ai/Response";
+import * as Response from "effect/ai/Response";
 
 import { makeEdaTestLayer, type EdaTestLayerOptions } from "../testkit/layers";
 import { RunSchedulingRequestRecord, type RunSchedulingRequest } from "../domain/run-scheduling";

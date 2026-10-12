@@ -5,8 +5,8 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as Prompt from "effect/unstable/ai/Prompt";
-import * as Tool from "effect/unstable/ai/Tool";
+import * as Prompt from "effect/ai/Prompt";
+import * as Tool from "effect/ai/Tool";
 import { describe, expect, it } from "vite-plus/test";
 
 import {

@@ -1,9 +1,9 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import * as Schema from "effect/Schema";
-import type * as LanguageModel from "effect/unstable/ai/LanguageModel";
+import type * as LanguageModel from "effect/ai/LanguageModel";
 import { ModelResolver } from "./model-resolver";
 import { makeUsagePayload } from "./provider-usage";
 
@@ -88,11 +88,11 @@ export type CompactionOutput = typeof CompactionOutput.Type;
 export interface CompactionExecutorInput extends CompactionPolicyInput {
   readonly plan: CompactionPlan;
   /** Provider service resolved from the same durable selection used for accounting. */
-  readonly model: LanguageModel.Service;
+  readonly model: LanguageModel.LanguageModel;
 }
 
 /** Typed failure from policy planning or summary generation. */
-export class CompactionError extends Schema.TaggedErrorClass<CompactionError>()("CompactionError", {
+export class CompactionError extends Schema.TaggedError<CompactionError>()("CompactionError", {
   message: Schema.String,
   usage: Schema.optionalKey(UsagePayload),
 }) {}

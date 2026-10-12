@@ -40,8 +40,8 @@ describe("effect-durable-agent core types", () => {
 
     expect(document.schema).toMatchObject({
       properties: {
-        commandId: { allOf: [{ format: "uuid" }] },
-        eventId: { allOf: [{ format: "uuid" }] },
+        commandId: { type: "string", format: "uuid" },
+        eventId: { type: "string", format: "uuid" },
       },
     });
   });

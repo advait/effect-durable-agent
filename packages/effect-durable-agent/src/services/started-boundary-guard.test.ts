@@ -40,7 +40,7 @@ const interruptedPayload = {
 
 const TestLayer = makeEdaTestLayer({ sessionId: SessionId.make(SESSION_ID) });
 
-class BodyFailure extends Schema.TaggedErrorClass<BodyFailure>()("BodyFailure", {
+class BodyFailure extends Schema.TaggedError<BodyFailure>()("BodyFailure", {
   message: Schema.String,
 }) {}
 

@@ -4,7 +4,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
-import * as Response from "effect/unstable/ai/Response";
+import * as Response from "effect/ai/Response";
 
 import { ResumePendingMessagesCommand } from "../types/commands";
 import { CommandId, MessageId, RunId, SessionId, TurnId } from "../types/core";

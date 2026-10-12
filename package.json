@@ -21,22 +21,27 @@
   },
   "pnpm": {
     "overrides": {
-      "vite-plus>oxlint": "1.79.0",
-      "vite-plus>oxlint-tsgolint": "7.0.2001"
+      "vite-plus>oxlint": "1.87.0",
+      "vite-plus>oxlint-tsgolint": "7.0.2003"
+    },
+    "peerDependencyRules": {
+      "allowedVersions": {
+        "@effect/vitest>vitest": "4"
+      }
     }
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260813.1",
-    "@effect/ai-openai": "4.0.0-beta.102",
-    "@effect/tsgo": "0.39.0",
+    "@effect/ai-openai": "4.0.3",
+    "@effect/tsgo": "0.51.1",
     "@types/node": "^25.7.0",
-    "effect": "4.0.0-beta.102",
+    "effect": "4.0.3",
     "effect-durable-agent": "workspace:*",
     "effect-durable-agent-celld": "workspace:*",
     "effect-durable-agent-cloudflare": "workspace:*",
     "esbuild": "^0.28.1",
-    "oxlint": "1.79.0",
-    "oxlint-tsgolint": "7.0.2001",
+    "oxlint": "1.87.0",
+    "oxlint-tsgolint": "7.0.2003",
     "publint": "^0.3.22",
     "tsx": "4.21.0",
     "typescript": "7.0.2",

@@ -1,4 +1,4 @@
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 
 import { durableTranscriptPrompt } from "../../../src/domain/message-transcript";
 import { reduceCommittedEvents } from "../../../src/domain/reduced-state";

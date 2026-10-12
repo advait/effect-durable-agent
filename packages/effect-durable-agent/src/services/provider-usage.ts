@@ -1,4 +1,4 @@
-import type * as Response from "effect/unstable/ai/Response";
+import type * as Response from "effect/ai/Response";
 import { UsagePayload } from "../types/events";
 
 /** Normalizes provider usage for both conversation and compaction calls. */

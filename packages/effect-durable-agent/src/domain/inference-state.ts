@@ -1,5 +1,5 @@
 import * as Option from "effect/Option";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 
 import { assertNever } from "./assert-never";
 import type { InferenceId, RunId, ToolCallId, TurnId } from "../types/core";
@@ -489,6 +489,7 @@ const toolRejectedPromptPart = (
     id: decision.providerPartId,
     name: decision.toolName,
     isFailure: true,
+    providerExecuted: false,
     result: {
       message: decision.error.message,
       reason: decision.reason,

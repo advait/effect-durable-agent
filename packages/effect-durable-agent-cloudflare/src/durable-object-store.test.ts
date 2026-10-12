@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
 
 import { StopTurnCommand, SubmitMessageCommand } from "effect-durable-agent/types/commands";
@@ -177,6 +177,7 @@ const toolCallCompletedWithResult = (result: unknown) =>
         id: ProviderPartId.make(PROVIDER_PART_ID),
         name: ToolName.make("noop"),
         isFailure: false,
+        providerExecuted: false,
         result,
       }),
     },

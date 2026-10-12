@@ -14,7 +14,7 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import type * as Tracer from "effect/Tracer";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 
 import { assertNeverError } from "../domain/assert-never";
 import {
@@ -294,7 +294,7 @@ type ExecutionInspection =
 /** Error surface for session control-loop execution. */
 export type SessionStateError = EDASessionStoreError | TurnRunnerError;
 
-export class SessionCommandAdmissionConflict extends Schema.TaggedErrorClass<SessionCommandAdmissionConflict>()(
+export class SessionCommandAdmissionConflict extends Schema.TaggedError<SessionCommandAdmissionConflict>()(
   "SessionCommandAdmissionConflict",
   {
     code: Schema.Literals(["queue_paused", "paused_queue_changed"]),
@@ -376,6 +376,7 @@ const toolCancelledPromptPartFromRecord = (
       id: decision.providerPartId,
       name: decision.toolName,
       isFailure: true,
+      providerExecuted: false,
       result: error,
     }),
     id: decision.providerPartId,

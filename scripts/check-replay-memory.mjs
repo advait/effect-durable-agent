@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as Prompt from "effect/unstable/ai/Prompt";
+import * as Prompt from "effect/ai/Prompt";
 import { DurableObjectSessionStore } from "../packages/effect-durable-agent-cloudflare/src/durable-object-store.ts";
 import { DurableObjectSinkCheckpointStore } from "../packages/effect-durable-agent-cloudflare/src/durable-object-sink-checkpoints.ts";
 

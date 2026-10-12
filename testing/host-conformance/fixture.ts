@@ -1,5 +1,5 @@
-import * as Prompt from "effect/unstable/ai/Prompt";
-import * as AIResponse from "effect/unstable/ai/Response";
+import * as Prompt from "effect/ai/Prompt";
+import * as AIResponse from "effect/ai/Response";
 import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import { ModelResolver } from "effect-durable-agent/services/model-resolver";
