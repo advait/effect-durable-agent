@@ -579,6 +579,56 @@ describe("InferenceRunner", () => {
     });
   });
 
+  it("keeps provider reasoning and text metadata on committed prompt parts for replay", async () => {
+    const ids = Array.from({ length: 20 }, (_, index) => generatedId(160 + index));
+    const signature = { anthropic: { info: { type: "thinking", signature: "sig-abc" } } };
+    const stream = Stream.make(
+      Response.makePart("reasoning-start", { id: "0" }),
+      Response.makePart("reasoning-delta", { id: "0", delta: "plan" }),
+      Response.makePart("reasoning-delta", { id: "0", delta: "", metadata: signature }),
+      Response.makePart("reasoning-end", { id: "0" }),
+      // Omitted-display thinking: no text, only the signature that must be replayed.
+      Response.makePart("reasoning-start", { id: "1" }),
+      Response.makePart("reasoning-delta", {
+        id: "1",
+        delta: "",
+        metadata: { anthropic: { info: { type: "thinking", signature: "sig-empty" } } },
+      }),
+      Response.makePart("reasoning-end", { id: "1" }),
+      Response.makePart("text-start", { id: "2", metadata: { openai: { itemId: "msg_1" } } }),
+      Response.makePart("text-delta", { id: "2", delta: "done" }),
+      Response.makePart("text-end", { id: "2" }),
+      Response.makePart("finish", { reason: "stop", usage: usage(), response: undefined }),
+    );
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const runner = yield* InferenceRunner;
+        const sessionState = yield* SessionState;
+        return yield* runner.runInference({
+          ...inferenceInput,
+          prompt: "hello",
+          eventSink: sessionState,
+        });
+      }),
+    ).pipe(Effect.provide(makeTestLayer(ids, stream)));
+
+    const result = await Effect.runPromise(program);
+    const committed = result.terminal.committed.find(
+      (entry) => entry.event.type === "AssistantMessageCommitted",
+    );
+    expect(committed?.event.payload).toMatchObject({
+      promptParts: [
+        { type: "reasoning", text: "plan", options: signature },
+        {
+          type: "reasoning",
+          text: "",
+          options: { anthropic: { info: { type: "thinking", signature: "sig-empty" } } },
+        },
+        { type: "text", text: "done", options: { openai: { itemId: "msg_1" } } },
+      ],
+    });
+  });
+
   it("fails provider-executed tool calls as unsupported", async () => {
     const stream = Stream.make(
       Response.makePart("tool-call", {

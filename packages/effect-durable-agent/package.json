@@ -71,6 +71,10 @@
       "types": "./dist/services/compaction.d.ts",
       "import": "./dist/services/compaction.js"
     },
+    "./services/model-call": {
+      "types": "./dist/services/model-call.d.ts",
+      "import": "./dist/services/model-call.js"
+    },
     "./services/id-generator": {
       "types": "./dist/services/id-generator.d.ts",
       "import": "./dist/services/id-generator.js"

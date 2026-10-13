@@ -33,6 +33,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./anthropic": {
+      "types": "./dist/anthropic.d.ts",
+      "import": "./dist/anthropic.js"
+    },
     "./durable-object": {
       "types": "./dist/durable-object.d.ts",
       "import": "./dist/durable-object.js"
@@ -40,6 +44,10 @@
     "./openai": {
       "types": "./dist/openai.d.ts",
       "import": "./dist/openai.js"
+    },
+    "./providers": {
+      "types": "./dist/providers.d.ts",
+      "import": "./dist/providers.js"
     },
     "./rpc": {
       "types": "./dist/rpc.d.ts",
@@ -74,16 +82,26 @@
     "effect-durable-agent": "workspace:*"
   },
   "peerDependencies": {
+    "@effect/ai-anthropic": "4.0.3",
     "@effect/ai-openai": "4.0.3",
     "effect": "4.0.3"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.18.8",
     "@cloudflare/workers-types": "5.20260813.1",
+    "@effect/ai-anthropic": "4.0.3",
     "@effect/ai-openai": "4.0.3",
     "@effect/vitest": "4.0.3",
     "effect": "4.0.3",
     "vite-plus": "0.3.0",
     "vitest": "^4.1.8"
+  },
+  "peerDependenciesMeta": {
+    "@effect/ai-anthropic": {
+      "optional": true
+    },
+    "@effect/ai-openai": {
+      "optional": true
+    }
   }
 }

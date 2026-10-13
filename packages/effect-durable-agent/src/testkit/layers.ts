@@ -227,6 +227,12 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
   const CompactionPolicyLayer = options.compactionPolicyLayer ?? CompactionPolicy.Disabled;
   const Models = options.modelResolverLayer ?? ModelResolver.Fixed.pipe(Layer.provideMerge(Model));
   const CompactionExecutorLayer = options.compactionExecutorLayer ?? CompactionExecutor.Disabled;
+  const Registry =
+    options.toolkit !== undefined
+      ? EDAToolRegistry.FromToolkit(options.toolkit)
+      : options.toolSchemas === undefined
+        ? EDAToolRegistry.Empty
+        : EDAToolRegistry.FromSchemas(options.toolSchemas);
   const Compaction = CompactionRunner.Live.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
@@ -235,6 +241,9 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
         Ids,
         KeepAlive,
         Models,
+        Session,
+        PromptProjector,
+        Registry,
         CompactionPolicyLayer,
         CompactionExecutorLayer,
       ),
@@ -270,12 +279,6 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
       ),
     ),
   );
-  const Registry =
-    options.toolkit !== undefined
-      ? EDAToolRegistry.FromToolkit(options.toolkit)
-      : options.toolSchemas === undefined
-        ? EDAToolRegistry.Empty
-        : EDAToolRegistry.FromSchemas(options.toolSchemas);
   const InferenceRunnerLayer = InferenceRunner.Live.pipe(
     Layer.provideMerge(Layer.mergeAll(Factory, Models, Registry, Ids)),
   );

@@ -155,6 +155,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: 5.20260813.1
         version: 5.20260813.1
+      '@effect/ai-anthropic':
+        specifier: 4.0.3
+        version: 4.0.3(effect@4.0.3)
       '@effect/ai-openai':
         specifier: 4.0.3
         version: 4.0.3(effect@4.0.3)
@@ -254,6 +257,11 @@ packages:
   '@cspotcode/source-map-support@0.8.1':
     resolution: {integrity: sha512-IchNf6dN4tHoMFIn/7OE8LWZ19Y6q/67Bmf6vnGREv8RSbBVb9LPJxEcnwrcwX6ixSvaiGoomAUvu4YSxXrVgw==}
     engines: {node: '>=12'}
+
+  '@effect/ai-anthropic@4.0.3':
+    resolution: {integrity: sha512-c0rKev8Bg9iwBTiuANlq+2DV3XUnLeNbb8ZPzU5KPpzvuNOBpc2yZpFqjlxZa3V7azE4iKT+YeSGJ62fQNk6Fw==}
+    peerDependencies:
+      effect: ^4.0.3
 
   '@effect/ai-openai@4.0.3':
     resolution: {integrity: sha512-jdD/5uryLdlnf2XEUe1yAPSKzsYGpgBX65azWAaLtcMPk4FlP5xq3JnLfVOtOLAgiRMJ9RaMmd/7GVUeW5q3hA==}
@@ -2333,6 +2341,10 @@ snapshots:
   '@cspotcode/source-map-support@0.8.1':
     dependencies:
       '@jridgewell/trace-mapping': 0.3.9
+
+  '@effect/ai-anthropic@4.0.3(effect@4.0.3)':
+    dependencies:
+      effect: 4.0.3
 
   '@effect/ai-openai@4.0.3(effect@4.0.3)':
     dependencies:

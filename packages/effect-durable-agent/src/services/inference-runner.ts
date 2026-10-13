@@ -136,11 +136,13 @@ type ResponseContextEntry =
       readonly _tag: "Text";
       readonly providerPartId: string;
       readonly text: string;
+      readonly metadata: Response.ProviderMetadata;
     }
   | {
       readonly _tag: "Reasoning";
       readonly providerPartId: string;
       readonly text: string;
+      readonly metadata: Response.ProviderMetadata;
     }
   | {
       readonly _tag: "ResponsePart";
@@ -501,9 +503,10 @@ const makeLiveInferenceRunner = Effect.gen(function* () {
       const body = (started: CommittedDurableEvent) =>
         Effect.gen(function* () {
           const toolkit = yield* toolRegistry.getModelToolkit();
+          const prompt = models.preparePrompt?.(input.modelSelection, Prompt.make(input.prompt));
           const providerStream = (
             languageModel.streamText({
-              prompt: input.prompt,
+              prompt: prompt ?? input.prompt,
               disableToolCallResolution: true,
               ...(toolkit === undefined ? {} : { toolkit }),
             } as never) as Stream.Stream<
@@ -615,17 +618,15 @@ const recordResponseContext = (
 ): ReadonlyArray<ResponseContextEntry> => {
   switch (part.type) {
     case "text-start":
-      return upsertTextualResponseEntry(entries, "Text", part.id, "");
-    case "text-delta":
-      return upsertTextualResponseEntry(entries, "Text", part.id, part.delta);
     case "text-end":
-      return entries;
+      return upsertTextualResponseEntry(entries, "Text", part.id, "", part.metadata);
+    case "text-delta":
+      return upsertTextualResponseEntry(entries, "Text", part.id, part.delta, part.metadata);
     case "reasoning-start":
-      return upsertTextualResponseEntry(entries, "Reasoning", part.id, "");
-    case "reasoning-delta":
-      return upsertTextualResponseEntry(entries, "Reasoning", part.id, part.delta);
     case "reasoning-end":
-      return entries;
+      return upsertTextualResponseEntry(entries, "Reasoning", part.id, "", part.metadata);
+    case "reasoning-delta":
+      return upsertTextualResponseEntry(entries, "Reasoning", part.id, part.delta, part.metadata);
     case "tool-call":
       return part.providerExecuted ? entries : [...entries, { _tag: "ResponsePart", part }];
     case "tool-result":
@@ -645,11 +646,16 @@ const recordResponseContext = (
   }
 };
 
+/**
+ * Folds one textual stream part into its entry. Provider metadata from start, delta and end parts
+ * is merged per provider so replay keeps signatures, item ids and encrypted reasoning.
+ */
 const upsertTextualResponseEntry = (
   entries: ReadonlyArray<ResponseContextEntry>,
   tag: "Text" | "Reasoning",
   providerPartId: string,
   delta: string,
+  metadata: Response.ProviderMetadata | undefined,
 ): ReadonlyArray<ResponseContextEntry> => {
   const index = entries.findIndex(
     (entry) =>
@@ -658,16 +664,44 @@ const upsertTextualResponseEntry = (
       entry.providerPartId === providerPartId,
   );
   if (index === -1) {
-    return [...entries, { _tag: tag, providerPartId, text: delta }];
+    return [...entries, { _tag: tag, providerPartId, text: delta, metadata: metadata ?? {} }];
   }
   const current = entries[index]!;
   if (current._tag !== tag) {
     return entries;
   }
   return entries.map((entry, entryIndex) =>
-    entryIndex === index ? { ...current, text: `${current.text}${delta}` } : entry,
+    entryIndex === index
+      ? {
+          ...current,
+          text: `${current.text}${delta}`,
+          metadata: mergeProviderMetadata(current.metadata, metadata),
+        }
+      : entry,
   );
 };
+
+const mergeProviderMetadata = (
+  left: Response.ProviderMetadata,
+  right: Response.ProviderMetadata | undefined,
+): Response.ProviderMetadata => {
+  if (right === undefined) {
+    return left;
+  }
+  const merged: Record<string, Response.ProviderMetadata[string]> = { ...left };
+  for (const [provider, value] of Object.entries(right)) {
+    const previous = merged[provider];
+    merged[provider] =
+      isMetadataRecord(previous) && isMetadataRecord(value) ? { ...previous, ...value } : value;
+  }
+  return merged;
+};
+
+const isMetadataRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const hasProviderMetadata = (metadata: Response.ProviderMetadata): boolean =>
+  Object.keys(metadata).length > 0;
 
 const responseContextToParts = (
   entries: ReadonlyArray<ResponseContextEntry>,
@@ -675,11 +709,14 @@ const responseContextToParts = (
   entries.flatMap((entry): ReadonlyArray<Response.AnyPart> => {
     switch (entry._tag) {
       case "Text":
-        return entry.text.length === 0 ? [] : [Response.makePart("text", { text: entry.text })];
-      case "Reasoning":
         return entry.text.length === 0
           ? []
-          : [Response.makePart("reasoning", { text: entry.text })];
+          : [Response.makePart("text", { text: entry.text, metadata: entry.metadata })];
+      case "Reasoning":
+        // Signed or encrypted reasoning can carry empty display text and must still be replayed.
+        return entry.text.length === 0 && !hasProviderMetadata(entry.metadata)
+          ? []
+          : [Response.makePart("reasoning", { text: entry.text, metadata: entry.metadata })];
       case "ResponsePart":
         return [entry.part];
       default:

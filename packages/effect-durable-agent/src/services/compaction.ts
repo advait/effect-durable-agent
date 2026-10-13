@@ -5,11 +5,17 @@ import * as Prompt from "effect/ai/Prompt";
 import * as Schema from "effect/Schema";
 import type * as LanguageModel from "effect/ai/LanguageModel";
 import { ModelResolver } from "./model-resolver";
+import { generateTextOfferingTools } from "./model-call";
 import { makeUsagePayload } from "./provider-usage";
+import { buildEDAPrompt, EDAPromptProjector } from "./prompt-projector";
+import type { EDAReducerStateSnapshot } from "./reducer-registry";
+import { SessionContext } from "./session-context";
+import { EDAToolRegistry, type EDAModelToolkit } from "./tool-registry";
 
 import type { ContextProjection } from "../domain/context-projection";
 import {
   durableMessageTranscript,
+  projectionStateThrough,
   type DurableTranscriptMessage,
 } from "../domain/message-transcript";
 import {
@@ -59,6 +65,14 @@ export interface ApproximateTokenThresholdCompactionPolicyOptions {
   readonly minSummarizableTokens?: number;
   /** Character-to-token divisor for the approximate estimator. Defaults to 4. */
   readonly charsPerToken?: number;
+  /**
+   * What stays verbatim after the summary. `tail-tokens` (default) keeps roughly
+   * `retainTailTokens` of recent context. `last-response` keeps exactly the latest assistant
+   * response and what followed it, so the summarized range equals the prompt of a request already
+   * sent: provider caches cover the compaction call and provider-native compaction keeps the
+   * retained response's reasoning valid.
+   */
+  readonly retain?: "tail-tokens" | "last-response";
 }
 
 /** LanguageModel-backed summary executor options. */
@@ -89,6 +103,14 @@ export interface CompactionExecutorInput extends CompactionPolicyInput {
   readonly plan: CompactionPlan;
   /** Provider service resolved from the same durable selection used for accounting. */
   readonly model: LanguageModel.LanguageModel;
+  /**
+   * The provider prompt as it stood through `plan.sourceToSeq`: the same instructions, history and
+   * trailing context an inference at that point would send. Executors that reuse it share the
+   * conversation's provider cache.
+   */
+  readonly prompt: Prompt.Prompt;
+  /** Tools offered with every inference; reusing them keeps the cached prefix identical. */
+  readonly toolkit: EDAModelToolkit | undefined;
 }
 
 /** Typed failure from policy planning or summary generation. */
@@ -238,9 +260,68 @@ export class CompactionExecutor extends Context.Service<
     );
 }
 
+/** Prompt-prefix summary executor options. */
+export interface PromptPrefixSummaryCompactionExecutorOptions {
+  /** Stable executor id stored on summary artifacts. */
+  readonly executorId?: string;
+  /** Summarization request appended after the conversation. Defaults to EDA's checkpoint prompt. */
+  readonly instructions?: string;
+  /** Prefix used for the synthetic prompt message inserted into future context. */
+  readonly summaryMessagePrefix?: string;
+}
+
+/**
+ * Provider-neutral summary that reuses the conversation's own prompt prefix (instructions, tools,
+ * history) and appends the summarization request, so the call reads the conversation from the
+ * provider cache. Pair it with a policy that retains nothing (`retainTailTokens: 0`) on providers
+ * that bind reasoning to its conversation; use provider-native executors to keep a tail.
+ */
+export const promptPrefixSummaryCompactionExecutor = (
+  options: PromptPrefixSummaryCompactionExecutorOptions = {},
+): Layer.Layer<CompactionExecutor> =>
+  Layer.succeed(CompactionExecutor, {
+    id: CompactionExecutorId.make(options.executorId ?? "prompt-prefix-summary"),
+    execute: Effect.fn("agent.compaction")(function* (input) {
+      const request = options.instructions ?? `Do not call any tools. ${summaryPromptText}`;
+      const prompt = Prompt.fromMessages([
+        ...input.prompt.content,
+        Prompt.makeMessage("user", { content: [Prompt.textPart({ text: request })] }),
+      ]);
+      const response = yield* generateTextOfferingTools(input.model, prompt, input.toolkit).pipe(
+        Effect.mapError(
+          (error) =>
+            new CompactionError({ message: `summary model failed: ${formatUnknownError(error)}` }),
+        ),
+      );
+      const text = response.text.trim();
+      if (text.length === 0) {
+        return yield* new CompactionError({
+          message: "summary model returned no text",
+          usage: makeUsagePayload(response.usage),
+        });
+      }
+      return CompactionOutput.make({
+        usage: makeUsagePayload(response.usage),
+        text,
+        promptMessage: Prompt.makeMessage("user", {
+          content: [
+            Prompt.textPart({
+              text: `${options.summaryMessagePrefix ?? "Conversation summary:"}\n\n${text}`,
+            }),
+          ],
+        }),
+        executorId: CompactionExecutorId.make(options.executorId ?? "prompt-prefix-summary"),
+      });
+    }),
+  } satisfies CompactionExecutorShape);
+
+/** EDA's checkpoint summary request, exposed for executors that pass custom instructions. */
+export const defaultCompactionSummaryInstructions = (): string => summaryPromptText;
+
 /** Inputs needed by the framework-owned compaction lifecycle runner. */
 export interface CompactionRunnerInput {
   readonly state: ReducedState;
+  readonly reducerStates: EDAReducerStateSnapshot;
   readonly context: ContextProjection;
   readonly appendDurableEntries: (
     entries: ReadonlyArray<DurableAppendEntry>,
@@ -266,6 +347,7 @@ export class CompactionRunner extends Context.Service<CompactionRunner, Compacti
 }
 
 interface NormalizedApproximateTokenPolicyOptions {
+  readonly retain: "tail-tokens" | "last-response";
   readonly policyId: CompactionPolicyId;
   readonly thresholdTokens: number;
   readonly retainTailTokens: number;
@@ -286,6 +368,9 @@ const makeLiveCompactionRunner = Effect.gen(function* () {
   const executor = yield* CompactionExecutor;
   const keepAlive = yield* EDAKeepAlive;
   const models = yield* ModelResolver;
+  const promptProjector = yield* EDAPromptProjector;
+  const toolRegistry = yield* EDAToolRegistry;
+  const session = yield* SessionContext;
 
   const maybeCompact = Effect.fnUntraced(function* (input: CompactionRunnerInput) {
     const plan = yield* policy
@@ -330,10 +415,25 @@ const makeLiveCompactionRunner = Effect.gen(function* () {
     ]);
 
     const model = yield* models.resolve(input.state.modelSelection);
+    const projected = yield* buildEDAPrompt(promptProjector, {
+      sessionId: session.sessionId,
+      state: projectionStateThrough(input.state, plan.sourceToSeq),
+      reducerStates: input.reducerStates,
+      context: input.context,
+    });
+    const prompt = models.preparePrompt?.(input.state.modelSelection, projected) ?? projected;
+    const toolkit = yield* toolRegistry.getModelToolkit();
     const output = yield* keepAlive
       .withActiveWork(
         `compaction:${compactionId}`,
-        executor.execute({ plan, state: input.state, context: input.context, model }),
+        executor.execute({
+          plan,
+          state: input.state,
+          context: input.context,
+          model,
+          prompt,
+          toolkit,
+        }),
       )
       .pipe(
         Effect.catchTag("CompactionError", (error) =>
@@ -433,6 +533,7 @@ const validatePlan = (
 const normalizeApproximateTokenPolicyOptions = (
   options: ApproximateTokenThresholdCompactionPolicyOptions,
 ): NormalizedApproximateTokenPolicyOptions => ({
+  retain: options.retain ?? "tail-tokens",
   policyId: CompactionPolicyId.make(options.policyId ?? "approximate-token-threshold"),
   thresholdTokens: positiveNumber(
     options.thresholdTokens ?? defaultCompactionThresholdTokens,
@@ -480,7 +581,13 @@ const planApproximateTokenCompaction = (
 
   const currentRetainedFromSeq =
     context.currentSummary?.retainedFromContextSeq ?? SequenceNumber.make(0);
-  const retainedFromSeq = selectRetainedFromSeq(messages, state.lastSeq, options);
+  const retainedFromSeq =
+    options.retain === "last-response"
+      ? lastResponseSeq(messages, currentRetainedFromSeq)
+      : selectRetainedFromSeq(messages, state.lastSeq, options);
+  if (retainedFromSeq === undefined) {
+    return undefined;
+  }
   if (retainedFromSeq <= currentRetainedFromSeq) {
     return undefined;
   }
@@ -511,6 +618,22 @@ const planApproximateTokenCompaction = (
     sourceToSeq,
     retainedFromContextSeq: retainedFromSeq,
   });
+};
+
+/** Sequence of the latest assistant response past the current cursor, if any. */
+const lastResponseSeq = (
+  messages: ReadonlyArray<EstimatedContextMessage>,
+  currentRetainedFromSeq: SequenceNumber,
+): SequenceNumber | undefined => {
+  for (const entry of [...messages].reverse()) {
+    if (entry.seq <= currentRetainedFromSeq) {
+      return undefined;
+    }
+    if (entry.message._tag === "Assistant" || entry.message._tag === "AssistantPartial") {
+      return entry.seq;
+    }
+  }
+  return undefined;
 };
 
 const selectRetainedFromSeq = (

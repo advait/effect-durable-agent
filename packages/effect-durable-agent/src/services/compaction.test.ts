@@ -183,6 +183,55 @@ describe("EDA compaction", () => {
     expect(promptMessages[1]).toEqual(["Summary:\n\nFirst turn summary", "second"]);
   });
 
+  it("hands last-response executors the exact earlier request prompt and keeps that response", async () => {
+    const prompts: Array<Prompt.RawInput> = [];
+    const executorPrompts: Array<Prompt.Prompt> = [];
+    const policyLayer = CompactionPolicy.ApproximateTokenThreshold({
+      policyId: "test.last-response",
+      thresholdTokens: 1,
+      minSummarizableTokens: 1,
+      charsPerToken: 1,
+      retain: "last-response",
+    });
+    const executorLayer = CompactionExecutor.FromFunction("test.prefix", (input) =>
+      Effect.sync(() => {
+        executorPrompts.push(input.prompt);
+        return CompactionOutput.make({
+          text: "prefix summary",
+          promptMessage: Prompt.makeMessage("user", {
+            content: [Prompt.textPart({ text: "Summary: prefix summary" })],
+          }),
+        });
+      }),
+    );
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const runtime = yield* EDARuntime;
+        yield* runtime.submitAndBlock(command);
+        yield* runtime.submitAndBlock(secondCommand);
+      }),
+    ).pipe(
+      Effect.provide(
+        makeRuntimeLayer([finishedStream("first response"), finishedStream("second response")], {
+          compactionPolicyLayer: policyLayer,
+          compactionExecutorLayer: executorLayer,
+          onStreamText: ({ prompt }) => prompts.push(prompt),
+        }),
+      ),
+    );
+
+    await Effect.runPromise(program);
+
+    // The compaction prompt is byte-for-byte the first inference's prompt, cache hints included.
+    expect(executorPrompts[0]?.content).toEqual(Prompt.make(prompts[0]!).content);
+    // The retained response follows the summary verbatim.
+    expect(Prompt.make(prompts[1]!).content.map(promptMessageText)).toEqual([
+      "Summary: prefix summary",
+      "first response",
+      "second",
+    ]);
+  });
+
   it("rebases the next turn prompt onto a summary plus retained tail", async () => {
     const prompts: Array<Prompt.RawInput> = [];
     const policyLayer = CompactionPolicy.FromFunction("test.retain-none", ({ state, context }) =>

@@ -7,6 +7,7 @@ import { CommandId, MessageId, SequenceNumber, SessionId, TurnId } from "../type
 import {
   buildEDAPrompt,
   EDAPromptProjector,
+  isEDACacheBreakpoint,
   type EDAPromptProjectorShape,
 } from "./prompt-projector";
 
@@ -107,6 +108,13 @@ describe("EDAPromptProjector", () => {
       { role: "system", content: "projected instructions" },
       { role: "user", content: [{ text: "durable user" }] },
       { role: "user", content: [{ text: "projected data" }] },
+    ]);
+    // Cache hints end the instruction prefix and durable history, never the per-request data.
+    expect(Prompt.make(prompt).content.map(isEDACacheBreakpoint)).toEqual([
+      false,
+      true,
+      true,
+      false,
     ]);
   });
 });
