@@ -1,5 +1,6 @@
 import { stableJsonStringify, type JsonValue } from "../json";
 import type { OfflineTracePromptArtifact } from "../harness/artifacts";
+import { EDA_PROMPT_OPTIONS_KEY } from "../../../src/services/prompt-projector";
 
 /** Result of verifying prompt-cache prefix stability across model requests. */
 export interface PromptPrefixVerification {
@@ -27,6 +28,23 @@ const isJsonArrayPrefix = (prefix: JsonValue, value: JsonValue): boolean => {
     return false;
   }
   return prefix.every(
-    (entry, index) => stableJsonStringify(entry) === stableJsonStringify(value[index]),
+    (entry, index) =>
+      stableJsonStringify(withoutCacheHint(entry)) ===
+      stableJsonStringify(withoutCacheHint(value[index] ?? null)),
   );
 };
+
+/**
+ * EDA's cache hint marks the current end of history and moves forward every turn; providers treat
+ * moving cache breakpoints as prefix-neutral, so the comparison ignores it.
+ */
+const withoutCacheHint = (message: JsonValue): JsonValue => {
+  if (!isJsonObject(message)) return message;
+  const options = message["options"];
+  if (options === undefined || !isJsonObject(options)) return message;
+  const { [EDA_PROMPT_OPTIONS_KEY]: _hint, ...rest } = options;
+  return { ...message, options: rest };
+};
+
+const isJsonObject = (value: JsonValue): value is { readonly [key: string]: JsonValue } =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
