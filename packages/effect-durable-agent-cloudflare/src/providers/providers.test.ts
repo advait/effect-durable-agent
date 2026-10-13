@@ -168,6 +168,37 @@ interface Recorded {
   readonly body: Record<string, unknown>;
 }
 
+/** Serialize a Messages response the way the API streams a compaction result. */
+const anthropicStream = (message: Record<string, unknown>) => {
+  const { content, stop_reason, usage, ...rest } = message;
+  const blocks = Array.isArray(content) ? content : [];
+  const events = [
+    {
+      type: "message_start",
+      message: {
+        ...rest,
+        content: [],
+        stop_reason: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    },
+    { type: "ping" },
+    ...blocks.flatMap((block, index) => [
+      { type: "content_block_start", index, content_block: block },
+      { type: "content_block_stop", index },
+    ]),
+    { type: "message_delta", delta: { stop_reason, stop_sequence: null }, usage },
+    { type: "message_stop" },
+  ];
+  return new RawBody(
+    events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+  );
+};
+
+class RawBody {
+  constructor(readonly text: string) {}
+}
+
 const stubFetch = (respond: (request: Recorded) => unknown) => {
   const recorded: Array<Recorded> = [];
   vi.stubGlobal("fetch", async (input: URL | string, init: RequestInit) => {
@@ -177,7 +208,8 @@ const stubFetch = (respond: (request: Recorded) => unknown) => {
       body: JSON.parse(String(init.body)),
     };
     recorded.push(request);
-    return new Response(JSON.stringify(respond(request)), {
+    const response = respond(request);
+    return new Response(response instanceof RawBody ? response.text : JSON.stringify(response), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
@@ -236,37 +268,42 @@ describe("native compaction executors", () => {
   });
 
   it("compacts Anthropic sessions with on-demand compaction and sums iteration usage", async () => {
-    const recorded = stubFetch(() => ({
-      id: "msg_1",
-      type: "message",
-      role: "assistant",
-      model: "claude-opus-5-5",
-      content: [anthropicBlock],
-      stop_reason: "compaction",
-      stop_sequence: null,
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        iterations: [
-          {
-            type: "compaction",
-            input_tokens: 60,
-            cache_read_input_tokens: 45_000,
-            cache_creation_input_tokens: 0,
-            output_tokens: 900,
-          },
-        ],
-      },
-    }));
+    const recorded = stubFetch(() =>
+      anthropicStream({
+        id: "msg_1",
+        type: "message",
+        role: "assistant",
+        model: "claude-opus-5-5",
+        content: [anthropicBlock],
+        stop_reason: "compaction",
+        stop_sequence: null,
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          iterations: [
+            {
+              type: "compaction",
+              input_tokens: 60,
+              cache_read_input_tokens: 45_000,
+              cache_creation_input_tokens: 0,
+              output_tokens: 900,
+            },
+          ],
+        },
+      }),
+    );
 
     const output = await runCompaction("anthropic", "claude-opus-5-5");
 
     expect(recorded).toHaveLength(1);
     expect(recorded[0]?.headers["anthropic-beta"]).toContain("compact-2026-09-04");
+    // The rewritten body is framed by fetch, never by the adapter's original length.
+    expect(recorded[0]?.headers["content-length"]).toBeUndefined();
     expect(recorded[0]?.body).toMatchObject({
       compaction: { type: "summarize" },
       max_tokens: 16_000,
       model: "claude-opus-5-5",
+      stream: true,
     });
     expect(output.text).toBe("summary text");
     expect(output.usage).toEqual({

@@ -193,11 +193,16 @@ const anthropicCompaction = (input: CompactionExecutorInput, options: EDANativeC
   Effect.gen(function* () {
     const body = yield* callWithOverride(input, (request) => ({
       ...request,
-      headers: withBeta(request.headers, ANTHROPIC_COMPACTION_BETA),
+      headers: {
+        ...withBeta(request.headers, ANTHROPIC_COMPACTION_BETA),
+        accept: "text/event-stream",
+      },
       body: isRecord(request.body)
         ? {
             ...request.body,
             max_tokens: options.anthropicMaxTokens ?? 16_000,
+            // Streaming keeps the connection active (pings) while the summary is written.
+            stream: true,
             compaction: {
               type: "summarize",
               ...(options.anthropicInstructions === undefined
@@ -206,7 +211,7 @@ const anthropicCompaction = (input: CompactionExecutorInput, options: EDANativeC
             },
           }
         : request.body,
-    }));
+    })).pipe(Effect.map(anthropicMessageFromStream));
     const usage = anthropicCompactionUsage(body);
     const block = isRecord(body) && Array.isArray(body.content) ? body.content[0] : undefined;
     if (
@@ -280,6 +285,37 @@ const openAiCompaction = (input: CompactionExecutorInput) =>
       ...(usage === undefined ? {} : { usage }),
     });
   });
+
+/**
+ * Rebuild a Messages API response from its SSE stream. A compaction block arrives whole in its
+ * `content_block_start`; usage (with `iterations`) arrives on `message_delta`.
+ */
+const anthropicMessageFromStream = (body: unknown): unknown => {
+  if (typeof body !== "string") return body;
+  let message: Record<string, unknown> = {};
+  const content: Array<unknown> = [];
+  for (const line of body.split("\n")) {
+    if (!line.startsWith("data: ")) continue;
+    const event: unknown = JSON.parse(line.slice("data: ".length));
+    if (!isRecord(event)) continue;
+    if (event.type === "message_start" && isRecord(event.message)) {
+      message = { ...event.message };
+    } else if (event.type === "content_block_start" && typeof event.index === "number") {
+      content[event.index] = event.content_block;
+    } else if (event.type === "message_delta") {
+      const delta = isRecord(event.delta) ? event.delta : {};
+      const usage = isRecord(message.usage) ? message.usage : {};
+      message = {
+        ...message,
+        ...delta,
+        usage: { ...usage, ...(isRecord(event.usage) ? event.usage : {}) },
+      };
+    } else if (event.type === "error") {
+      return { error: event.error };
+    }
+  }
+  return { ...message, content: content.filter((block) => block !== undefined) };
+};
 
 /** Anthropic reports compaction cost only in `usage.iterations`; top-level fields are zero. */
 const anthropicCompactionUsage = (body: unknown): UsagePayload | undefined => {

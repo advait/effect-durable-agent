@@ -169,6 +169,8 @@ export interface EDAProviderTransportOptions {
   readonly provider: EDAProvider;
   /** Cloudflare AI Gateway binding; requests go direct over `fetch` when absent. */
   readonly aiGateway?: AiGateway | undefined;
+  /** Anthropic beta flags added to every Anthropic request. */
+  readonly anthropicBetas?: ReadonlyArray<string> | undefined;
 }
 
 /**
@@ -183,9 +185,13 @@ export const makeEDAProviderHttpClient = (
       const override = yield* EDAProviderRequestOverride;
       const prepared = yield* Effect.try({
         try: () => {
+          const headers =
+            options.provider === "anthropic"
+              ? (options.anthropicBetas ?? []).reduce(withBeta, stringHeaders(request))
+              : stringHeaders(request);
           const base = rehydrateNativeCompaction(options.provider, {
             url,
-            headers: stringHeaders(request),
+            headers,
             body: requestBody(request.body),
           });
           return override === undefined ? base : override.rewrite(base);
@@ -219,7 +225,27 @@ export const makeEDAProviderHttpClient = (
     }),
   );
 
+/**
+ * Connection failures before any response are retried like the provider SDKs do (two retries with
+ * backoff); a request that reached the provider and failed is returned as its HTTP response.
+ */
 const send = async (
+  options: EDAProviderTransportOptions,
+  request: HttpClientRequest.HttpClientRequest,
+  prepared: EDAProviderRequest,
+  signal: AbortSignal,
+): Promise<Response> => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await sendOnce(options, request, prepared, signal);
+    } catch (error) {
+      if (attempt >= 3 || signal.aborted) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** (attempt - 1)));
+    }
+  }
+};
+
+const sendOnce = async (
   options: EDAProviderTransportOptions,
   request: HttpClientRequest.HttpClientRequest,
   prepared: EDAProviderRequest,
@@ -254,11 +280,14 @@ export const gatewayEndpoint = (provider: EDAProvider, url: URL): string => {
   return `${path}${url.search}`;
 };
 
+/** Headers that describe the original body; the transport may rewrite it, so fetch recomputes them. */
+const BODY_FRAMING_HEADERS = new Set(["host", "content-length", "transfer-encoding"]);
+
 const stringHeaders = (request: HttpClientRequest.HttpClientRequest): Record<string, string> =>
   Object.fromEntries(
     Object.entries(request.headers).filter(
       (entry): entry is [string, string] =>
-        typeof entry[1] === "string" && entry[0].toLowerCase() !== "host",
+        typeof entry[1] === "string" && !BODY_FRAMING_HEADERS.has(entry[0].toLowerCase()),
     ),
   );
 

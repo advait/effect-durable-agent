@@ -17,6 +17,8 @@ export interface EDAAnthropicClientOptions {
   readonly aiGateway?: AiGateway | undefined;
   readonly apiKey?: string | undefined;
   readonly apiUrl?: string | undefined;
+  /** Beta flags sent on every request, e.g. `thinking-binding-controls-2026-08-01`. */
+  readonly betas?: ReadonlyArray<string> | undefined;
 }
 
 /** Anthropic client layer over EDA's provider transport. */
@@ -36,10 +38,53 @@ export const makeEDAAnthropicClientLayer = (
     Layer.provide(
       Layer.succeed(
         HttpClient.HttpClient,
-        makeEDAProviderHttpClient({ provider: "anthropic", aiGateway: options.aiGateway }),
+        makeEDAProviderHttpClient({
+          provider: "anthropic",
+          aiGateway: options.aiGateway,
+          anthropicBetas: options.betas,
+        }),
       ),
     ),
   );
+};
+
+/** Beta that lets requests choose what happens to thinking bound to an edited conversation. */
+export const ANTHROPIC_THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01";
+
+/** Agent request policy for Claude 5.5-generation models. */
+export interface EDAAnthropicAgentSettings {
+  /** Thinking depth; Opus 5.5 cannot disable thinking, so effort is the only control. */
+  readonly effort: "low" | "medium" | "high";
+  /** Output budget including thinking. Defaults to 64,000. */
+  readonly maxTokens?: number | undefined;
+  /** `summarized` streams readable reasoning summaries. Defaults to `summarized`. */
+  readonly thinkingDisplay?: "summarized" | "omitted" | undefined;
+  /**
+   * Explicit preserved-thinking policy (requires {@link ANTHROPIC_THINKING_BINDING_BETA}).
+   * `drop_block` degrades instead of failing when replayed thinking no longer matches.
+   */
+  readonly prefixMismatchBehavior?: "error" | "drop_block" | undefined;
+}
+
+/** Model config for EDA agent sessions on Anthropic. */
+export const anthropicAgentModelConfig = (
+  settings: EDAAnthropicAgentSettings,
+): EDAAnthropicModelConfig => {
+  const thinking = {
+    type: "adaptive" as const,
+    display: settings.thinkingDisplay ?? "summarized",
+    ...(settings.prefixMismatchBehavior === undefined
+      ? {}
+      : { block_binding: { prefix_mismatch_behavior: settings.prefixMismatchBehavior } }),
+  };
+  const config: EDAAnthropicModelConfig = {
+    max_tokens: settings.maxTokens ?? 64_000,
+    output_config: { effort: settings.effort },
+    thinking,
+    // EDA tool schemas are not written for strict mode's constraints.
+    strictJsonSchema: false,
+  };
+  return config;
 };
 
 /**
