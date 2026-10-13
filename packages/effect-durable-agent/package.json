@@ -1,6 +1,6 @@
 {
   "name": "effect-durable-agent",
-  "version": "0.1.0-alpha.20",
+  "version": "0.1.0-alpha.21",
   "description": "A host-independent, event-sourced durable state-management and execution layer for agentic applications.",
   "keywords": [
     "agents",
@@ -70,6 +70,10 @@
     "./services/compaction": {
       "types": "./dist/services/compaction.d.ts",
       "import": "./dist/services/compaction.js"
+    },
+    "./services/model-call": {
+      "types": "./dist/services/model-call.d.ts",
+      "import": "./dist/services/model-call.js"
     },
     "./services/id-generator": {
       "types": "./dist/services/id-generator.d.ts",

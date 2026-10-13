@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.0-alpha.21
+
+Multi-provider sessions (OpenAI and Anthropic), provider prompt caching, and provider-native
+compaction.
+
+- Committed assistant prompt parts keep provider metadata from streamed text and reasoning parts:
+  Anthropic thinking signatures and redacted thinking, OpenAI item ids and encrypted reasoning.
+  Replayed requests therefore carry valid reasoning; previously reasoning was replayed as text and
+  providers dropped it. Reasoning with empty display text is kept when it carries metadata.
+- `buildEDAPrompt` marks the end of the instruction prefix and the end of durable history with a
+  provider-neutral cache hint (`isEDACacheBreakpoint`); per-request projected data messages are
+  never marked.
+- `ModelResolver` gains an optional `preparePrompt(selection, prompt)` hook applied before every
+  inference and compaction call.
+- Compaction executors receive `prompt` (the exact provider prompt through the planned source
+  range, as an earlier request sent it) and `toolkit`. `CompactionRunnerInput` gains
+  `reducerStates`. `ApproximateTokenThreshold` gains `retain: "last-response"`, which keeps the
+  latest assistant response verbatim so the summarized range equals an earlier request.
+- New `promptPrefixSummaryCompactionExecutor` (provider-neutral summary reusing the conversation
+  prefix), `nativeCompactionSummaryMessage` / `getNativeCompaction` prompt helpers, and
+  `generateTextOfferingTools` (`effect-durable-agent/services/model-call`).
+- `effect-durable-agent-cloudflare`:
+  - `./anthropic`: Anthropic client over EDA's transport, `anthropicAgentModelConfig`, and prompt
+    preparation that turns cache hints into `cache_control` breakpoints.
+  - `./providers`: `makeEDAMultiProviderModelResolverLayer` (routes each recorded selection to its
+    provider) and `makeEDANativeCompactionExecutorLayer` (OpenAI `/responses/compact`, Anthropic
+    on-demand compaction `compact-2026-09-04`, with usage taken from `usage.iterations`).
+  - The OpenAI client now uses the same transport, which retries connection failures before a
+    response like the provider SDKs and replays native compaction items.
+  - `@effect/ai-anthropic` 4.0.3 is an optional peer dependency.
+
 ## 0.1.0-alpha.20
 
 Adopt stable Effect 4: `effect`, `@effect/ai-openai` and `@effect/vitest` move from `4.0.0-beta.102`

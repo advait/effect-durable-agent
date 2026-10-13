@@ -103,6 +103,12 @@ export const makeEDARuntimeLayer = ({
   const ReducerRegistry = reducerRegistryLayer ?? EDAReducerRegistry.Empty;
   const CompactionPolicyLayer = compactionPolicyLayer ?? CompactionPolicy.Disabled;
   const CompactionExecutorLayer = compactionExecutorLayer ?? CompactionExecutor.Disabled;
+  const Registry =
+    toolRegistry !== undefined
+      ? EDAToolRegistry.FromShape(toolRegistry)
+      : toolkit === undefined
+        ? EDAToolRegistry.Empty
+        : EDAToolRegistry.FromToolkit(toolkit);
   const Compaction = CompactionRunner.Live.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
@@ -111,6 +117,9 @@ export const makeEDARuntimeLayer = ({
         Ids,
         KeepAlive,
         Models,
+        Session,
+        PromptProjector,
+        Registry,
         CompactionPolicyLayer,
         CompactionExecutorLayer,
       ),
@@ -146,12 +155,6 @@ export const makeEDARuntimeLayer = ({
       ),
     ),
   );
-  const Registry =
-    toolRegistry !== undefined
-      ? EDAToolRegistry.FromShape(toolRegistry)
-      : toolkit === undefined
-        ? EDAToolRegistry.Empty
-        : EDAToolRegistry.FromToolkit(toolkit);
   const InferenceRunnerLayer = InferenceRunner.Live.pipe(
     Layer.provideMerge(Layer.mergeAll(Factory, Models, Registry, Ids)),
   );

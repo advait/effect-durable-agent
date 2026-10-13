@@ -119,6 +119,8 @@ export default defineConfig({
           "packages/effect-durable-agent/src/domain/reduced-state.ts",
           "packages/effect-durable-agent/src/services/event-factory.ts",
           "packages/effect-durable-agent/src/services/inference-runner.ts",
+          // Offers tools without executing them; see the helper's comment.
+          "packages/effect-durable-agent/src/services/model-call.ts",
           "packages/effect-durable-agent/src/services/runtime.test.ts",
           "packages/effect-durable-agent/src/services/runtime.ts",
           "packages/effect-durable-agent/src/services/session-query.test.ts",

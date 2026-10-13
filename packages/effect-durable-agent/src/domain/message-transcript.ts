@@ -19,6 +19,25 @@ export const durableMessageTranscript = (
 ): ReadonlyArray<DurableTranscriptMessage> =>
   Array.from(state.messages.values()).filter(isDurableTranscriptMessage).sort(compareBySeq);
 
+/**
+ * Prompt state as of `throughSeq`: transcript messages that entered the prompt at or before that
+ * sequence. Compaction uses it to rebuild the exact prompt of an earlier request.
+ */
+export const projectionStateThrough = <S extends Pick<ReducedState, "messages">>(
+  state: S,
+  throughSeq: number,
+): S => ({
+  ...state,
+  messages: new Map(
+    Array.from(state.messages).filter(
+      ([, message]) =>
+        message._tag === "System" ||
+        !isDurableTranscriptMessage(message) ||
+        messageTranscriptSeq(message) <= throughSeq,
+    ),
+  ),
+});
+
 const isDurableTranscriptMessage = (message: MessageRecord): message is DurableTranscriptMessage =>
   (message._tag === "User" && message.cancelledSeq === undefined) ||
   message._tag === "Assistant" ||

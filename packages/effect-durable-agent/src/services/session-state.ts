@@ -908,9 +908,11 @@ const makeLiveSessionState = Effect.gen(function* () {
 
   const maybeCompactAtBoundary = () =>
     Effect.gen(function* () {
-      const current = yield* currentReduced();
+      const data = yield* currentData();
+      const current = data.reduced;
       const committed = yield* compactionRunner.maybeCompact({
         state: current,
+        reducerStates: data.reducerStates,
         context: yield* contextProjectionFor(current),
         appendDurableEntries,
       });

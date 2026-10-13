@@ -16,6 +16,7 @@ const publicEntries = {
   "domain/reduced-state-schema": "src/domain/reduced-state-schema.ts",
   websocket: "src/websocket/index.ts",
   "services/compaction": "src/services/compaction.ts",
+  "services/model-call": "src/services/model-call.ts",
   "services/id-generator": "src/services/id-generator.ts",
   "services/keep-alive": "src/services/keep-alive.ts",
   "services/prompt-projector": "src/services/prompt-projector.ts",
