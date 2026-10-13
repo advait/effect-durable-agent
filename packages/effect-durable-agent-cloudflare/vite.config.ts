@@ -9,6 +9,7 @@ export default defineConfig({
   pack: {
     deps: {
       neverBundle: [
+        /^@effect\/ai-anthropic(?:\/|$)/,
         /^@effect\/ai-openai(?:\/|$)/,
         /^cloudflare:/,
         /^effect(?:\/|$)/,
@@ -17,9 +18,11 @@ export default defineConfig({
     },
     dts: true,
     entry: {
+      anthropic: "src/providers/anthropic.ts",
       index: "src/index.ts",
       "durable-object": "src/durable-object.ts",
       openai: "src/providers/openai.ts",
+      providers: "src/providers/providers.ts",
       rpc: "src/rpc.ts",
       "session-controller": "src/session-controller.ts",
       storage: "src/durable-object-storage.ts",
