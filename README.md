@@ -92,7 +92,7 @@ projection of state, and the LLM context is a separate pure projection of that s
 The UI can preserve tool progress, approvals, sandbox status, and rich product history while the
 LLM context selects and compacts only what the model should see. Applications can model each
 consumer honestly instead of collapsing both into one constrained representation. See the
-[UI projection guide](./docs/ui-projection.md) for the projection contract.
+[transcript history design](./docs/transcript-history.md) for the user-visible projection.
 
 ### 7. Durable sinks: callbacks that survive failure
 
@@ -302,7 +302,7 @@ typed boundaries, structured concurrency, and first-class tracing.
 - [Testing strategy](./docs/testing.md)
 - [WebSocket live-event protocol](./docs/websocket-protocol.md)
 - [Message steering](./docs/message-steering.md)
-- [UI projection proposal](./docs/ui-projection.md)
+- [Transcript history design](./docs/transcript-history.md)
 - [Subagents proposal](./docs/subagents.md)
 - [Maintainer release guide](./docs/releasing.md)
 
