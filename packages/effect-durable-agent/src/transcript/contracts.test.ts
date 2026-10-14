@@ -37,7 +37,7 @@ import {
   type TranscriptRecordEnvelope,
 } from "./records";
 import { canonicalJson, sha256Hex, transcriptSemanticRevision } from "./version";
-import { TranscriptWindow, transcriptCursorOf } from "./window";
+import { TranscriptWindow, TranscriptWindowSelector, transcriptCursorOf } from "./window";
 
 const uuid = (suffix: number) => `018f6bd5-2f2a-7b1e-8f1b-${suffix.toString(16).padStart(12, "0")}`;
 const seq = SequenceNumber.make;
@@ -66,7 +66,9 @@ const records: ReadonlyArray<TranscriptRecord> = [
       author: { _tag: "Value", value: { email: "a@example.com" } },
       attachments: { _tag: "List", entries: [{ key: "att-1", value: { name: "a.txt" } }] },
     },
+    submittedSeq: seq(2),
     submittedAtMs: at,
+    consumedAtMs: at,
   },
   {
     kind: "assistant",
@@ -211,6 +213,74 @@ describe("transcript records", () => {
     });
   });
 
+  it("assigns a user position exactly when the submission is consumed", () => {
+    const user = nth(records, 0);
+    if (user.kind !== "user") throw new Error("fixture 0 is a user record");
+    const decode = Schema.decodeUnknownExit(TranscriptRecordFromEnvelope);
+    const envelope = toEnvelope(user);
+    const { position: _position, ...withoutPosition } = envelope;
+    const unpositioned = {
+      ...withoutPosition,
+      body: { ...envelope.body, consumedAtMs: undefined },
+    };
+    expect(Exit.isFailure(decode(unpositioned))).toBe(true);
+    expect(
+      Exit.isFailure(
+        decode({ ...envelope, body: { ...envelope.body, state: { _tag: "Pending" } } }),
+      ),
+    ).toBe(true);
+    const { consumedAtMs: _consumedAtMs, ...withoutConsumedAt } = envelope.body;
+    expect(Exit.isFailure(decode({ ...envelope, body: withoutConsumedAt }))).toBe(true);
+    expect(
+      Exit.isSuccess(
+        decode({
+          ...envelope,
+          body: { ...envelope.body, state: { _tag: "Cancelled", reason: "edit" } },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps a record readable when one of its parts is newer than this reader", () => {
+    const envelope = toEnvelope(nth(records, 1));
+    const parts = envelope.body["parts"];
+    const decoded = Schema.decodeUnknownSync(TranscriptRecordFromEnvelope)({
+      ...envelope,
+      body: {
+        ...envelope.body,
+        parts: [...(Array.isArray(parts) ? parts : []), { _tag: "Image", url: "x" }],
+      },
+    });
+    expect(decoded.kind === "assistant" && decoded.parts.at(-1)).toEqual({
+      _tag: "Unknown",
+      partType: "Image",
+    });
+  });
+
+  it("takes identity and position only from the envelope", () => {
+    const envelope = toEnvelope(nth(records, 2));
+    const { position: _position, ...withoutPosition } = envelope;
+    const smuggled = {
+      ...withoutPosition,
+      body: { ...envelope.body, position: envelope.position },
+    };
+    expect(Exit.isFailure(Schema.decodeUnknownExit(TranscriptRecordFromEnvelope)(smuggled))).toBe(
+      true,
+    );
+  });
+
+  it("rejects an assistant whose id disagrees with its source", () => {
+    const envelope = toEnvelope(nth(records, 1));
+    expect(
+      Exit.isFailure(
+        Schema.decodeUnknownExit(TranscriptRecordFromEnvelope)({
+          ...envelope,
+          body: { ...envelope.body, source: "import" },
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it("rejects a newer envelope format instead of guessing", () => {
     const envelope = { ...toEnvelope(nth(records, 0)), format: 2 };
     expect(Exit.isFailure(Schema.decodeUnknownExit(TranscriptRecordFromEnvelope)(envelope))).toBe(
@@ -303,11 +373,73 @@ describe("transcript windows", () => {
     for (const readiness of [
       { _tag: "Degraded", failedAtSeq: 13, error: "decode failed" },
       { _tag: "UpdatingHistory" },
-      { _tag: "Building" },
     ]) {
       expect(Exit.isSuccess(decode(window({ readiness })))).toBe(true);
       expect(Exit.isFailure(decode(window({ readiness, activeContent })))).toBe(true);
     }
+    const building = { readiness: { _tag: "Building" }, records: [], dependencies: [] };
+    expect(Exit.isSuccess(decode(window(building)))).toBe(true);
+    expect(Exit.isFailure(decode(window({ ...building, activeContent })))).toBe(true);
+  });
+
+  it("serves history in order, dependencies apart, and never decoration buffers", () => {
+    const [user, assistant, compaction, tool] = [0, 1, 2, 3].map((index) =>
+      toEnvelope(nth(records, index)),
+    );
+    const buffer = toEnvelope(nth(records, 6));
+    expect(Exit.isFailure(decode(window({ records: [assistant, user, compaction] })))).toBe(true);
+    expect(Exit.isFailure(decode(window({ records: [user, tool] })))).toBe(true);
+    expect(Exit.isFailure(decode(window({ dependencies: [assistant] })))).toBe(true);
+    expect(Exit.isFailure(decode(window({ dependencies: [buffer] })))).toBe(true);
+    expect(Exit.isFailure(decode(window({ readiness: { _tag: "Building" } })))).toBe(true);
+    expect(
+      Exit.isSuccess(
+        decode(window({ records: [], dependencies: [], readiness: { _tag: "Building" } })),
+      ),
+    ).toBe(true);
+  });
+
+  it("reads a newer readiness as degraded rather than failing", () => {
+    const decoded = Schema.decodeUnknownSync(TranscriptWindow)(
+      window({ readiness: { _tag: "Migrating" } }),
+    );
+    expect(decoded.readiness).toEqual({ _tag: "Unknown", readinessType: "Migrating" });
+    expect(
+      Exit.isFailure(
+        decode(
+          window({
+            readiness: { _tag: "Migrating" },
+            activeContent: [{ assistantId: transcriptRecordId.assistant(inferenceId), parts: [] }],
+          }),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("scopes a range to one ordered span", () => {
+    const cursor = (anchorSeq: number, recordId: string) => ({
+      incarnation,
+      version,
+      anchorSeq,
+      ordinal: 0,
+      recordId,
+    });
+    const decodeSelector = Schema.decodeUnknownExit(TranscriptWindowSelector);
+    expect(
+      Exit.isSuccess(decodeSelector({ _tag: "Range", from: cursor(1, "a"), to: cursor(2, "b") })),
+    ).toBe(true);
+    expect(
+      Exit.isFailure(decodeSelector({ _tag: "Range", from: cursor(2, "a"), to: cursor(1, "b") })),
+    ).toBe(true);
+    expect(
+      Exit.isFailure(
+        decodeSelector({
+          _tag: "Range",
+          from: cursor(1, "a"),
+          to: { ...cursor(2, "b"), incarnation: "other" },
+        }),
+      ),
+    ).toBe(true);
   });
 
   it("keeps unknown records in place on an older reader", () => {

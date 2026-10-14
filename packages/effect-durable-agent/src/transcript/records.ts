@@ -199,7 +199,7 @@ export type TranscriptBodySource = typeof TranscriptBodySource.Type;
  * because it points into the append-only log. The host authorizes reference resolution.
  */
 export const TranscriptBody = Schema.TaggedUnion({
-  Inline: { value: Schema.Unknown, source: TranscriptBodySource },
+  Inline: { value: Schema.Json, source: TranscriptBodySource },
   Ref: { source: TranscriptBodySource, byteLength: NonNegativeInt },
 });
 export type TranscriptBody = typeof TranscriptBody.Type;
@@ -279,14 +279,20 @@ const UserBodyFields = {
   messageIds: Schema.Array(MessageId),
   idempotencyKey: Schema.optionalKey(CommandIdempotencyKey),
   disposition: Schema.optionalKey(SubmitMessageDisposition),
-  /** JSON projection of the content: file bytes become data URLs, URLs become strings. */
+  /**
+   * JSON projection of the content: file bytes become data URLs, URLs become strings. Content is
+   * inline; file data belongs in host attachments rather than message content.
+   */
   content: JsonUserMessageContent,
   state: TranscriptUserState,
   /** Present when the submission arrived as steering for a specific run. */
   steering: Schema.optionalKey(Schema.Struct({ runId: RunId })),
   classification: Schema.optionalKey(TranscriptClassification),
   decorations: TranscriptDecorations,
+  /** The first event that named this submission; pending users are served in this order. */
+  submittedSeq: SequenceNumber,
   submittedAtMs: UnixEpochMillis,
+  /** Present exactly when `position` is: the record was consumed at some point. */
   consumedAtMs: Schema.optionalKey(UnixEpochMillis),
 };
 
@@ -305,7 +311,7 @@ export type TranscriptAssistantLifecycle = typeof TranscriptAssistantLifecycle.T
  * One ordered part of assistant output. Tool calls are references; their bodies live on the tool
  * dependency. Part types this release does not render are kept as `Unknown` so ordering survives.
  */
-export const TranscriptAssistantPart = Schema.TaggedUnion({
+const KnownAssistantPart = Schema.TaggedUnion({
   Text: { text: Schema.String },
   Reasoning: { text: Schema.String },
   ToolCall: {
@@ -324,6 +330,19 @@ export const TranscriptAssistantPart = Schema.TaggedUnion({
   },
   Unknown: { partType: Schema.String },
 });
+
+/** A part whose tag or shape this reader does not know keeps its place as `Unknown`. */
+const UnrecognizedAssistantPart = Schema.Struct({ _tag: Schema.String }).pipe(
+  Schema.decodeTo(Schema.toType(KnownAssistantPart.cases.Unknown), {
+    decode: SchemaGetter.transform((part) => ({ _tag: "Unknown" as const, partType: part._tag })),
+    encode: SchemaGetter.transform((part) => ({ _tag: part.partType })),
+  }),
+);
+
+export const TranscriptAssistantPart = Schema.Union([
+  KnownAssistantPart,
+  UnrecognizedAssistantPart,
+]);
 export type TranscriptAssistantPart = typeof TranscriptAssistantPart.Type;
 
 const AssistantBodyFields = {
@@ -371,7 +390,8 @@ const ToolBodyFields = {
   providerPartId: ProviderPartId,
   toolName: ToolName,
   providerExecuted: Schema.Boolean,
-  params: TranscriptBody,
+  /** Absent for a rejected call: a rejection records only the model-facing feedback. */
+  params: Schema.optionalKey(TranscriptBody),
   lifecycle: TranscriptToolLifecycle,
   createdAtMs: UnixEpochMillis,
   ...LifecycleTimingFields,
@@ -430,8 +450,13 @@ export const TranscriptBufferedDecoration = Schema.Struct({
 });
 export type TranscriptBufferedDecoration = typeof TranscriptBufferedDecoration.Type;
 
+/** Operations one decoration buffer keeps; later ones for the same key are dropped. */
+export const transcriptDecorationBufferLimit = 256;
+
 const DecorationBufferBodyFields = {
-  operations: Schema.Array(TranscriptBufferedDecoration),
+  operations: Schema.Array(TranscriptBufferedDecoration).check(
+    Schema.isMaxLength(transcriptDecorationBufferLimit),
+  ),
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -445,13 +470,34 @@ const commonFields = <Kind extends string, Id extends Schema.Top>(kind: Kind, id
   updatedSeq: SequenceNumber,
 });
 
-/** User submission, top-level once consumed; pending states are dependencies. */
+/**
+ * User submission, top-level once consumed; waiting states are dependencies.
+ *
+ * A position is assigned once, when the agent first reads the submission, so a consumed record
+ * always has one and a waiting record never does. A cancelled record keeps the position it was
+ * consumed at, if any, and is never rendered.
+ */
 export const TranscriptUserRecord = Schema.Struct({
   ...commonFields("user", UserRecordId),
-  /** Assigned once, when the agent first reads the submission. */
   position: Schema.optionalKey(TranscriptPosition),
   ...UserBodyFields,
-});
+}).check(
+  Schema.makeFilter(
+    (user) =>
+      (user.position === undefined) === (user.consumedAtMs === undefined) ||
+      "position and consumedAtMs are assigned together",
+  ),
+  Schema.makeFilter((user) => {
+    switch (user.state._tag) {
+      case "Consumed":
+        return user.position !== undefined || "a consumed user record has a position";
+      case "Cancelled":
+        return true;
+      default:
+        return user.position === undefined || "a waiting user record has no position";
+    }
+  }),
+);
 export type TranscriptUserRecord = typeof TranscriptUserRecord.Type;
 
 /** Assistant output of one inference or one import; top-level. */
@@ -459,7 +505,13 @@ export const TranscriptAssistantRecord = Schema.Struct({
   ...commonFields("assistant", AssistantRecordId),
   position: TranscriptPosition,
   ...AssistantBodyFields,
-});
+}).check(
+  Schema.makeFilter(
+    (assistant) =>
+      assistant.id.startsWith(assistant.source === "import" ? "import:" : "assistant:") ||
+      "an assistant record id matches its source",
+  ),
+);
 export type TranscriptAssistantRecord = typeof TranscriptAssistantRecord.Type;
 
 /** Compaction marker; top-level. */
@@ -573,8 +625,10 @@ export type TranscriptRecordEnvelope = typeof TranscriptRecordEnvelope.Type;
 
 const envelopeToFlat = (envelope: TranscriptRecordEnvelope): Record<string, unknown> => {
   const { kind, id, updatedSeq, position, body } = envelope;
+  // Identity, revision and position come only from the envelope, never from the body.
+  const { kind: _kind, id: _id, updatedSeq: _updatedSeq, position: _position, ...fields } = body;
   return {
-    ...body,
+    ...fields,
     kind,
     id,
     updatedSeq,

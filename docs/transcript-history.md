@@ -12,8 +12,9 @@ adapter, which celld reuses.
 This document defines the **transcript**: the user-visible history of a session. It replaces the
 earlier future-state `ui-projection.md` proposal (removed in the commit that added this document).
 **Everything here except §2 and statements marked "today" is planned and not yet implemented.**
-Today the contracts of §14 step 1 ship as `core/transcript/` (subpath `effect-durable-agent/transcript`);
-nothing maintains or serves a transcript yet. As each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe the current behavior and
+Today the record, window, cursor, mapping and store-port contracts of §14 step 1 ship as
+`core/transcript/` (subpath `effect-durable-agent/transcript`); socket update schemas and the
+negotiation envelope come with live delivery, and nothing maintains or serves a transcript yet. As each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe the current behavior and
 this document keeps the design rationale.
 
 Path abbreviations: `core/` = `packages/effect-durable-agent/src/`, `cf/` =
@@ -182,9 +183,9 @@ Ownership and limits:
 - **Decorations may precede their target.** Hosts append decoration events before the command
   they describe (Gia submits `[author, attachments…, references…, SubmitMessage]` in one batch).
   The interpreter holds such operations in an internal, never-served `decorations:<association>:<key>`
-  record and applies them in arrival order when the user record is created. A host-declared
-  **user fallback** copies a session decoration (for example the latest author) onto a user record
-  created without it.
+  record (bounded per key) and applies them in arrival order when the user record is created.
+  Host-declared **user fallbacks** then copy session decorations onto a user record created without
+  them, in declaration order, first present wins (Gia: the latest author, else the session owner).
 
 The first host's coverage (Gia: author identity with its span-then-owner fallback, attachments,
 references, subagent notice classification) must be demonstrated against its historical fixtures

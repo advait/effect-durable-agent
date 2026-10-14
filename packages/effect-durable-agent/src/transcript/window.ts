@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 
 import { SequenceNumber } from "../types/core";
 import { NonNegativeInt } from "../types/events/envelope";
@@ -7,12 +8,20 @@ import {
   TranscriptAssistantPart,
   TranscriptCursor,
   TranscriptLogIncarnation,
+  TranscriptOrder,
   TranscriptRecordViewFromEnvelope,
   TranscriptVersion,
+  type TranscriptOrderKey,
   type TranscriptRecordView,
 } from "./records";
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
+
+const orderKeyOfCursor = (cursor: TranscriptCursor): TranscriptOrderKey => ({
+  anchorSeq: cursor.anchorSeq,
+  ordinal: cursor.ordinal,
+  recordId: cursor.recordId,
+});
 
 /**
  * Which slice of history to read.
@@ -20,15 +29,27 @@ const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
  * `Latest` serves first paint (SSR, CLIs); `Page` walks either direction from a cursor;
  * `Range` re-reads exactly the span a client retains, inclusive of both ends, at one new cut.
  */
-export const TranscriptWindowSelector = Schema.TaggedUnion({
-  Latest: { count: PositiveInt },
-  Page: {
+export const TranscriptWindowSelector = Schema.Union([
+  Schema.TaggedStruct("Latest", { count: PositiveInt }),
+  Schema.TaggedStruct("Page", {
     direction: Schema.Literals(["before", "after"]),
     cursor: TranscriptCursor,
     count: PositiveInt,
-  },
-  Range: { from: TranscriptCursor, to: TranscriptCursor },
-});
+  }),
+  Schema.TaggedStruct("Range", { from: TranscriptCursor, to: TranscriptCursor }).check(
+    Schema.makeFilter(
+      (range) =>
+        (range.from.incarnation === range.to.incarnation &&
+          range.from.version === range.to.version) ||
+        "a range is scoped to one incarnation and version",
+    ),
+    Schema.makeFilter(
+      (range) =>
+        TranscriptOrder(orderKeyOfCursor(range.from), orderKeyOfCursor(range.to)) <= 0 ||
+        "a range starts at or before its end",
+    ),
+  ),
+]);
 export type TranscriptWindowSelector = typeof TranscriptWindowSelector.Type;
 
 /**
@@ -56,7 +77,7 @@ export const defaultTranscriptWindowLimits: TranscriptWindowLimits = {
  * Every state other than `Ready` is a degraded read and obeys one rule: the response contains
  * nothing newer than `throughSeq` — no newer pending users, session context or live content.
  */
-export const TranscriptReadiness = Schema.TaggedUnion({
+const KnownReadiness = Schema.TaggedUnion({
   /** The active version is healthy and projected through the log head at read time. */
   Ready: {},
   /** The active version failed while projecting `failedAtSeq`; this is its last good cut. */
@@ -68,7 +89,21 @@ export const TranscriptReadiness = Schema.TaggedUnion({
   UpdatingHistory: {},
   /** No version is servable yet; the window is empty. */
   Building: {},
+  /** A readiness this reader does not know; treated as degraded. */
+  Unknown: { readinessType: Schema.String },
 });
+
+const UnrecognizedReadiness = Schema.Struct({ _tag: Schema.String }).pipe(
+  Schema.decodeTo(Schema.toType(KnownReadiness.cases.Unknown), {
+    decode: SchemaGetter.transform((readiness) => ({
+      _tag: "Unknown" as const,
+      readinessType: readiness._tag,
+    })),
+    encode: SchemaGetter.transform((readiness) => ({ _tag: readiness.readinessType })),
+  }),
+);
+
+export const TranscriptReadiness = Schema.Union([KnownReadiness, UnrecognizedReadiness]);
 export type TranscriptReadiness = typeof TranscriptReadiness.Type;
 
 /**
@@ -82,6 +117,16 @@ export const TranscriptActiveContent = Schema.Struct({
 export type TranscriptActiveContent = typeof TranscriptActiveContent.Type;
 
 const recordUpdatedSeq = (record: TranscriptRecordView): number => record.updatedSeq;
+
+const recordPosition = (record: TranscriptRecordView) =>
+  "position" in record ? record.position : undefined;
+
+/** Kinds that are top-level history and therefore never served as dependencies. */
+const isHistoryRecord = (record: TranscriptRecordView): boolean =>
+  record.kind === "assistant" ||
+  record.kind === "compaction" ||
+  (record.kind === "user" && record.state._tag === "Consumed") ||
+  (record.kind === "unknown" && record.position !== undefined);
 
 /**
  * One complete, consistent read of a transcript version.
@@ -113,6 +158,40 @@ export const TranscriptWindow = Schema.Struct({
       window.readiness._tag === "Ready" ||
       window.activeContent === undefined ||
       "a degraded read never attaches live content",
+  ),
+  Schema.makeFilter(
+    (window) =>
+      [...window.records, ...window.dependencies].every(
+        (record) => record.kind !== "decorationBuffer",
+      ) || "decoration buffers are never served",
+  ),
+  Schema.makeFilter(
+    (window) =>
+      window.records.every((record, index) => {
+        const position = recordPosition(record);
+        if (position === undefined || !isHistoryRecord(record)) return false;
+        const previous = index === 0 ? undefined : window.records[index - 1];
+        const previousPosition = previous === undefined ? undefined : recordPosition(previous);
+        return (
+          previous === undefined ||
+          previousPosition === undefined ||
+          TranscriptOrder(
+            { ...previousPosition, recordId: previous.id },
+            { ...position, recordId: record.id },
+          ) < 0
+        );
+      }) || "records are positioned history records in transcript order",
+  ),
+  Schema.makeFilter(
+    (window) =>
+      window.dependencies.every((record) => !isHistoryRecord(record)) ||
+      "dependencies never contain history records",
+  ),
+  Schema.makeFilter(
+    (window) =>
+      window.readiness._tag !== "Building" ||
+      (window.records.length === 0 && window.dependencies.length === 0) ||
+      "a building window is empty",
   ),
 );
 export type TranscriptWindow = typeof TranscriptWindow.Type;

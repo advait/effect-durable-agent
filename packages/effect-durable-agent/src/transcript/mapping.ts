@@ -95,6 +95,10 @@ export type TranscriptMapping = typeof TranscriptMapping.Type;
 /**
  * A user decoration copied from a session decoration when the user record is created without
  * it, for example "the most recent author" for a message whose command carried no author event.
+ *
+ * Fallbacks apply in declaration order, after any parked decorations, and each one applies only
+ * if the user decoration is still absent; so `[author ← lastAuthor, author ← owner]` means "the
+ * latest author, else the session owner".
  */
 export const TranscriptUserFallback = Schema.Struct({
   to: TranscriptDecorationKey,
