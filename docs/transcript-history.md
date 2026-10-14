@@ -1,15 +1,16 @@
 # effect-durable-agent transcript history
 
-Status: accepted; implementation in progress
+Status: future (accepted design; not yet implemented)
 Runtime: EDA core and the Cloudflare adapter (celld reuses it); first host EDAGiaAgent
 Last reviewed: 2026-10-14
 
 Audience: EDA runtime maintainers, host maintainers (Gia), and UI maintainers.
 
 This document defines the **transcript**: the user-visible history of a session. It replaces the
-earlier future-state `ui-projection.md` proposal. Sections marked _planned_ describe work that is
-not yet in the code. As each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe
-the current behavior and this document keeps the design rationale.
+earlier future-state `ui-projection.md` proposal (removed in the commit that added this document).
+**Everything here except §2 (the problem in today's code) is planned and not yet implemented.** As
+each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe the current behavior and
+this document keeps the design rationale.
 
 Path abbreviations: `core/` = `packages/effect-durable-agent/src/`, `cf/` =
 `packages/effect-durable-agent-cloudflare/src/`. Paths that start with `gia:` are in the
@@ -84,7 +85,7 @@ Compaction erases user-visible history.
 | 7 | Browser paging travels on the session socket. HTTP serves SSR and CLIs. |
 | 8 | A broken transcript shows the last good view plus an "unavailable" tail and raises an alert. It is repaired by a new definition. |
 | 9 | A cancelled queued message disappears from the transcript. Order is **consumption order**: a user record gets its position once, when the agent reads it. |
-| 10 | **Forward-only releases; no rollback support.** Every definition change ships with a backfill that rebuilds every session before the next definition change. |
+| 10 | **Forward-only releases; no rollback support.** Every definition change ships with a backfill that rebuilds every session before the next definition change, except a repair release (§7). |
 | 11 | Model-projection fixes (pending-user pruning, one seq rule, tool budgets across a rebase) are separate, later changes (§15). |
 
 ## 4. Transcript records (EDA core owns meaning)
@@ -96,15 +97,15 @@ Top-level records count toward the window size. Dependencies count only against 
 | `user` (top-level) | `user:<commandId>`. Every messageId is an **alias** | Assigned **once**, at first consumption. Pending records have none | One logical submission across all states: pending, paused, promoted, steering, consumed, cancelled. Steering and host-authenticated notices are **attributes**, not kinds. A replacement messageId joins the same record. A cancelled record stays in storage so its aliases resolve, but it is never rendered |
 | `assistant` (top-level) | `assistant:<inferenceId>`. Imports use `import:<eventId>` | `InferenceStarted`; for an import, the import event | Ordered parts (text, reasoning, tool references). Content, lifecycle and usage update independently. Covers a partial commit followed by a failure in the same batch (`core/services/inference-runner.ts:447-455`) and an empty success. An import needs no start event (`core/domain/reduced-state.ts:1205`) |
 | `compaction` (top-level) | `compaction:<compactionId>` | `ContextRebased` | Marker plus a summary reference; no summary text |
-| `tool` (dependency) | `tool:<toolCallId>` | none; it belongs to its assistant | Typed `assistantId`; the assistant's parts order it. Full body and lifecycle. Last terminal wins, matching today's fold (`core/domain/reduced-state.ts:884-898, 1047-1059`). A rejection is terminal at creation |
+| `tool` (dependency) | `tool:<toolCallId>` | none; it belongs to its assistant | Typed `assistantId`; the assistant's parts order it. Full body and lifecycle. Last terminal wins, matching today's fold (`core/domain/reduced-state.ts:1047-1074`). A rejection is terminal at creation |
 | run group (dependency) | stable recovery-group id | none | EDA computes status, timing and the continuation chain, so clients never interpret recovery events (`core/services/session-state.ts:1843-1854`) |
 | session context (dependency, singleton) | — | none | Activity, model selection, token totals |
 
 **General rules**
 
 - Every record carries `updatedSeq`, the last event that contributed to it.
-- Positions never move once assigned. The only exception is the one-time pending → consumed
-  assignment, and the record's identity does not change when it happens.
+- Positions are assigned once and never change. A pending user record has none until it is
+  consumed, and its identity does not change when it gets one.
 - There is no `final` flag, no generic `parentId`, and no deletion, so there are no tombstones and
   no remove protocol.
 - Legacy `TurnAttempt*` events go through the existing normalizer first
@@ -112,7 +113,7 @@ Top-level records count toward the window size. Dependencies count only against 
 
 ## 5. Storage and maintenance
 
-### 5.1 Tables (_planned_)
+### 5.1 Tables
 
 All tables are EDA-owned, live in the session store, and are keyed by version.
 
@@ -124,16 +125,18 @@ All tables are EDA-owned, live in the session store, and are keyed by version.
 
 No whole-history collection is ever held in memory.
 
-### 5.2 Maintenance: atomic and isolated (_planned_)
+### 5.2 Maintenance: atomic and isolated
 
 - **Where it runs.** EDA core produces a deterministic change plan for each append batch. The
   Cloudflare adapter executes it inside the existing append transaction
   (`cf/durable-object-store.ts:292-331`), as one batch-level hook outside today's per-event,
-  EDA-only namespace guard.
+  EDA-only namespace guard (`cf/durable-object-store.ts:798-807`).
 - **Isolation.** Projection writes run in an inner `storage.transactionSync`. If the projection
   fails, the adapter catches the error outside the inner transaction, records the failure, and the
   event append still commits. This uses the platform's nested-transaction API, not raw
-  `SAVEPOINT`, which Cloudflare rejects.
+  `SAVEPOINT`, which Cloudflare rejects. The nesting behavior was verified only in a local
+  Miniflare experiment, and the repo's storage fakes model one level of rollback
+  (`cf/durable-object-store.test.ts:1794`), so gate 3 must run on workerd.
 - **Inside the boundary.** Plan computation, decoding and the SQL writes all run inside the inner
   boundary.
 - **Freezing a failed version.** A recoverable failure marks **that version** `failed` at its
@@ -150,7 +153,7 @@ No whole-history collection is ever held in memory.
   (`core/services/session-store.ts:263-288`). The Cloudflare adapter is the source of truth for
   transaction-rollback tests.
 
-## 6. App extensions are declarative (_planned_)
+## 6. App extensions are declarative
 
 Hosts register **data, not code**. EDA defines these operations:
 
@@ -235,7 +238,8 @@ The proof is a release precondition for the next definition change (a host CI ch
 session is retried; it blocks only the next definition change.
 
 **Repair release.** If `current` fails to build on some session, the fix is a new definition, and it
-may ship without that backfill's proof. Sessions discard the failed build and rebuild the repair
+may ship without that backfill's proof. It carries `current` = the repair and `previous` = the
+definition that failed on some sessions. Sessions discard the failed build and rebuild the repair
 definition from the log. A session whose active version is no longer carried takes the safety net.
 
 **Safety net for a missed session.** If a session wakes with an active version the release no
@@ -257,7 +261,9 @@ and readers with its old reader still serving, runs the backfill, and only then 
 
 For a host that deploys all Workers and DOs together with no rollback (Gia: a single
 `wrangler deploy`), Cloudflare fences storage access for an obsolete DO instance once its
-replacement starts. Old code cannot read the session's storage after new code takes over, so
+replacement starts
+([Cloudflare: global uniqueness](https://developers.cloudflare.com/durable-objects/platform/known-issues/#global-uniqueness)).
+Old code cannot read the session's storage after new code takes over, so
 **DO-private formats ship their reader and writer together**: durable event types and
 `schemaVersion`s, app event types, transcript definitions, and storage layout. Current code keeps
 decoding every historical event format and stored row envelope.
@@ -268,7 +274,7 @@ opened before the deploy (§9.4), and CLIs or other raw-event consumers.
 
 This is a host deployment policy, not a framework guarantee. Another host sets its own.
 
-## 8. Reading a window (_planned_)
+## 8. Reading a window
 
 `readTranscriptWindow(selector, limits)` is a storage-level read. It never constructs the model
 runtime (today's controller queries do: `cf/session-controller.ts:201, 294, 303`).
@@ -290,7 +296,7 @@ runtime (today's controller queries do: `cf/session-controller.ts:201, 294, 303`
 - **Log incarnation.** The adapter owns it (adopting a host's existing value, such as Gia's
   `gia.log_incarnation`). A wiped log invalidates every cursor.
 
-## 9. Live delivery (_planned_)
+## 9. Live delivery
 
 ### 9.1 Protocol
 
@@ -409,7 +415,7 @@ commit. A pending user record moves into the conversation in one update when it 
 | Projection failure | Per-version freeze; fixed forward by a new definition |
 | New durable event type or `schemaVersion` | Reader and writer ship together; the interpreter switch is exhaustive (`assertNever`) |
 | New host app event type | Reader and writer ship together; shown through a mapping, which is a definition change |
-| New app reducer, reducer or `ReducedState` checkpoint bump | Transcript unaffected; the runtime replays as today |
+| New app reducer, an app reducer version bump, or a `ReducedState` checkpoint bump | Transcript unaffected; the runtime replays as today |
 | New sink, sink renamed | Transcript unaffected. Sink bootstrap policy is out of scope for this work |
 | Package bump with no semantic change | Same version, no build; the fingerprint guards |
 | Old browser tab | Negotiation envelope, unknown representations, bounded reload |
@@ -430,7 +436,8 @@ commit. A pending user record moves into the conversation in one update when it 
    eviction, and activation at the head are tested.
 4. **Window consistency at every publication cut.** `page` in either direction with concurrent
    changes never shows a mixed cut; no pending user is visible twice; active content retires on
-   every terminal; more than 4,096 deltas stream correctly; many small records and large bodies in
+   every terminal; more than 4,096 deltas (the raw replay cap,
+   `core/services/live-event-bus.ts:21`) stream correctly; many small records and large bodies in
    one update are handled.
 5. **Browser** (host). No hydration warnings; no key changes from start to commit; correct part
    order; viewport kept across long reconnects and scrollback.

@@ -809,5 +809,5 @@ EDA currently does **not** provide:
 - `docs/message-steering.md` — current durable message queue and steering semantics.
 - `docs/websocket-protocol.md` — current WebSocket protocol, hibernation contract, and ownership.
 - `docs/testing.md` — test archetypes and fidelity ownership.
-- `docs/transcript-history.md` — user-visible transcript design (accepted; parts marked planned are not yet implemented).
+- `docs/transcript-history.md` — accepted transcript history design for future work, not current runtime behavior.
 - `docs/subagents.md` — future EDA/Gia subagent proposal, not current runtime behavior.
