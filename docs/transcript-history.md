@@ -1,14 +1,17 @@
 # effect-durable-agent transcript history
 
-Status: future (accepted design; not yet implemented)
-Runtime: EDA core and the Cloudflare adapter (celld reuses it); first host EDAGiaAgent
+Status: future
+Runtime: EDAGiaAgent
 Last reviewed: 2026-10-14
 
 Audience: EDA runtime maintainers, host maintainers (Gia), and UI maintainers.
 
+This is an accepted design that is not yet implemented. It covers EDA core and the Cloudflare
+adapter, which celld reuses.
+
 This document defines the **transcript**: the user-visible history of a session. It replaces the
 earlier future-state `ui-projection.md` proposal (removed in the commit that added this document).
-**Everything here except §2 (the problem in today's code) is planned and not yet implemented.** As
+**Everything here except §2 and statements marked "today" is planned and not yet implemented.** As
 each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe the current behavior and
 this document keeps the design rationale.
 
@@ -34,7 +37,8 @@ downstream Gia repository (`goguardian/gia`).
 - **The model** reads execution and model state: the existing `ReducedState`. Compaction is an
   event that gives the model a new base. This code does not change, so prompt bytes do not change.
 - **People** read transcript records. `ContextRebased` only adds a `compaction` marker record.
-  Nothing is ever removed from the transcript.
+  Nothing is ever removed from the transcript (a cancelled queued message is hidden, not
+  deleted).
 
 **One read and one stream.**
 
@@ -214,7 +218,9 @@ _interpreter_ never drops an old event-schema reader (`core/types/events/durable
    is healthy**. Otherwise it is frozen: its rows, aliases and cursor are left exactly as they are.
 2. A persisted building version that is not `current` is discarded.
 3. If `active ≠ current`, a building version for `current` is built from the log in bounded slices.
-   Each slice commits its rows and cursor together, so an eviction resumes from the cursor.
+   Each slice commits its rows and cursor together, so an eviction resumes from the cursor. A build
+   of `current` that is `failed` is never retried; only a build that is `ok` but behind the head
+   resumes. A failed build is repaired by a new definition.
 4. When the building cursor equals the head, **re-read inside the activation transaction**, it
    becomes active. Connected sockets receive a window replacement (§9.4). The old version's rows are
    then deleted in bounded slices.
@@ -223,14 +229,16 @@ _interpreter_ never drops an old event-schema reader (`core/types/events/durable
 **The builder.** State lives in `transcript_meta`. Any request, alarm or constructor that sees
 pending work runs or schedules one bounded slice through the storage service; it never constructs
 the model runtime. Alarm scheduling is shared with runtime work, and neither owner deletes the
-other's wakeup. The in-memory keep-alive lease (`cf/durable-object-keepalive.ts:38-49, 190`) is not
+other's wakeup. Today `syncAlarm` deletes the alarm when no lease is held
+(`cf/durable-object-keepalive.ts:190-192`); this must change. The in-memory keep-alive lease (`cf/durable-object-keepalive.ts:38-49, 190`) is not
 relied on.
 
 **Backfill (host, once per definition change).** After the release fully rolls out:
 
 - enumerate every session, including sessions created during the cutover by old code. Each
   session's actual version is checked; none is assumed;
-- wake each one through a storage-only entry point and retry incomplete builds;
+- wake each one through a storage-only entry point, so that builds that are `ok` but behind the
+  head resume;
 - read `transcript_meta` and record proof that each has `active = current` with status `ok`. The
   proof names the environment, the definition and the session incarnations it covers.
 
@@ -272,7 +280,10 @@ Compatibility remains wherever an **older peer can still be running**, including
 that crosses that boundary: Worker↔DO calls during the cutover (both directions), browser tabs
 opened before the deploy (§9.4), and CLIs or other raw-event consumers.
 
-This is a host deployment policy, not a framework guarantee. Another host sets its own.
+Forward-only **transcript definitions** are required by EDA's design: a rolled-back release would
+find active versions it does not carry and deleted old rows. Shipping **event and storage formats**
+reader-and-writer together is the host's deployment policy; a host that needs rollback for those
+formats must stage them itself.
 
 ## 8. Reading a window
 
@@ -409,7 +420,7 @@ commit. A pending user record moves into the conversation in one update when it 
 | Hibernated socket wakes | Normal if its volatile state is present; otherwise close and reconnect with a replacement |
 | Brand-new session | `current` initialized at seq 0 |
 | Transcript definition change | One release (`current` = new, `previous` = old), then the backfill |
-| New definition fails on some sessions | Repair release; failed builds are discarded and rebuilt from the log |
+| New definition fails on some sessions | Repair release; failed builds are discarded and rebuilt from the log. Sessions still on the dropped definition take the safety net |
 | Session missed by the backfill | Frozen last-good cut with "updating history", immediate build, one replacement, alert |
 | Concurrent appends during a build | Active maintained in the append; the build catches up in slices; activation re-reads the head |
 | Projection failure | Per-version freeze; fixed forward by a new definition |
@@ -432,7 +443,8 @@ commit. A pending user record moves into the conversation in one update when it 
    attempts, rejected tools, repeated terminals, mid-run compaction, the replacement message id, and
    host decorations on every ingress path.
 3. **Storage.** Appends stay atomic. Injected projection failures leave events committed, the
-   projection rolled back, the failure recorded, and memory unpublished. Building, resume after
+   projection rolled back, the failure recorded, and memory unpublished. These tests run on workerd
+   and in celld's host-conformance suite (`docs/testing.md`), not only against storage fakes. Building, resume after
    eviction, and activation at the head are tested.
 4. **Window consistency at every publication cut.** `page` in either direction with concurrent
    changes never shows a mixed cut; no pending user is visible twice; active content retires on
