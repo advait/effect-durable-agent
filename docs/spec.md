@@ -610,8 +610,10 @@ yet, and hosts still derive their UI from the pruned `ReducedState`.
   `compaction`, `tool`, `runGroup` and `sessionContext`, plus an internal `decorationBuffer` that
   holds host decorations whose user record does not exist yet. Every record carries `updatedSeq`.
   Top-level records carry a `(anchorSeq, ordinal)` position; cursors add the record id and are
-  scoped to a log incarnation and a transcript version. Stored and wire rows use a
-  backward-readable envelope. A wire reader turns a kind or body it cannot interpret into an
+  scoped to a log incarnation and a transcript version. Body ids must agree with the record id.
+  Stored rows hold tool bodies inline only up to `transcriptStoredInlineBodyLimit` and as log
+  references above it, and decorations are bounded, so rows stay far below storage value limits.
+  Stored and wire rows use a backward-readable envelope. A wire reader turns a kind or body it cannot interpret into an
   explicit `unknown` record that keeps its id and position.
 - **Windows** (`src/transcript/window.ts`): `Latest`, `Page` and `Range` selectors; limits on
   records, bytes and inline body size; a window response whose schema enforces the degraded-read
@@ -626,8 +628,9 @@ yet, and hosts still derive their UI from the pruned `ReducedState`.
   function from an indexed `TranscriptLookup`, a committed batch and a definition to a change plan
   of record upserts, alias inserts and the new cursor. There are no deletions.
 - **Store port** (`src/transcript/store.ts`): `EDATranscriptStore` provides `readTranscriptWindow`
-  and `readTranscriptMeta`. `TranscriptMaintenanceConfig` (`current`, optional `previous`) is
-  given to a store at construction. `EDASessionStore` method semantics are unchanged.
+  and `readTranscriptMeta`. `TranscriptMaintenanceConfig` (`current`, optional `previous`) is the
+  configuration a maintaining store takes at construction; no store accepts it yet.
+  `EDASessionStore` method semantics are unchanged.
 
 ### Current compaction implementation
 

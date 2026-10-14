@@ -10,6 +10,7 @@ import {
   TranscriptLogIncarnation,
   TranscriptOrder,
   TranscriptRecordViewFromEnvelope,
+  isTopLevelTranscriptRecord,
   TranscriptVersion,
   type TranscriptOrderKey,
   type TranscriptRecordView,
@@ -53,8 +54,9 @@ export const TranscriptWindowSelector = Schema.Union([
 export type TranscriptWindowSelector = typeof TranscriptWindowSelector.Type;
 
 /**
- * Bounds on one window. `maxRecords` caps top-level records; `maxBytes` caps the whole response,
- * dependencies included; bodies above `maxInlineBodyBytes` are sent as references.
+ * Bounds on one window. `maxRecords` caps top-level records (a selector's `count` is further
+ * capped by it); `maxBytes` caps the whole response, dependencies included; bodies above
+ * `maxInlineBodyBytes` are sent as references.
  */
 export const TranscriptWindowLimits = Schema.Struct({
   maxRecords: PositiveInt,
@@ -89,6 +91,11 @@ const KnownReadiness = Schema.TaggedUnion({
   UpdatingHistory: {},
   /** No version is servable yet; the window is empty. */
   Building: {},
+  /**
+   * A stored row of the served version cannot be decoded by this release. Nothing is served
+   * until a rebuild finishes, rather than a wrong view; the window is empty.
+   */
+  Unreadable: { error: Schema.String },
   /** A readiness this reader does not know; treated as degraded. */
   Unknown: { readinessType: Schema.String },
 });
@@ -103,6 +110,10 @@ const UnrecognizedReadiness = Schema.Struct({ _tag: Schema.String }).pipe(
   }),
 );
 
+/**
+ * Whether the window is the current interpretation of the log. A readiness this reader does not
+ * know decodes as `Unknown` and is treated as degraded, except that it may carry live content.
+ */
 export const TranscriptReadiness = Schema.Union([KnownReadiness, UnrecognizedReadiness]);
 export type TranscriptReadiness = typeof TranscriptReadiness.Type;
 
@@ -121,12 +132,9 @@ const recordUpdatedSeq = (record: TranscriptRecordView): number => record.update
 const recordPosition = (record: TranscriptRecordView) =>
   "position" in record ? record.position : undefined;
 
-/** Kinds that are top-level history and therefore never served as dependencies. */
+/** Positioned history, which is served only as a top-level record and never as a dependency. */
 const isHistoryRecord = (record: TranscriptRecordView): boolean =>
-  record.kind === "assistant" ||
-  record.kind === "compaction" ||
-  (record.kind === "user" && record.state._tag === "Consumed") ||
-  (record.kind === "unknown" && record.position !== undefined);
+  record.kind === "unknown" ? record.position !== undefined : isTopLevelTranscriptRecord(record);
 
 /**
  * One complete, consistent read of a transcript version.
@@ -156,15 +164,28 @@ export const TranscriptWindow = Schema.Struct({
   Schema.makeFilter(
     (window) =>
       window.readiness._tag === "Ready" ||
+      window.readiness._tag === "Unknown" ||
       window.activeContent === undefined ||
       "a degraded read never attaches live content",
   ),
   Schema.makeFilter(
     (window) =>
+      window.readiness._tag !== "Degraded" ||
+      window.readiness.failedAtSeq > window.throughSeq ||
+      "a degraded cut ends before the seq that failed",
+  ),
+  Schema.makeFilter(
+    (window) =>
       [...window.records, ...window.dependencies].every(
-        (record) => record.kind !== "decorationBuffer",
+        (record) =>
+          record.kind !== "decorationBuffer" &&
+          (record.kind !== "unknown" || record.originalKind !== "decorationBuffer"),
       ) || "decoration buffers are never served",
   ),
+  Schema.makeFilter((window) => {
+    const ids = [...window.records, ...window.dependencies].map((record) => record.id);
+    return new Set(ids).size === ids.length || "a record is served at most once";
+  }),
   Schema.makeFilter(
     (window) =>
       window.records.every((record, index) => {
@@ -189,9 +210,12 @@ export const TranscriptWindow = Schema.Struct({
   ),
   Schema.makeFilter(
     (window) =>
-      window.readiness._tag !== "Building" ||
-      (window.records.length === 0 && window.dependencies.length === 0) ||
-      "a building window is empty",
+      (window.readiness._tag !== "Building" && window.readiness._tag !== "Unreadable") ||
+      (window.records.length === 0 &&
+        window.dependencies.length === 0 &&
+        !window.hasOlder &&
+        !window.hasNewer) ||
+      "a building or unreadable window is empty",
   ),
 );
 export type TranscriptWindow = typeof TranscriptWindow.Type;

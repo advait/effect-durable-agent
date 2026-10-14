@@ -144,7 +144,6 @@ const records: ReadonlyArray<TranscriptRecord> = [
         outcome: { _tag: "Interrupted", reason: "restart" },
       },
     ],
-    status: { _tag: "Interrupted", reason: "restart" },
   },
   {
     kind: "sessionContext",
@@ -267,6 +266,31 @@ describe("transcript records", () => {
     expect(Exit.isFailure(Schema.decodeUnknownExit(TranscriptRecordFromEnvelope)(smuggled))).toBe(
       true,
     );
+  });
+
+  it("rejects body identities that disagree with the record id", () => {
+    const decode = Schema.decodeUnknownExit(TranscriptRecordFromEnvelope);
+    const mismatched = (index: number, field: string, value: unknown) => {
+      const envelope = toEnvelope(nth(records, index));
+      return decode({ ...envelope, body: { ...envelope.body, [field]: value } });
+    };
+    expect(Exit.isFailure(mismatched(0, "commandId", uuid(99)))).toBe(true);
+    expect(Exit.isFailure(mismatched(1, "inferenceId", uuid(99)))).toBe(true);
+    expect(Exit.isFailure(mismatched(2, "compactionId", uuid(99)))).toBe(true);
+    expect(Exit.isFailure(mismatched(3, "toolCallId", uuid(99)))).toBe(true);
+    expect(Exit.isFailure(mismatched(4, "rootRunId", uuid(99)))).toBe(true);
+  });
+
+  it("fails a malformed part with a known tag instead of hiding it", () => {
+    const envelope = toEnvelope(nth(records, 1));
+    expect(
+      Exit.isFailure(
+        Schema.decodeUnknownExit(TranscriptRecordFromEnvelope)({
+          ...envelope,
+          body: { ...envelope.body, parts: [{ _tag: "Text" }] },
+        }),
+      ),
+    ).toBe(true);
   });
 
   it("rejects an assistant whose id disagrees with its source", () => {
@@ -405,12 +429,41 @@ describe("transcript windows", () => {
     );
     expect(decoded.readiness).toEqual({ _tag: "Unknown", readinessType: "Migrating" });
     expect(
-      Exit.isFailure(
+      Exit.isSuccess(
         decode(
           window({
             readiness: { _tag: "Migrating" },
             activeContent: [{ assistantId: transcriptRecordId.assistant(inferenceId), parts: [] }],
           }),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("bounds degraded, unreadable and duplicated cuts", () => {
+    expect(
+      Exit.isFailure(
+        decode(window({ readiness: { _tag: "Degraded", failedAtSeq: 12, error: "x" } })),
+      ),
+    ).toBe(true);
+    expect(
+      Exit.isFailure(decode(window({ readiness: { _tag: "Unreadable", error: "row" } }))),
+    ).toBe(true);
+    expect(
+      Exit.isSuccess(
+        decode(
+          window({
+            readiness: { _tag: "Unreadable", error: "row" },
+            records: [],
+            dependencies: [],
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      Exit.isFailure(
+        decode(
+          window({ dependencies: [toEnvelope(nth(records, 3)), toEnvelope(nth(records, 3))] }),
         ),
       ),
     ).toBe(true);
@@ -574,6 +627,21 @@ describe("transcript definitions", () => {
         userFallbacks: [{ to: "author", fromSession: "lastAuthor" }],
       }),
     ).toContain("no mapping writes");
+    expect(
+      definitionError({
+        mappings: [
+          author,
+          { ...author, name: "author2", operations: [{ _tag: "Copy", from: ["x"], to: "author" }] },
+        ],
+        userFallbacks: [],
+      }),
+    ).toContain("written as both");
+    expect(
+      definitionError({
+        ...giaLikeMappings,
+        userFallbacks: [...giaLikeMappings.userFallbacks, ...giaLikeMappings.userFallbacks],
+      }),
+    ).toContain("duplicate user fallback");
     expect(
       definitionError({
         mappings: [{ ...author, operations: [{ _tag: "Copy", from: ["x"], to: "not a key" }] }],

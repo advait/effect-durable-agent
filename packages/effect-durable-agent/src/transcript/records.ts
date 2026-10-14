@@ -192,11 +192,19 @@ export const TranscriptBodySource = Schema.Struct({
 export type TranscriptBodySource = typeof TranscriptBodySource.Type;
 
 /**
+ * Largest body a stored record holds inline, in canonical JSON bytes. Larger bodies are stored
+ * as references, which keeps every stored row far below a Durable Object's 2 MB value limit no
+ * matter how large an event payload is.
+ */
+export const transcriptStoredInlineBodyLimit = 65_536;
+
+/**
  * A potentially large body (tool parameters and results).
  *
- * Stored records always hold the value inline. A window read may replace it with a reference to
- * its immutable source, which stays resolvable after projection rows are rebuilt or deleted
- * because it points into the append-only log. The host authorizes reference resolution.
+ * Stored records hold a body inline up to `transcriptStoredInlineBodyLimit` and as a reference
+ * above it; a window read may also replace a smaller inline body with a reference. A reference
+ * points at the body's immutable source in the append-only log, so it stays resolvable after
+ * projection rows are rebuilt or deleted. The host authorizes reference resolution.
  */
 export const TranscriptBody = Schema.TaggedUnion({
   Inline: { value: Schema.Json, source: TranscriptBodySource },
@@ -332,13 +340,31 @@ const KnownAssistantPart = Schema.TaggedUnion({
 });
 
 /** A part whose tag or shape this reader does not know keeps its place as `Unknown`. */
-const UnrecognizedAssistantPart = Schema.Struct({ _tag: Schema.String }).pipe(
+const knownAssistantPartTags: ReadonlySet<string> = new Set([
+  "Text",
+  "Reasoning",
+  "ToolCall",
+  "ToolResult",
+  "Unknown",
+]);
+
+const UnrecognizedAssistantPart = Schema.Struct({
+  _tag: Schema.String.check(
+    Schema.makeFilter(
+      (tag) => !knownAssistantPartTags.has(tag) || "a known part tag must decode as that part",
+    ),
+  ),
+}).pipe(
   Schema.decodeTo(Schema.toType(KnownAssistantPart.cases.Unknown), {
     decode: SchemaGetter.transform((part) => ({ _tag: "Unknown" as const, partType: part._tag })),
     encode: SchemaGetter.transform((part) => ({ _tag: part.partType })),
   }),
 );
 
+/**
+ * One ordered part of assistant output. A part tag this reader does not know decodes as
+ * `Unknown`, keeping its place; a malformed part with a known tag is a decode failure.
+ */
 export const TranscriptAssistantPart = Schema.Union([
   KnownAssistantPart,
   UnrecognizedAssistantPart,
@@ -421,9 +447,8 @@ export type TranscriptRunMember = typeof TranscriptRunMember.Type;
 
 const RunGroupBodyFields = {
   rootRunId: RunId,
-  /** Every run of the chain; the last member determines `status`. */
+  /** Every run of the chain in start order; the last member's outcome is the group's status. */
   runs: Schema.NonEmptyArray(TranscriptRunMember),
-  status: TranscriptRunOutcome,
 };
 
 const SessionContextBodyFields = {
@@ -487,6 +512,9 @@ export const TranscriptUserRecord = Schema.Struct({
       (user.position === undefined) === (user.consumedAtMs === undefined) ||
       "position and consumedAtMs are assigned together",
   ),
+  Schema.makeFilter(
+    (user) => user.id === `user:${user.commandId}` || "a user record id names its command",
+  ),
   Schema.makeFilter((user) => {
     switch (user.state._tag) {
       case "Consumed":
@@ -508,8 +536,10 @@ export const TranscriptAssistantRecord = Schema.Struct({
 }).check(
   Schema.makeFilter(
     (assistant) =>
-      assistant.id.startsWith(assistant.source === "import" ? "import:" : "assistant:") ||
-      "an assistant record id matches its source",
+      (assistant.source === "import"
+        ? assistant.id.startsWith("import:")
+        : assistant.id === `assistant:${assistant.inferenceId}`) ||
+      "an assistant record id matches its source and inference",
   ),
 );
 export type TranscriptAssistantRecord = typeof TranscriptAssistantRecord.Type;
@@ -519,21 +549,41 @@ export const TranscriptCompactionRecord = Schema.Struct({
   ...commonFields("compaction", CompactionRecordId),
   position: TranscriptPosition,
   ...CompactionBodyFields,
-});
+}).check(
+  Schema.makeFilter(
+    (compaction) =>
+      compaction.id === `compaction:${compaction.compactionId}` ||
+      "a compaction record id names its compaction",
+  ),
+);
 export type TranscriptCompactionRecord = typeof TranscriptCompactionRecord.Type;
 
 /** Framework tool call; a dependency of its assistant record. */
 export const TranscriptToolRecord = Schema.Struct({
   ...commonFields("tool", ToolRecordId),
   ...ToolBodyFields,
-});
+}).check(
+  Schema.makeFilter(
+    (tool) => tool.id === `tool:${tool.toolCallId}` || "a tool record id names its tool call",
+  ),
+);
 export type TranscriptToolRecord = typeof TranscriptToolRecord.Type;
 
 /** Run and its recovery continuations; a dependency of the records it produced. */
 export const TranscriptRunGroupRecord = Schema.Struct({
   ...commonFields("runGroup", RunGroupRecordId),
   ...RunGroupBodyFields,
-});
+}).check(
+  Schema.makeFilter(
+    (group) =>
+      (group.id === `run:${group.rootRunId}` && group.runs[0].runId === group.rootRunId) ||
+      "a run group is named by, and starts with, its root run",
+  ),
+);
+
+/** A run group's status: the outcome of its latest run. */
+export const runGroupStatus = (group: TranscriptRunGroupRecord): TranscriptRunOutcome =>
+  group.runs[group.runs.length - 1]?.outcome ?? group.runs[0].outcome;
 export type TranscriptRunGroupRecord = typeof TranscriptRunGroupRecord.Type;
 
 /** Session activity, model selection and token totals; a singleton dependency. */

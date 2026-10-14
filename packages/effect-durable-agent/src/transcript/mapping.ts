@@ -21,10 +21,14 @@ export const transcriptMappingBounds = {
   maxMappings: 64,
   maxOperationsPerMapping: 16,
   maxPathLength: 16,
-  /** Canonical JSON bytes of one decoration value or list entry. */
-  maxValueBytes: 16_384,
+  /**
+   * Canonical JSON bytes of one decoration value or list entry. With `maxListEntries` this keeps
+   * one decoration below 512 KiB, so a record's row stays well inside storage value limits.
+   */
+  maxValueBytes: 8_192,
   /** Entries kept in one decoration list; further distinct entries are dropped. */
-  maxListEntries: 256,
+  maxListEntries: 64,
+  maxUserFallbacks: 16,
 } as const;
 
 const MappingPath = TranscriptFieldPath.check(
@@ -75,7 +79,10 @@ export const TranscriptMappingOperation = Schema.TaggedUnion({
     to: TranscriptDecorationKey,
     key: TranscriptListEntryKey,
   },
-  /** Classify the target user record, for example as an authenticated subagent notice. */
+  /**
+   * Classify the target user record, for example as an authenticated subagent notice. A record
+   * holds one classification; the last one applied wins.
+   */
   Classify: { classification: TranscriptClassification },
 });
 export type TranscriptMappingOperation = typeof TranscriptMappingOperation.Type;
@@ -111,7 +118,9 @@ export const TranscriptMappings = Schema.Struct({
   mappings: Schema.Array(TranscriptMapping).check(
     Schema.isMaxLength(transcriptMappingBounds.maxMappings),
   ),
-  userFallbacks: Schema.Array(TranscriptUserFallback),
+  userFallbacks: Schema.Array(TranscriptUserFallback).check(
+    Schema.isMaxLength(transcriptMappingBounds.maxUserFallbacks),
+  ),
 });
 export type TranscriptMappings = typeof TranscriptMappings.Type;
 
@@ -124,7 +133,8 @@ export class TranscriptDefinitionError extends Schema.TaggedError<TranscriptDefi
   { message: Schema.String },
 ) {}
 
-type DecorationShape = "value" | "list:Id" | "list:Ordinal";
+/** How a decoration key is written; one key has exactly one shape across all mappings. */
+type DecorationShape = "copy" | "first-wins" | "list:Id" | "list:Ordinal";
 
 const validationProblems = (mappings: TranscriptMappings): ReadonlyArray<string> => {
   const problems: Array<string> = [];
@@ -154,7 +164,7 @@ const validationProblems = (mappings: TranscriptMappings): ReadonlyArray<string>
       switch (operation._tag) {
         case "Copy":
         case "FirstWins":
-          recordShape(scope, operation.to, "value");
+          recordShape(scope, operation.to, operation._tag === "Copy" ? "copy" : "first-wins");
           if (scope === "session") sessionValueKeys.add(operation.to);
           break;
         case "ReplaceListEntry":
@@ -171,14 +181,20 @@ const validationProblems = (mappings: TranscriptMappings): ReadonlyArray<string>
     }
   }
 
+  const fallbacks = new Set<string>();
   for (const fallback of mappings.userFallbacks) {
+    const key = `${fallback.to}\u0000${fallback.fromSession}`;
+    if (fallbacks.has(key)) {
+      problems.push(`duplicate user fallback ${fallback.to} <- ${fallback.fromSession}`);
+    }
+    fallbacks.add(key);
     if (!sessionValueKeys.has(fallback.fromSession)) {
       problems.push(
         `user fallback reads session decoration "${fallback.fromSession}", which no mapping writes as a value`,
       );
     }
     const userShape = shapes.get(`user:${fallback.to}`);
-    if (userShape !== undefined && userShape !== "value") {
+    if (userShape !== undefined && userShape.startsWith("list:")) {
       problems.push(`user fallback writes "${fallback.to}", which is a list decoration`);
     }
   }

@@ -14,8 +14,9 @@ earlier future-state `ui-projection.md` proposal (removed in the commit that add
 **Everything here except §2 and statements marked "today" is planned and not yet implemented.**
 Today the record, window, cursor, mapping and store-port contracts of §14 step 1 ship as
 `core/transcript/` (subpath `effect-durable-agent/transcript`); socket update schemas and the
-negotiation envelope come with live delivery, and nothing maintains or serves a transcript yet. As each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe the current behavior and
-this document keeps the design rationale.
+negotiation envelope come with live delivery, and nothing maintains or serves a transcript yet.
+As each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe the current behavior
+and this document keeps the design rationale.
 
 Path abbreviations: `core/` = `packages/effect-durable-agent/src/`, `cf/` =
 `packages/effect-durable-agent-cloudflare/src/`. Paths that start with `gia:` are in the
@@ -182,8 +183,8 @@ Ownership and limits:
   mapping names them.
 - **Decorations may precede their target.** Hosts append decoration events before the command
   they describe (Gia submits `[author, attachments…, references…, SubmitMessage]` in one batch).
-  The interpreter holds such operations in an internal, never-served `decorations:<association>:<key>`
-  record (bounded per key) and applies them in arrival order when the user record is created.
+  The interpreter holds such operations in an internal, never-served
+  `decorations:<association>:<key>` record (bounded per key) and applies them in arrival order when the user record is created.
   Host-declared **user fallbacks** then copy session decorations onto a user record created without
   them, in declaration order, first present wins (Gia: the latest author, else the session owner).
 
