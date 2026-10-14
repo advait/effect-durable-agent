@@ -11,8 +11,9 @@ adapter, which celld reuses.
 
 This document defines the **transcript**: the user-visible history of a session. It replaces the
 earlier future-state `ui-projection.md` proposal (removed in the commit that added this document).
-**Everything here except §2 and statements marked "today" is planned and not yet implemented.** As
-each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe the current behavior and
+**Everything here except §2 and statements marked "today" is planned and not yet implemented.**
+Today the contracts of §14 step 1 ship as `core/transcript/` (subpath `effect-durable-agent/transcript`);
+nothing maintains or serves a transcript yet. As each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe the current behavior and
 this document keeps the design rationale.
 
 Path abbreviations: `core/` = `packages/effect-durable-agent/src/`, `cf/` =
@@ -102,7 +103,7 @@ Top-level records count toward the window size. Dependencies count only against 
 | `assistant` (top-level) | `assistant:<inferenceId>`. Imports use `import:<eventId>` | `InferenceStarted`; for an import, the import event | Ordered parts (text, reasoning, tool references). Content, lifecycle and usage update independently. Covers a partial commit followed by a failure in the same batch (`core/services/inference-runner.ts:447-455`) and an empty success. An import needs no start event (`core/domain/reduced-state.ts:1205`) |
 | `compaction` (top-level) | `compaction:<compactionId>` | `ContextRebased` | Marker plus a summary reference; no summary text |
 | `tool` (dependency) | `tool:<toolCallId>` | none; it belongs to its assistant | Typed `assistantId`; the assistant's parts order it. Full body and lifecycle. Last terminal wins, matching today's fold (`core/domain/reduced-state.ts:1047-1074`). A rejection is terminal at creation |
-| run group (dependency) | stable recovery-group id | none | EDA computes status, timing and the continuation chain, so clients never interpret recovery events (`core/services/session-state.ts:1843-1854`) |
+| run group (dependency) | stable recovery-group id: `run:<rootRunId>`. A run that reuses the group's command ids (a startup-recovery continuation) joins it | none | EDA computes status, timing and the continuation chain, so clients never interpret recovery events (`core/services/session-state.ts:1843-1854`) |
 | session context (dependency, singleton) | — | none | Activity, model selection, token totals |
 
 **General rules**
@@ -124,7 +125,7 @@ All tables are EDA-owned, live in the session store, and are keyed by version.
 | Table | Purpose |
 | --- | --- |
 | `transcript_records` | `(version, id)` → kind, position, `updatedSeq`, body. Indexes: position, `updatedSeq`, pending membership, and the typed dependency lookup |
-| `transcript_aliases` | `(version, namespace, key)` → record id. Namespaces: messageId and command idempotency key. An explicit indexed join, not an in-memory map |
+| `transcript_aliases` | `(version, namespace, key)` → record id. Namespaces: messageId, command idempotency key, run id, run command id and tool part (`<inferenceId>/<providerPartId>`). An explicit indexed join, not an in-memory map. Aliases are only inserted, never moved |
 | `transcript_meta` | One row per version present: `role` (`active` or `building`), `cursor` (last fully projected seq, committed with that version's rows), `status` (`ok` or `failed`), `failedAt`, `error` |
 
 No whole-history collection is ever held in memory.
@@ -146,8 +147,8 @@ No whole-history collection is ever held in memory.
 - **Freezing a failed version.** A recoverable failure marks **that version** `failed` at its
   unchanged cursor. Later appends commit their events but never touch that version's rows, aliases
   or cursor, so it stays an exact last-good cut.
-  - A failed **active** version serves that cut with an "unavailable" tail, withholds newer live
-    content, and raises an alert.
+  - A failed **active** version serves that cut with an "unavailable" tail under the degraded-read
+    rule (§8), and raises an alert.
   - A failed **building** version leaves the active version healthy; the backfill reports it.
   - The only repair is a new definition, which rebuilds from the log (§7).
 - **Memory.** In-memory caches are published only after the outer transaction commits.
@@ -178,6 +179,12 @@ Ownership and limits:
   boundary.
 - Unregistered app namespaces stay opaque (`__foreign`) and the interpreter ignores them until a
   mapping names them.
+- **Decorations may precede their target.** Hosts append decoration events before the command
+  they describe (Gia submits `[author, attachments…, references…, SubmitMessage]` in one batch).
+  The interpreter holds such operations in an internal, never-served `decorations:<association>:<key>`
+  record and applies them in arrival order when the user record is created. A host-declared
+  **user fallback** copies a session decoration (for example the latest author) onto a user record
+  created without it.
 
 The first host's coverage (Gia: author identity with its span-then-owner fallback, attachments,
 references, subagent notice classification) must be demonstrated against its historical fixtures
@@ -193,6 +200,10 @@ before the host switches its reader.
   decoders and the mapping executor.
 - A CI fingerprint over a fixed scenario corpus **guards** against forgetting the bump. It is not a
   proof.
+- A **new durable event type** (or `schemaVersion`) requires a semantic-revision bump, and therefore
+  a backfill, only if `current` gives it transcript meaning. Otherwise both carried interpreters
+  ignore it and neither version id changes. The fingerprint corpus reflects this rule: an event the
+  interpreter ignores leaves the fingerprint unchanged.
 - Physical layout changes (indexes, columns) are ordinary forward migrations and do not rebuild
   history.
 
@@ -254,8 +265,8 @@ definition from the log. A session whose active version is no longer carried tak
 longer carries:
 
 - that version is frozen (step 1), and new appends still commit to the log;
-- reads serve its last-good cut with its real `throughSeq`, an "updating history" tail, and no newer
-  pending, context or live content. The cut is consistent but may be behind the log head;
+- reads serve its last-good cut with its real `throughSeq` and an "updating history" tail, under the
+  degraded-read rule (§8). The cut is consistent but may be behind the log head;
 - `current` builds at once; on activation clients receive one complete replacement;
 - an alert is raised.
 
@@ -299,8 +310,12 @@ runtime (today's controller queries do: `cf/session-controller.ts:201, 294, 303`
   - top-level records and their dependencies (tools, run groups, session context, pending users);
   - active content captured at the same publication boundary, if a runtime is live;
   - `hasOlder`, `hasNewer`;
-  - readiness or degradation. A degraded read returns the last-good cut and never attaches newer
-    live content.
+  - readiness or degradation.
+- **The degraded-read rule.** Every degraded read (a failed active version, §5.2; a missed session
+  on the safety net, §7) returns its last-good cut and contains **nothing newer than its
+  `throughSeq`**: no newer pending users, session context or live content. Readiness says why the
+  cut is behind, and the window contract makes active content absent whenever readiness is not
+  ready.
 - **Large bodies** are sent as `bodyRef`: an immutable source reference (event and field, or a
   content digest) scoped to the record revision, resolvable after old projection rows are deleted.
   The host authorizes body fetches.
@@ -424,7 +439,7 @@ commit. A pending user record moves into the conversation in one update when it 
 | Session missed by the backfill | Frozen last-good cut with "updating history", immediate build, one replacement, alert |
 | Concurrent appends during a build | Active maintained in the append; the build catches up in slices; activation re-reads the head |
 | Projection failure | Per-version freeze; fixed forward by a new definition |
-| New durable event type or `schemaVersion` | Reader and writer ship together; the interpreter switch is exhaustive (`assertNever`) |
+| New durable event type or `schemaVersion` | Reader and writer ship together; the interpreter switch is exhaustive (`assertNever`). A semantic-revision bump (and a backfill) is needed only if `current` gives the event transcript meaning; otherwise both carried interpreters ignore it and neither version id changes (§7) |
 | New host app event type | Reader and writer ship together; shown through a mapping, which is a definition change |
 | New app reducer, an app reducer version bump, or a `ReducedState` checkpoint bump | Transcript unaffected; the runtime replays as today |
 | New sink, sink renamed | Transcript unaffected. Sink bootstrap policy is out of scope for this work |

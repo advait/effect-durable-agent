@@ -14,6 +14,7 @@ const publicEntries = {
   "domain/message-transcript": "src/domain/message-transcript.ts",
   "domain/reduced-state": "src/domain/reduced-state.ts",
   "domain/reduced-state-schema": "src/domain/reduced-state-schema.ts",
+  transcript: "src/transcript/index.ts",
   websocket: "src/websocket/index.ts",
   "services/compaction": "src/services/compaction.ts",
   "services/model-call": "src/services/model-call.ts",

@@ -600,6 +600,35 @@ Current prompt context is derived from durable state:
 
 Prompt hydration preserves model-facing prefix fidelity. Durable assistant/tool transcript events store exact typed prompt parts in stable model-facing order. Semantic UI/query views derive from those parts rather than rewriting the model-facing history.
 
+### Transcript history contracts
+
+`effect-durable-agent/transcript` exports the contracts for the user-visible transcript designed in
+`docs/transcript-history.md`. The contracts are current; no store maintains or serves transcripts
+yet, and hosts still derive their UI from the pruned `ReducedState`.
+
+- **Records** (`src/transcript/records.ts`): `user`, `assistant` (inference or import),
+  `compaction`, `tool`, `runGroup` and `sessionContext`, plus an internal `decorationBuffer` that
+  holds host decorations whose user record does not exist yet. Every record carries `updatedSeq`.
+  Top-level records carry a `(anchorSeq, ordinal)` position; cursors add the record id and are
+  scoped to a log incarnation and a transcript version. Stored and wire rows use a
+  backward-readable envelope. A wire reader turns a kind or body it cannot interpret into an
+  explicit `unknown` record that keeps its id and position.
+- **Windows** (`src/transcript/window.ts`): `Latest`, `Page` and `Range` selectors; limits on
+  records, bytes and inline body size; a window response whose schema enforces the degraded-read
+  rule (nothing newer than `throughSeq`, no live content unless readiness is `Ready`); per-version
+  maintenance meta.
+- **Mappings** (`src/transcript/mapping.ts`): declarative host decorations (copy, first-wins,
+  replace a list entry by id or ordinal, classify) targeting a user by command id or idempotency
+  key, or the session. They are validated by `makeTranscriptDefinition`, which derives the version
+  as SHA-256 of the semantic revision (`transcriptSemanticRevision`) and the canonical JSON of the
+  mappings.
+- **Interpreter boundary** (`src/transcript/plan.ts`): `PlanTranscriptBatch` is a synchronous pure
+  function from an indexed `TranscriptLookup`, a committed batch and a definition to a change plan
+  of record upserts, alias inserts and the new cursor. There are no deletions.
+- **Store port** (`src/transcript/store.ts`): `EDATranscriptStore` provides `readTranscriptWindow`
+  and `readTranscriptMeta`. `TranscriptMaintenanceConfig` (`current`, optional `previous`) is
+  given to a store at construction. `EDASessionStore` method semantics are unchanged.
+
 ### Current compaction implementation
 
 Compaction is implemented as model-context rebase, not storage pruning.
@@ -794,7 +823,7 @@ EDA currently provides:
 EDA currently does **not** provide:
 
 - storage pruning/BaseState;
-- generic persisted UI projection items/pagination;
+- a maintained transcript or transcript window reads (only the `transcript` contracts exist);
 - coalesced live-state snapshots for reconnect;
 - direct tool ephemerals or per-tool retry policy objects;
 - provider-executed tool projection/replay;
