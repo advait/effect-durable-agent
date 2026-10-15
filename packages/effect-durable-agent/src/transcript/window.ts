@@ -146,7 +146,24 @@ export const TranscriptActivePart = Schema.Struct({
   id: Schema.NonEmptyString,
   part: TranscriptAssistantPart,
   paramsText: Schema.optionalKey(Schema.String),
-});
+}).check(
+  Schema.makeFilter(
+    (active) =>
+      (active.part._tag === "Text"
+        ? active.id.startsWith("text:")
+        : active.part._tag === "Reasoning"
+          ? active.id.startsWith("reasoning:")
+          : active.part._tag === "ToolCall"
+            ? active.id.startsWith("tool:")
+            : true) || "a live part's id names its kind",
+  ),
+  Schema.makeFilter(
+    (active) =>
+      active.paramsText === undefined ||
+      active.part._tag === "ToolCall" ||
+      "only a tool call streams parameter text",
+  ),
+);
 export type TranscriptActivePart = typeof TranscriptActivePart.Type;
 
 /**

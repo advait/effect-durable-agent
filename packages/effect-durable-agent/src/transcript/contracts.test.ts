@@ -39,7 +39,12 @@ import {
 } from "./records";
 import { sha256Hex } from "./hash";
 import { canonicalJson, transcriptSemanticRevision } from "./version";
-import { TranscriptWindow, TranscriptWindowSelector, transcriptCursorOf } from "./window";
+import {
+  TranscriptActivePart,
+  TranscriptWindow,
+  TranscriptWindowSelector,
+  transcriptCursorOf,
+} from "./window";
 
 const uuid = (suffix: number) => `018f6bd5-2f2a-7b1e-8f1b-${suffix.toString(16).padStart(12, "0")}`;
 const seq = SequenceNumber.make;
@@ -418,6 +423,21 @@ describe("transcript windows", () => {
       recordId: transcriptRecordId.assistant(inferenceId),
     });
     expect(transcriptCursorOf(decoded, nth(decoded.dependencies, 0))).toBeUndefined();
+  });
+
+  it("ties a live part's identity and parameter text to its kind", () => {
+    const decodePart = Schema.decodeUnknownExit(TranscriptActivePart);
+    expect(Exit.isSuccess(decodePart({ id: "text:p", part: { _tag: "Text", text: "x" } }))).toBe(
+      true,
+    );
+    expect(Exit.isFailure(decodePart({ id: "tool:p", part: { _tag: "Text", text: "x" } }))).toBe(
+      true,
+    );
+    expect(
+      Exit.isFailure(
+        decodePart({ id: "text:p", part: { _tag: "Text", text: "x" }, paramsText: "{" }),
+      ),
+    ).toBe(true);
   });
 
   it("rejects any record newer than the cut", () => {

@@ -296,6 +296,7 @@ const delta = (seq: number, text: string) =>
  */
 class GatedStore {
   head = 0;
+  reads = 0;
   private gate: Deferred.Deferred<void> | undefined;
 
   hold(): void {
@@ -311,6 +312,7 @@ class GatedStore {
   readonly store: EDATranscriptStoreShape = {
     readTranscriptWindow: () =>
       Effect.suspend(() => {
+        this.reads += 1;
         const window: TranscriptWindow = {
           incarnation: TranscriptLogIncarnation.make("memory:gated"),
           version: TranscriptVersion.make("a".repeat(64)),
@@ -725,5 +727,34 @@ describe("transcript-window sockets", () => {
       _tag: "Text",
       text: Array.from({ length: 50 }, (_, index) => `${index % 10}`).join(""),
     });
+  });
+  it("stops polling once a capture outlives a fence that never catches up", async () => {
+    const gated = new GatedStore();
+    const socket = new TestSocket();
+    const isolate = new Isolate(() => [socket], defaultEDAWebSocketFlowControl, gated.store);
+    isolate.manager.acceptTranscript({
+      sessionId: SESSION_ID,
+      trace: TRACE,
+      webSocket: socket.asWebSocket(),
+    });
+    await socket.request(isolate.manager, edaTranscriptSubscribeRequest(socket.client));
+    await socket.pump(isolate.manager);
+    gated.head = 1;
+    await publishTo(isolate.manager, started(1));
+    await publishTo(isolate.manager, delta(1, "live"));
+    await isolate.manager.settled();
+    // A commit that is never published (the session failed after its append).
+    gated.head = 2;
+    await socket.request(isolate.manager, { _tag: "subscribe", tail: true });
+    for (let tick = 0; tick < 200; tick += 1) {
+      isolate.nowMs += 50;
+      await isolate.tick();
+      await socket.pump(isolate.manager);
+    }
+    expect(socket.client.window?.throughSeq).toBe(2);
+    expect(socket.client.window?.activeContent).toEqual([]);
+    // The timed-out capture was served once; nothing keeps re-reading or re-arming the timer.
+    expect(gated.reads).toBeLessThan(40);
+    expect(isolate.timers).toEqual([]);
   });
 });

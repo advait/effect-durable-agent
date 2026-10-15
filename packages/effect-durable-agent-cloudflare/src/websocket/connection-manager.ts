@@ -223,6 +223,11 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
   }
 
   private async fanoutPublishedEvent(event: PositionedEvent): Promise<void> {
+    // Fold into the transcript fence first and synchronously, even with no transcript socket
+    // open, so no failure while restoring or serving raw sockets can make the live-content
+    // accumulator miss a publication. Transcript sockets already held are served now.
+    const heldTranscriptSockets = new Set(this.transcript?.webSockets() ?? []);
+    this.transcript?.onPublished(event, [...heldTranscriptSockets]);
     const webSockets = new Set([
       ...(this.options.getWebSockets?.() ?? []),
       ...this.sockets.keys(),
@@ -265,9 +270,10 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
         }),
       );
     }
-    // The transcript fence folds every publication, even with no transcript socket open, so a
-    // later subscriber captures live content consistent with what has been published.
-    this.transcript?.onPublished(event, transcriptSockets);
+    // Transcript sockets restored from hibernation by this fan-out read at the new boundary.
+    this.transcript?.serveRestored(
+      transcriptSockets.filter((webSocket) => !heldTranscriptSockets.has(webSocket)),
+    );
     await Promise.all(deliveries);
   }
 

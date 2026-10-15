@@ -36,6 +36,7 @@ import {
   edaTranscriptNegotiation,
   encodeEDATranscriptServerFrame,
   encodeEDATranscriptUpdate,
+  edaTranscriptUpdateFrameText,
   enqueueTranscriptRequest,
   laggedCloseReason,
   makeTranscriptDeliveryState,
@@ -271,6 +272,16 @@ export class EDATranscriptSockets {
     }
   }
 
+  /** Serve sockets restored from hibernation after a publication was folded. */
+  serveRestored(webSockets: ReadonlyArray<WebSocket>): void {
+    for (const webSocket of webSockets) {
+      const socket = this.sockets.get(webSocket);
+      if (socket === undefined) continue;
+      socket.dirty = true;
+      this.track(this.drain(webSocket, socket));
+    }
+  }
+
   /**
    * The session's log was destroyed: live content belongs to a log that no longer exists and
    * every subscription names its incarnation. Close transcript sockets so clients resubscribe.
@@ -412,7 +423,10 @@ export class EDATranscriptSockets {
       if (request === undefined) {
         if (base === undefined) return;
         if (!socket.dirty) {
-          if (socket.sentActiveRevision === this.active.revision) return;
+          if (socket.sentActiveRevision === this.active.revision) {
+            socket.cadenceDue = false;
+            return;
+          }
           // Live-only changes go out at the display cadence, whatever woke this drain (an ACK,
           // a request, a publication): at most one complete replacement per interval.
           const due =
@@ -470,9 +484,11 @@ export class EDATranscriptSockets {
         window.throughSeq === active.publishedThroughSeq ||
         (window.throughSeq > active.publishedThroughSeq && active.inference === undefined);
       if (!fenced) {
-        socket.dirty = true;
         socket.fenceWaitingSinceMs ??= nowMs;
         if (nowMs - socket.fenceWaitingSinceMs < this.fenceWaitMs) {
+          // Only a wait keeps the cut owed; a timed-out capture is served and consumes it, so a
+          // fence that never catches up cannot keep this socket polling.
+          socket.dirty = true;
           // The publication that moves the accumulator to this cut schedules a drain; the
           // cadence timer retries anything nothing else would wake.
           this.armCadence();
@@ -509,7 +525,9 @@ export class EDATranscriptSockets {
       ) {
         return;
       }
-      socket.sentActiveRevision = fenced ? active.revision : undefined;
+      // A timed-out capture deliberately served no live content for this revision; it is retried
+      // when the revision changes or a commit arrives, not polled.
+      socket.sentActiveRevision = active.revision;
       if (update.activeContent !== undefined) {
         socket.cadenceDue = false;
         socket.activeSentAtMs = this.now();
@@ -598,10 +616,10 @@ export class EDATranscriptSockets {
   ): Promise<boolean> {
     const encodedUpdate = encodeEDATranscriptUpdate(update);
     const bytes = utf8ByteLength(encodedUpdate);
-    if (
-      bytes > this.flowControl.maxFrameBytes &&
-      this.stagedBytes() + bytes > this.maxTotalStagedBytes
-    ) {
+    const chunked =
+      utf8ByteLength(edaTranscriptUpdateFrameText(socket.delivery.nextFrameId, encodedUpdate)) >
+      this.flowControl.maxFrameBytes;
+    if (chunked && this.stagedBytes() + bytes > this.maxTotalStagedBytes) {
       // Staging is bounded per object as well as per socket; this client retries later.
       this.close(webSocket, EDA_WS_CLOSE_TRANSCRIPT_RESUBSCRIBE, "staging-budget");
       return false;
