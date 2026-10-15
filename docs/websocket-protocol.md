@@ -257,7 +257,7 @@ as explicit `unknown` representations.
 ### Requests
 
 Each request is answered by exactly one update, in arrival order (at most 4 may be outstanding, and
-a client frame may be at most 2,048 characters):
+a client frame may be at most 2,048 UTF-8 bytes):
 
 - `subscribe { requestId?, range?, tail?, since?, count? }`: with `range` (`{ from, to }` cursors),
   `tail` and `since` (what SSR rendered, or what a reconnecting client last applied), the first
@@ -325,9 +325,8 @@ subscription base (incarnation, version, `throughSeq`, coverage, tail) and unans
 idle socket that wakes re-reads its coverage at the next opportunity and continues with patches.
 Chunk data is never persisted: a socket that wakes mid-transfer is closed with `4009`, and the client
 discards the partial transfer, reconnects, and resubscribes from what it last applied. Destroying
-the session drops live content and closes the transcript sockets the isolate holds with `4009`; a
-socket still hibernated at that moment gets a replacement of the new log's latest records on its next
-refresh, because its cursors name the old incarnation.
+the session drops live content and closes every transcript socket with `4009`, including sockets
+still hibernated (recognised by their `eda-transcript-v1` attachment without being restored).
 
 The applied cut's `throughSeq` is not monotonic (a new incarnation or a building window may lower
 it); the server validates that `appliedUpdateSeq` never moves backwards, names only a fully sent

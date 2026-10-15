@@ -107,9 +107,22 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
     this.transcript.accept(input);
   }
 
-  /** The session's log was destroyed: close transcript sockets and drop live content. */
-  resetTranscript(): void {
-    this.transcript?.reset();
+  /**
+   * The session's log was destroyed: drop live content and close every transcript socket,
+   * including those still hibernated, which a just-woken object has not restored yet. They are
+   * recognised by their attachment kind without being restored.
+   */
+  async resetTranscript(): Promise<void> {
+    if (this.transcript === undefined) return;
+    const hibernated: WebSocket[] = [];
+    for (const webSocket of this.options.getWebSockets?.() ?? []) {
+      if (this.sockets.has(webSocket) || this.transcript.has(webSocket)) continue;
+      const decoded = await decodeWebSocketAttachment(webSocket.deserializeAttachment());
+      if (decoded._tag === "Decoded" && decoded.attachment.kind === "eda-transcript-v1") {
+        hibernated.push(webSocket);
+      }
+    }
+    this.transcript.reset(hibernated);
   }
 
   /** Wait for scheduled transcript flushes; for orderly shutdown and tests. */
