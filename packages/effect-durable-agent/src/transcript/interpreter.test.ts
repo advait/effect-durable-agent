@@ -393,15 +393,22 @@ describe("transcript interpreter", () => {
       ],
     });
     // Parked (before the command) and live entries project the same under every batch split.
-    expect(normalizedProjection(projectBatches(byIdOrOrdinal, log.events.map((event) => [event])))).toEqual(
-      normalizedProjection(version),
-    );
+    expect(
+      normalizedProjection(
+        projectBatches(
+          byIdOrOrdinal,
+          log.events.map((event) => [event]),
+        ),
+      ),
+    ).toEqual(normalizedProjection(version));
     // One event can replace two entries: the same id at one ordinal and another entry's ordinal.
     attach(log, "c", 0, "c-moved.txt");
-    expect(user(projectBatches(byIdOrOrdinal, [log.events]), 1).decorations["attachments"]).toEqual({
-      _tag: "List",
-      entries: [{ key: 0, value: "c-moved.txt", id: "c" }],
-    });
+    expect(user(projectBatches(byIdOrOrdinal, [log.events]), 1).decorations["attachments"]).toEqual(
+      {
+        _tag: "List",
+        entries: [{ key: 0, value: "c-moved.txt", id: "c" }],
+      },
+    );
     // The list keeps at most 64 entries.
     for (let ordinal = 2; ordinal < 80; ordinal += 1) attach(log, `x${ordinal}`, ordinal, "x");
     const full = user(projectBatches(byIdOrOrdinal, [log.events]), 1).decorations["attachments"];
@@ -419,7 +426,12 @@ describe("transcript interpreter", () => {
       Effect.exit(
         makeTranscriptDefinition({
           mappings: [
-            attachments({ _tag: "ReplaceListEntry", from: [], to: "attachments", key: { _tag: "Ordinal", path: ["ordinal"] } }),
+            attachments({
+              _tag: "ReplaceListEntry",
+              from: [],
+              to: "attachments",
+              key: { _tag: "Ordinal", path: ["ordinal"] },
+            }),
             attachments({
               _tag: "ReplaceListEntry",
               from: [],
