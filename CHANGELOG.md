@@ -1,7 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.25
 
+Transcript history, part 4: production rollout controls. This is the first release a host may
+adopt in production with transcripts enabled.
+
+- **Breaking:** the Durable Object base maintains no transcript unless the host sets
+  `EDASessionTranscriptOptions.enabled` (`boolean | (sessionId) => boolean`, default off; resolved
+  once per object instance). alpha.24 maintained every session.
+  - A disabled session gets no transcript writes, builder slices or wakeups; `transcriptStatus`
+    returns `Disabled` without writing, `readTranscriptWindow` returns `{ _tag: "Disabled" }`, and a
+    `?stream=transcript` upgrade is refused with 409.
+  - Enabling a session takes the first-introduction path (build from the log, then activate).
+    Disabling leaves its rows untouched; re-enabling with an active version behind the head serves
+    `UpdatingHistory` until builder slices catch it up, then re-reads every transcript socket.
+  - `TranscriptStorageStatus` is now a tagged union `Enabled | Disabled`.
+- Bounded builder retries: a slice that keeps failing while advancing a build freezes that build
+  as failed after `maxSliceFailures` consecutive failures (default 5, `transcript.sliceLimits`;
+  migration 3 adds `_eda_transcript_meta.slice_failures`) and raises `ProjectionFailed`. A failing
+  builder alarm backs off exponentially (30 s doubling, capped at 1 h); its failure count survives
+  eviction (`_eda_alarm_wakeups.failures`), and after the limit the builder stops scheduling itself
+  and raises the new `TranscriptAlert` `BuilderStopped`.
+- `alarm()` logic is extracted into `runEDASessionAlarm` and unit-tested.
+- A WebSocket upgrade naming another session gets 400 instead of 500.
 - `effect-durable-agent-cloudflare`: storage-only RPCs `readTranscriptBody`
   (`SessionTranscriptBodyInput { source: { seq, path }, incarnation }` →
   `Body | NotFound | IncarnationMismatch | Disabled`) and `readTranscriptSummary`
@@ -19,6 +40,7 @@
   rules, messages) without the transcript-window stream. `effect-durable-agent/websocket` is
   unchanged; event-socket clients that import the new entry no longer bundle the transcript
   protocol, whose schemas cannot be tree-shaken.
+
 
 ## 0.1.0-alpha.24
 
