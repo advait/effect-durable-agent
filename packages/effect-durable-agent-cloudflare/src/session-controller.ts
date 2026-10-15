@@ -27,6 +27,7 @@ import type { EDASessionDurableObjectStorage } from "./runtime/runtime-layer";
 import { EDAWebSocketConnectionManager } from "./websocket/connection-manager";
 import type { EDAWebSocketServerFrameEncoder } from "effect-durable-agent/websocket";
 import type { EDAWebSocketProjection } from "./websocket/projection";
+import type { EDATranscriptSocketOptions } from "./websocket/transcript-sockets";
 
 /** Composition options for the session use cases and Cloudflare adapters. */
 export interface EDASessionControllerOptions<ProjectionState extends object = never> extends Omit<
@@ -36,6 +37,11 @@ export interface EDASessionControllerOptions<ProjectionState extends object = ne
   readonly getWebSockets?: () => ReadonlyArray<WebSocket>;
   readonly webSocketProjection?: EDAWebSocketProjection<ProjectionState>;
   readonly webSocketProtocol?: EDAWebSocketServerFrameEncoder;
+  /**
+   * Serves transcript-window sockets (`?stream=transcript`) from this transcript store. Without
+   * it, only raw event sockets are accepted.
+   */
+  readonly transcriptSockets?: EDATranscriptSocketOptions;
 }
 
 export interface EDASessionSubmitInput {
@@ -106,6 +112,7 @@ export class EDASessionController<ProjectionState extends object = never> {
         ),
       webSocketProjection: options.webSocketProjection,
       webSocketProtocol: options.webSocketProtocol,
+      ...(options.transcriptSockets === undefined ? {} : { transcript: options.transcriptSockets }),
     });
     this.runtime = new EDASessionRuntime({
       ...options,
@@ -251,6 +258,27 @@ export class EDASessionController<ProjectionState extends object = never> {
     input: EDAPreparedEventWebSocket<ProjectionState> & { readonly webSocket: WebSocket },
   ): Promise<void> {
     return this.webSockets.accept(input);
+  }
+
+  /** Whether transcript-window sockets are served. */
+  get supportsTranscriptWebSocket(): boolean {
+    return this.webSockets.supportsTranscript;
+  }
+
+  /**
+   * Register a transcript-window socket right after the host accepted it. Never prepares the
+   * model runtime: windows are storage-level reads.
+   */
+  acceptTranscriptWebSocket(input: {
+    readonly sessionId: SessionId;
+    readonly trace?: EDATraceMetadata;
+    readonly webSocket: WebSocket;
+  }): void {
+    this.webSockets.acceptTranscript({
+      sessionId: input.sessionId,
+      trace: input.trace ?? makeRootEDATraceMetadata(),
+      webSocket: input.webSocket,
+    });
   }
 
   webSocketMessage(webSocket: WebSocket, message: string | ArrayBuffer): Promise<void> {

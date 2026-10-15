@@ -2,7 +2,7 @@
 
 Status: future
 Runtime: EDAGiaAgent
-Last reviewed: 2026-10-14
+Last reviewed: 2026-10-15
 
 Audience: EDA runtime maintainers, host maintainers (Gia), and UI maintainers.
 
@@ -15,8 +15,10 @@ earlier future-state `ui-projection.md` proposal (removed in the commit that add
 Today the record, window, cursor, mapping and store-port contracts of §14 step 1, and the core
 interpreter, mapping executor and oracle of §14 step 2, ship as `core/transcript/` (subpath
 `effect-durable-agent/transcript`); the in-memory store maintains and serves a transcript. The
-Cloudflare adapter (steps 3 and 4), socket update schemas and the negotiation envelope are still
-planned.
+delivery of §9 (step 4) also ships: active content, the subscription data source, socket update
+schemas, chunking, the negotiation envelope, the publication fence and transcript-window sockets
+in the Cloudflare adapter, over any `EDATranscriptStore` (see `docs/websocket-protocol.md`). The
+Cloudflare store's tables, maintenance and builder (step 3) are still planned.
 As each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe the current behavior
 and this document keeps the design rationale.
 
@@ -407,10 +409,14 @@ commit. A pending user record moves into the conversation in one update when it 
 ### 9.4 Reconnect, long gaps and upgrades
 
 - **Reconnect** re-reads the retained range at one current cut and replaces it in one update. The
-  cost scales with the retained window, not the event gap.
+  cost scales with the retained window, not the event gap. As built, that update is a patch relative
+  to the cut the client last applied (it sent `since`), which leaves the client holding exactly the
+  re-read range; only records changed since that cut travel.
 - **Long gaps.** The viewport is preserved by anchor record and pixel offset; a "newer messages"
   boundary appears, and `page(after)` walks forward to the live tail.
 - **A version change** uses the same replacement path, keeping the anchor where its id still exists.
+  As built, the server answers a cursor from another version with a replacement of the latest
+  records; the client keeps its viewport anchor by record id.
 - **An incarnation change** invalidates the anchor and every cursor, chunk and body response. The
   client takes the new latest window.
 - **Compatibility negotiation.** A small, stable envelope (protocol major, wire version,

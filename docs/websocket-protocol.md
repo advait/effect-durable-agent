@@ -5,7 +5,7 @@ Status: current
 Protocol version: 1
 
 Attachment version: 2
-Last reviewed: 2026-08-28
+Last reviewed: 2026-10-15
 
 EDA uses a pull-based, ACK-clocked WebSocket protocol. Core owns the wire
 contract and pure delivery state machine. The Cloudflare adapter owns sockets,
@@ -52,7 +52,8 @@ Client frames:
 - `ping`: exact application ping string used by the Cloudflare automatic
   response path.
 
-Clients ACK only after validating and applying an events frame:
+Clients ACK only after validating and applying an events frame (raw event sockets ignore the
+optional `appliedUpdateSeq`, which belongs to transcript sockets):
 
 ```json
 { "_tag": "ack", "frameId": 42, "durableThroughSeq": 123 }
@@ -218,6 +219,112 @@ may return `SuppressAndAck` for an internal-only events frame; the host removes
 only that exact receipt from window capacity and persists it separately until
 all earlier client-visible frames are ACKed. It never uses a cumulative client
 ACK on the app's behalf.
+
+## Transcript-window stream
+
+A socket upgraded with `?stream=transcript` carries the ordered transcript stream of
+`docs/transcript-history.md` §9 instead of raw events. It shares the transport above: the hello,
+ACK receipts and their 16-frame window, the lazy ACK timeout (`lagged` + `4008`), the application
+ping and auto-response, and per-socket attachments. A host enables it by passing
+`transcriptSockets: { transcriptStore }`; without it the upgrade is rejected with 400. The
+projection header cannot be combined with it. Accepting a transcript socket never prepares the
+model runtime: windows are storage-level reads.
+
+Wire schemas live in `effect-durable-agent/src/websocket/transcript.ts`; the update contract in
+`effect-durable-agent/src/transcript/subscription.ts`.
+
+### Negotiation
+
+The hello adds a stable envelope that clients decode before anything version-specific
+(`negotiateEDATranscript`), and that hosts also embed in SSR data (`edaTranscriptNegotiation`):
+
+```json
+{
+  "_tag": "hello",
+  "protocolVersion": 1,
+  "subscriberId": "…",
+  "resumeSeq": 0,
+  "flowControl": { "…": "…" },
+  "negotiation": { "protocolMajor": 1, "wireVersion": 1, "capabilities": ["window", "page", "retain", "chunked-updates", "active-content"] }
+}
+```
+
+A different `protocolMajor` (or no decodable envelope) means the client performs one bounded reload.
+Unknown capabilities and unknown fields are ignored; unknown record kinds, parts and readiness decode
+as explicit `unknown` representations.
+
+### Requests
+
+Each request is answered by exactly one update, in arrival order (at most 4 may be outstanding):
+
+- `subscribe { requestId?, range?, tail?, since?, count? }`: with `range` (`{ from, to }` cursors),
+  `tail` and `since` (what SSR rendered, or what a reconnecting client last applied), the first
+  update is a patch over that range; otherwise it replaces the window with the latest `count`
+  records (default 100).
+- `page { requestId?, direction, cursor, count }`: `cursor` is the coverage's `from` (`before`) or
+  `to` (`after`); at most 100 records per page. A cursor that is not the current edge is answered
+  with an unchanged window.
+- `retain { requestId?, from, to }`: narrows the coverage to a span inside it.
+
+Coverage is contiguous and holds at most 300 top-level records: paging back evicts the newest,
+paging forward the oldest. A subscriber whose coverage reaches the newest record (`hasNewer: false`)
+follows the tail; new history joins its coverage as it commits. A cursor from another incarnation or
+version is answered with a replacement of the latest records.
+
+### Updates
+
+```json
+{ "_tag": "transcript", "frameId": 7, "update": { "updateSeq": 3, "mode": "patch", "…": "…" } }
+```
+
+A `TranscriptUpdate` carries `updateSeq` (per socket, from 1), `mode`, `incarnation`, `version`,
+`throughSeq`, `coverage`, `hasOlder`, `hasNewer`, `readiness`, `records`, `dependencies`,
+`dependencyIds`, optional `activeContent` and the answered `requestId`.
+
+- `replace`: discard everything held and install this window.
+- `patch`: relative to the previous complete update. Upsert `records` and `dependencies` by id, drop
+  top-level records outside `coverage`, and keep only the dependencies listed in `dependencyIds`.
+
+Either way the client then holds exactly the window read at `throughSeq`: a complete cut. Committed
+batches are coalesced to the boundary a read returns; a batch is never split across updates.
+`activeContent`, when present, replaces live content completely (`[]` clears it); it is published at
+most once per display cadence (50 ms), never as raw deltas, and is absent from degraded updates.
+The update that commits or fails an inference also retires its live content.
+
+An update larger than `maxFrameBytes` is sent as `transcript-chunk` frames:
+
+```json
+{ "_tag": "transcript-chunk", "frameId": 8, "updateSeq": 4, "index": 0, "count": 37, "data": "…" }
+```
+
+The `data` of all chunks concatenated in order is the JSON of one update; the client applies it only
+after chunk `count - 1`. Each chunk is a frame in the flow-control window, so a slow receiver
+receives at most 16 before ACKing. Encoded updates above 8 MiB close the socket with `1011`.
+
+### Acknowledgements
+
+```json
+{ "_tag": "ack", "frameId": 8, "durableThroughSeq": 120, "appliedUpdateSeq": 3 }
+```
+
+`frameId` is the cumulative transport receipt that frees flow-control capacity. `appliedUpdateSeq`
+(and `durableThroughSeq`, that update's `throughSeq`) is the applied cut: it advances only when an
+update is complete and may never name an update whose frames were not all sent.
+
+### Hibernation
+
+The attachment kind `eda-transcript-v1` stores the transport receipts, the applied cut, the
+subscription base (incarnation, version, `throughSeq`, coverage, tail) and unanswered requests. An
+idle socket that wakes re-reads its coverage at the next opportunity and continues with patches.
+Chunk data is never persisted: a socket that wakes mid-transfer is closed with `4009`, and the client
+discards the partial transfer, reconnects, and resubscribes from what it last applied.
+
+### Client reference store
+
+`effect-durable-agent/websocket` exports pure helpers so hosts only render:
+`applyEDATranscriptServerMessage` (chunk assembly, complete-cut application, coverage eviction, ACKs,
+and a `Resubscribe` outcome for gaps or broken transfers), `edaTranscriptClientFromWindow` (SSR
+handoff), `edaTranscriptClientReconnected`, and the `subscribe`/`page`/`retain` request builders.
 
 ## Client obligations
 

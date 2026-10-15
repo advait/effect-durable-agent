@@ -17,6 +17,7 @@ import { EventFactory } from "../services/event-factory";
 import { IdGenerator } from "../services/id-generator";
 import { EDAKeepAlive } from "../services/keep-alive";
 import { LiveEventBus } from "../services/live-event-bus";
+import type { SessionEventObserver } from "../services/session-event-observer";
 import { EDAPromptProjector } from "../services/prompt-projector";
 import { EDAReducerRegistry, type EDAReducer } from "../services/reducer-registry";
 import { EDASinkRegistry, type EDASink } from "../services/sink-registry";
@@ -184,6 +185,8 @@ export interface EdaTestLayerOptions {
   readonly promptProjectorLayer?: Layer.Layer<EDAPromptProjector>;
   /** App-provided EDA sinks. */
   readonly sinks?: ReadonlyArray<EDASink>;
+  /** Host publication observer, such as a WebSocket connection manager. */
+  readonly sessionEventObserverLayer?: Layer.Layer<SessionEventObserver>;
 }
 
 /**
@@ -206,7 +209,10 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
             return options.wrapStore!(inner);
           }),
         ).pipe(Layer.provide(BaseStore));
-  const Bus = LiveEventBus.Noop;
+  const Bus =
+    options.sessionEventObserverLayer === undefined
+      ? LiveEventBus.Noop
+      : LiveEventBus.Live.pipe(Layer.provide(options.sessionEventObserverLayer));
   const KeepAlive = options.keepAliveLayer ?? EDAKeepAlive.Noop;
   const SinkCheckpoints = SinkCheckpointStore.InMemory;
   const Ids =

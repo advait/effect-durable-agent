@@ -7,3 +7,7 @@ export * from "./session-controller";
 export * from "./websocket/projection";
 
 export * from "./rpc-spec";
+export {
+  defaultActiveContentCadenceMs,
+  type EDATranscriptSocketOptions,
+} from "./websocket/transcript-sockets";

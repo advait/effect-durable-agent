@@ -35,6 +35,7 @@ import {
   encodeWebSocketAttachment,
 } from "./attachment";
 import type { EDAWebSocketProjection } from "./projection";
+import { EDATranscriptSockets, type EDATranscriptSocketOptions } from "./transcript-sockets";
 
 export interface EDAWebSocketConnectionManagerOptions<ProjectionState extends object = never> {
   readonly getWebSockets?: () => ReadonlyArray<WebSocket>;
@@ -49,6 +50,8 @@ export interface EDAWebSocketConnectionManagerOptions<ProjectionState extends ob
   }) => Promise<EDASessionEventPage>;
   readonly webSocketProjection?: EDAWebSocketProjection<ProjectionState>;
   readonly webSocketProtocol?: EDAWebSocketServerFrameEncoder;
+  /** Enables transcript-window sockets beside raw event sockets. */
+  readonly transcript?: EDATranscriptSocketOptions;
 }
 
 interface EventWebSocketState<ProjectionState extends object> {
@@ -76,8 +79,38 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
   );
 
   private readonly sockets = new Map<WebSocket, EventWebSocketState<ProjectionState>>();
+  private readonly transcript: EDATranscriptSockets | undefined;
 
-  constructor(private readonly options: EDAWebSocketConnectionManagerOptions<ProjectionState>) {}
+  constructor(private readonly options: EDAWebSocketConnectionManagerOptions<ProjectionState>) {
+    this.transcript =
+      options.transcript === undefined ? undefined : new EDATranscriptSockets(options.transcript);
+  }
+
+  /** Whether this host serves transcript-window sockets. */
+  get supportsTranscript(): boolean {
+    return this.transcript !== undefined;
+  }
+
+  /**
+   * Accept a transcript-window socket. Reads are storage-level, so this never prepares the
+   * session runtime. Call immediately after `ctx.acceptWebSocket()`.
+   */
+  acceptTranscript(input: {
+    readonly sessionId: SessionId;
+    readonly trace: EDATraceMetadata;
+    readonly webSocket: WebSocket;
+  }): void {
+    if (this.transcript === undefined) {
+      this.close(input.webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "unsupported");
+      return;
+    }
+    this.transcript.accept(input);
+  }
+
+  /** Wait for scheduled transcript flushes; for orderly shutdown and tests. */
+  async settled(): Promise<void> {
+    await this.transcript?.settled();
+  }
 
   resolveProjection(id: string | undefined): EDAWebSocketProjection<ProjectionState> | undefined {
     if (id === undefined) return undefined;
@@ -137,7 +170,13 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
       return;
     }
 
-    const state = await this.restore(webSocket);
+    const restored = await this.restore(webSocket);
+    if (restored === "transcript") {
+      await this.transcript?.message(webSocket, message);
+      return;
+    }
+    if (restored === "closed") return;
+    const state = restored;
     if (state === undefined) {
       this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
       return;
@@ -160,6 +199,7 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
 
   closed(webSocket: WebSocket): void {
     this.sockets.delete(webSocket);
+    this.transcript?.closed(webSocket);
   }
 
   async flushDeferredCatchUp(sessionId: SessionId): Promise<void> {
@@ -180,9 +220,14 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
   private async fanoutPublishedEvent(event: PositionedEvent): Promise<void> {
     const webSockets = new Set([...(this.options.getWebSockets?.() ?? []), ...this.sockets.keys()]);
     const deliveries: Promise<void>[] = [];
+    const transcriptSockets: WebSocket[] = [];
     for (const webSocket of webSockets) {
       const state = await this.restore(webSocket);
-      if (state === undefined) continue;
+      if (state === "transcript") {
+        transcriptSockets.push(webSocket);
+        continue;
+      }
+      if (state === undefined || state === "closed") continue;
       deliveries.push(
         this.enqueue(webSocket, state, async () => {
           if (event.event.durability !== "durable") {
@@ -211,18 +256,32 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
         }),
       );
     }
+    // The transcript fence folds every publication, even with no transcript socket open, so a
+    // later subscriber captures live content consistent with what has been published.
+    if (this.transcript !== undefined) {
+      deliveries.push(this.transcript.onPublished(event, transcriptSockets));
+    }
     await Promise.all(deliveries);
   }
 
   private async restore(
     webSocket: WebSocket,
-  ): Promise<EventWebSocketState<ProjectionState> | undefined> {
+  ): Promise<EventWebSocketState<ProjectionState> | "transcript" | "closed" | undefined> {
     const existing = this.sockets.get(webSocket);
     if (existing !== undefined) return existing;
+    if (this.transcript?.has(webSocket) === true) return "transcript";
     const decoded = await decodeWebSocketAttachment(webSocket.deserializeAttachment());
     if (decoded._tag !== "Decoded") {
       this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
       return undefined;
+    }
+    if (decoded.attachment.kind === "eda-transcript-v1") {
+      if (this.transcript === undefined) {
+        this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
+        return undefined;
+      }
+      // A transcript socket that cannot resume is closed by the transcript owner with its own code.
+      return this.transcript.restore(webSocket, decoded.attachment) ? "transcript" : "closed";
     }
     const attachment = decoded.attachment;
     const projectionState =

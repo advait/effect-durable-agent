@@ -75,10 +75,18 @@ export const EDAWebSocketWireErrorFrame = Schema.Struct({
 });
 export type EDAWebSocketWireErrorFrame = typeof EDAWebSocketWireErrorFrame.Type;
 
+/**
+ * Client acknowledgement. `frameId` is the transport receipt: it cumulatively frees flow-control
+ * capacity. On a transcript socket `appliedUpdateSeq` is the client's applied cut, the last
+ * transcript update it applied completely, and `durableThroughSeq` is that update's
+ * `throughSeq`; both advance only on complete updates, never on a partial chunked transfer.
+ * Raw event sockets ignore `appliedUpdateSeq`.
+ */
 export const EDAWebSocketWireAckFrame = Schema.Struct({
   _tag: Schema.Literal("ack"),
   frameId: PositiveInt,
   durableThroughSeq: NonNegativeInt,
+  appliedUpdateSeq: Schema.optionalKey(NonNegativeInt),
 });
 export type EDAWebSocketWireAckFrame = typeof EDAWebSocketWireAckFrame.Type;
 

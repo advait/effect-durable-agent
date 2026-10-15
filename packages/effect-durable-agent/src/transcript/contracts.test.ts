@@ -402,7 +402,7 @@ describe("transcript windows", () => {
         activeContent: [
           {
             assistantId: transcriptRecordId.assistant(inferenceId),
-            parts: [{ _tag: "Text", text: "…" }],
+            parts: [{ id: "text:p1", part: { _tag: "Text", text: "…" } }],
           },
         ],
       }),

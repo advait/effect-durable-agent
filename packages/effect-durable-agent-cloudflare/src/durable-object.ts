@@ -41,6 +41,12 @@ export type { EDAWebSocketProjection } from "./websocket/projection";
 /** Internal Worker-to-object header selecting an app-owned WebSocket projection. */
 export const EDA_WEB_SOCKET_PROJECTION_HEADER = "x-eda-websocket-projection";
 
+/**
+ * Upgrade query parameter selecting the socket's stream: `events` (the default raw event
+ * stream) or `transcript` (the ordered transcript-window stream).
+ */
+export const EDA_WEB_SOCKET_STREAM_PARAM = "stream";
+
 /** Encoded session RPC inputs, decoded before invoking the controller. */
 export type EDASessionCommandRpcInput = typeof SessionCommandInput.Encoded;
 export type EDASessionGrantRunRpcInput = typeof SessionGrantRunInput.Encoded;
@@ -159,6 +165,20 @@ export abstract class EDASessionDurableObject<
 
     const sessionId = this.parseSessionId(sessionIdRaw);
     const trace = traceMetadataFromRequest(request);
+
+    const stream = url.searchParams.get(EDA_WEB_SOCKET_STREAM_PARAM) ?? "events";
+    if (stream === "transcript") {
+      if (projectionId !== undefined || !this.#controller.supportsTranscriptWebSocket) {
+        return new Response("Unsupported transcript stream.", { status: 400 });
+      }
+      const pair = new WebSocketPair();
+      this.ctx.acceptWebSocket(pair[1]);
+      this.#controller.acceptTranscriptWebSocket({ sessionId, trace, webSocket: pair[1] });
+      return new Response(null, { status: 101, webSocket: pair[0] });
+    }
+    if (stream !== "events") {
+      return new Response("Unsupported stream.", { status: 400 });
+    }
     const prepared = await this.#controller.prepareEventWebSocket({
       ...(afterSeq === undefined ? {} : { afterSeq: SequenceNumber.make(afterSeq) }),
       sessionId,
