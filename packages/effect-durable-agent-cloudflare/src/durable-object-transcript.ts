@@ -40,6 +40,7 @@ import {
   readOrMintLogIncarnation,
   readTranscriptSlots,
   transcriptVersionMetaOf,
+  TranscriptRowDecodeError,
   type TranscriptSlot,
 } from "./durable-object-transcript-tables";
 
@@ -112,7 +113,9 @@ export class DurableObjectTranscriptStore {
         limits,
       );
     } catch (error) {
-      // A stored row this release cannot decode: serve nothing rather than a wrong view (§7).
+      // Only a stored row this release cannot decode serves nothing rather than a wrong view (§7);
+      // a storage failure is an error.
+      if (!(error instanceof TranscriptRowDecodeError)) throw error;
       return Result.succeed({
         incarnation,
         version: active.version,

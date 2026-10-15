@@ -262,7 +262,8 @@ _interpreter_ never drops an old event-schema reader (`core/types/events/durable
 _As built:_ a version is maintained in the append exactly when it is carried, healthy and caught
 up (its cursor equals the head before the batch). A building version is caught up only by
 slices, and the slice that reaches the head activates it in the same transaction, so a build is
-never maintained in the append. This one rule also repairs any active version found behind the head.
+maintained in the append only in the degenerate case of a build created at the head (an empty
+log). This one rule also repairs any active version found behind the head.
 
 **The builder.** State lives in `transcript_meta`. Any request, alarm or constructor that sees
 pending work runs or schedules one bounded slice through the storage service; it never constructs

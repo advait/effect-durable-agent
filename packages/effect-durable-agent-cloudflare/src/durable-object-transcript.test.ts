@@ -688,6 +688,18 @@ describe("DurableObjectAlarmScheduler", () => {
     expect(storage.alarm).toBeNull();
   });
 
+  it("keeps a failed runtime alarm's claim on the platform retry without re-arming the alarm", async () => {
+    const { storage, alarms } = scheduler();
+    await alarms.request("runtime", 1_000);
+    // Inside alarm(): the platform reports no alarm while the handler runs.
+    storage.alarm = null;
+    expect(alarms.takeDue(1_000)).toEqual(new Set(["runtime"]));
+    alarms.retain("runtime", 1_000);
+    expect(storage.alarm).toBeNull();
+    // The platform's own retry (with its backoff) then still belongs to the runtime.
+    expect(alarms.takeDue(3_500)).toEqual(new Set(["runtime"]));
+  });
+
   it("adopts an alarm armed before wakeups were recorded as the runtime's", async () => {
     const { storage, alarms } = scheduler();
     storage.alarm = 9_000;

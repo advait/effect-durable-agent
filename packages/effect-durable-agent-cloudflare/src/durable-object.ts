@@ -138,6 +138,9 @@ export type EDASessionDurableObjectOptions<ProjectionState extends object = neve
 
 /** Slices a backfill `transcriptStatus` call may run before it returns. */
 const transcriptStatusMaxSlices = 16;
+/** Server bounds on one `readTranscriptWindow` RPC, whatever limits the caller asks for. */
+const transcriptWindowMaxRecords = 500;
+const transcriptWindowMaxBytes = 8 * 1_048_576;
 /** Slices one builder alarm runs before rescheduling itself. */
 const transcriptAlarmMaxSlices = 4;
 
@@ -409,10 +412,12 @@ export abstract class EDASessionDurableObject<
   ): Promise<typeof edaSessionRpc.readTranscriptWindow.output.Encoded> {
     const input = Schema.decodeUnknownSync(SessionTranscriptWindowInput)(raw);
     const transcript = this.transcriptFor(this.parseSessionId(input.sessionId));
-    const window = transcript.store.readWindow(
-      input.selector,
-      input.limits ?? defaultTranscriptWindowLimits,
-    );
+    const limits = input.limits ?? defaultTranscriptWindowLimits;
+    const window = transcript.store.readWindow(input.selector, {
+      ...limits,
+      maxRecords: Math.min(limits.maxRecords, transcriptWindowMaxRecords),
+      maxBytes: Math.min(limits.maxBytes, transcriptWindowMaxBytes),
+    });
     return Schema.encodeSync(edaSessionRpc.readTranscriptWindow.output)(
       Result.isSuccess(window)
         ? { _tag: "Window", window: window.success }
@@ -443,8 +448,9 @@ export abstract class EDASessionDurableObject<
           sessionId === undefined ? undefined : { sessionId, trace: makeRootEDATraceMetadata() },
         );
       } catch (error) {
-        // Keep the runtime's wakeup so the platform's retry still runs it.
-        await this.#alarms.request("runtime", Date.now());
+        // Keep the runtime's claim on the platform's retry, without re-arming the alarm (which
+        // would replace the platform's backoff with an immediate retry loop).
+        this.#alarms.retain("runtime", Date.now());
         throw error;
       }
     }

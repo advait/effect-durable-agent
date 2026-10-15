@@ -50,6 +50,15 @@ export class DurableObjectAlarmScheduler {
     if (armed !== null && this.#rows().length === 0) this.#write("runtime", armed);
   }
 
+  /**
+   * Record `owner`'s wakeup without touching the platform alarm. Inside a failing `alarm()`, this
+   * keeps the owner's claim on the platform's own retry (with its backoff and retry cap); setting
+   * the platform alarm there would replace that retry with an immediate, unbounded one.
+   */
+  retain(owner: DurableObjectAlarmOwner, atMs: number): void {
+    this.#write(owner, atMs);
+  }
+
   /** Wake `owner` no later than `atMs`; an earlier wakeup it already holds is kept. */
   request(owner: DurableObjectAlarmOwner, atMs: number): Promise<void> {
     const current = this.#wakeup(owner);
