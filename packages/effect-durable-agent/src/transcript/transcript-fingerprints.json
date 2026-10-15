@@ -56,6 +56,10 @@
     "one-turn-consumes-several": {
       "transcript": "fe154e2b2aa1a51faf4f1f110ed4c61a3a27bb05b2f9ac6f88622e714f18ea89",
       "prompt": "19aaf3cefc371d4e4a50d7316dd6a91b1d29e4afadc402865ab6acd0bb2eb148"
+    },
+    "one-turn-consumes-several-submitted": {
+      "transcript": "96d588a9771524c6d0467c5e186f1f48ee7a9ffeb50cf432ee3ad770d44cd9c8",
+      "prompt": "1a448db488567d1c2c507a98401812915b1d45d873b9b50c4d813656b2efa644"
     }
   }
 }
