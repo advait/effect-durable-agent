@@ -44,6 +44,8 @@ interface Harness {
   readonly storage: SqliteDurableObjectStorage;
   readonly alerts: Array<{ readonly alert: TranscriptAlert; readonly depth: number }>;
   readonly activations: Array<string>;
+  /** Times an active version behind the head reached it. */
+  readonly caughtUp: number;
   readonly transcript: DurableObjectTranscriptOptions;
   readonly store: EDASessionStoreShape;
   readonly service: DurableObjectTranscriptStore;
@@ -63,11 +65,15 @@ const makeHarness = (
 ): Harness => {
   const alerts: Harness["alerts"] = [];
   const activations: Array<string> = [];
+  const counts = { caughtUp: 0 };
   const transcript: DurableObjectTranscriptOptions = {
     definitions: definitions ?? { current: plain },
     observer: {
       onAlert: (alert) => alerts.push({ alert, depth: storage.depth }),
       onActivated: ({ version }) => activations.push(version),
+      onCaughtUp: () => {
+        counts.caughtUp += 1;
+      },
     },
     ...(sliceLimits === undefined ? {} : { sliceLimits }),
   };
@@ -82,6 +88,9 @@ const makeHarness = (
     storage,
     alerts,
     activations,
+    get caughtUp() {
+      return counts.caughtUp;
+    },
     transcript,
     store,
     service: new DurableObjectTranscriptStore({ sessionId: testSessionId, storage, transcript }),
@@ -693,6 +702,42 @@ describe("Durable Object transcript upgrades and edge failures", () => {
     expect(harness.service.readMeta()[0]?.status._tag).toBe("Failed");
   });
 
+  it("never charges a build for a failure outside advancing it", () => {
+    const log = conversation(4);
+    const base = makeHarness({ current: plain });
+    base.append(log.events);
+    // A retired version awaits cleanup while `gia` builds; the cleanup keeps failing.
+    const harness = base.release(
+      { current: gia, previous: plain },
+      { maxEvents: 4, pageEvents: 2, maxSliceFailures: 2 },
+    );
+    harness.storage.rows(
+      "INSERT INTO _eda_transcript_meta (version, role, cursor, status) VALUES (?, 'retired', 0, 'ok')",
+      "0".repeat(64),
+    );
+    harness.storage.faults = (query) => {
+      if (/^\s*DELETE FROM _eda_transcript_records/.test(query)) {
+        throw new Error("cleanup refused");
+      }
+    };
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      expect(() => harness.service.runSlice()).toThrow(/cleanup refused/);
+    }
+    // The build is still healthy and uncharged; only the alarm-level bound applies.
+    expect(harness.service.readMeta()).toMatchObject([
+      { role: "active", version: plain.version, status: { _tag: "Ok" } },
+      { role: "building", version: gia.version, status: { _tag: "Ok" } },
+    ]);
+    expect(
+      harness.storage.rows(
+        "SELECT slice_failures FROM _eda_transcript_meta WHERE role = 'building'",
+      ),
+    ).toEqual([{ slice_failures: 0 }]);
+    harness.storage.faults = undefined;
+    runToCompletion(harness.service);
+    expect(storedProjection(harness.storage)).toEqual(referenceProjection(gia, log.events));
+  });
+
   it("catches a re-enabled session's active version up to the head before serving it as current", () => {
     const log = conversation(6);
     const enabled = makeHarness({ current: gia });
@@ -720,6 +765,7 @@ describe("Durable Object transcript upgrades and edge failures", () => {
     expect(storedProjection(reenabled.storage)).toEqual(referenceProjection(gia, log.events));
     expect(reenabled.service.status()).toMatchObject({ pending: false, converged: true });
     expect(reenabled.activations).toEqual([]);
+    expect(reenabled.caughtUp).toBe(1);
   });
 
   it("reports a disabled session read-only, without initializing or minting anything", () => {
@@ -727,12 +773,10 @@ describe("Durable Object transcript upgrades and edge failures", () => {
     const disabled = makeHarness(undefined, undefined, storage);
     disabled.append(conversation(1).events);
     expect(disabled.service.disabledStatus()).toEqual({
-      enabled: false,
+      _tag: "Disabled",
       headSeq: conversation(1).events.length,
       currentVersion: plain.version,
       versions: [],
-      pending: false,
-      converged: false,
     });
     expect(storage.rows("SELECT * FROM _eda_transcript_meta")).toEqual([]);
     expect(storage.rows("SELECT * FROM _eda_log_incarnation")).toEqual([]);

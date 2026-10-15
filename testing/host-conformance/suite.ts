@@ -48,7 +48,7 @@ interface TranscriptProbeResult {
 }
 
 interface TranscriptStatus {
-  readonly enabled: boolean;
+  readonly _tag: "Enabled" | "Disabled";
   readonly incarnation: string;
   readonly headSeq: number;
   readonly converged: boolean;
@@ -729,7 +729,7 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         await host.restart({ transcriptDisabled: sessionId });
         await submitMessage(host, sessionId, { idempotencyKey: "ring:first", text: "ping" });
         const disabled = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
-        expect(disabled).toMatchObject({ enabled: false, versions: [], converged: false });
+        expect(disabled).toMatchObject({ _tag: "Disabled", versions: [] });
         expect(await get(`/sessions/${sessionId}/transcript`)).toEqual({ _tag: "Disabled" });
         expect(await get(`/sessions/${sessionId}/transcript-upgrade`)).toEqual({ status: 409 });
         expect(
@@ -741,7 +741,7 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         // Enabled: the first-introduction path builds from the log and activates.
         await host.restart();
         const enabled = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
-        expect(enabled).toMatchObject({ enabled: true, converged: true });
+        expect(enabled).toMatchObject({ _tag: "Enabled", converged: true });
         expect(enabled.versions[0]?.cursor).toBe(enabled.headSeq);
         const firstCursor = enabled.headSeq;
 
@@ -749,14 +749,14 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         await host.restart({ transcriptDisabled: sessionId });
         await submitMessage(host, sessionId, { idempotencyKey: "ring:second", text: "ping two" });
         const frozen = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
-        expect(frozen.enabled).toBe(false);
+        expect(frozen._tag).toBe("Disabled");
         expect(frozen.versions[0]?.cursor).toBe(firstCursor);
         expect(frozen.headSeq).toBeGreaterThan(firstCursor);
 
         // Re-enabled: the active version catches up to the head before it is current.
         await host.restart();
         const caughtUp = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
-        expect(caughtUp).toMatchObject({ enabled: true, converged: true });
+        expect(caughtUp).toMatchObject({ _tag: "Enabled", converged: true });
         expect(caughtUp.versions[0]?.cursor).toBe(caughtUp.headSeq);
         const read = await get<TranscriptRead>(`/sessions/${sessionId}/transcript`);
         expect(read.window.readiness._tag).toBe("Ready");

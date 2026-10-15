@@ -86,8 +86,10 @@ const KnownReadiness = Schema.TaggedUnion({
   /** The active version failed while projecting `failedAtSeq`; this is its last good cut. */
   Degraded: { failedAtSeq: SequenceNumber, error: Schema.String },
   /**
-   * The active version is no longer carried by this release; history is being rebuilt under
-   * the current definition, and clients receive one replacement when it activates.
+   * The served cut is consistent but behind the log: either the active version is no longer
+   * carried by this release and history is being rebuilt under the current definition (clients
+   * receive one replacement when it activates), or the active version is catching up to the head
+   * (a session re-enabled after it was disabled; clients receive a re-read when it gets there).
    */
   UpdatingHistory: {},
   /** No version is servable yet; the window is empty. */

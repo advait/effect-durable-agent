@@ -100,6 +100,24 @@ describe("runEDASessionAlarm", () => {
     expect([...alarms.due(2_600).keys()].sort()).toEqual(["runtime", "transcript"]);
   });
 
+  it("keeps the builder's backoff and leaves the platform retry alone when both owners fail", async () => {
+    const { storage, alarms, clock, fire, rows, failures } = harness();
+    await alarms.request("runtime", 100);
+    await alarms.request("transcript", 100);
+    clock.now = 100;
+    await expect(
+      fire({ runRuntime: failing("runtime down"), runBuilderSlices: failing("slice failed") }),
+    ).rejects.toThrow("runtime down");
+    expect(failures).toEqual([{ consecutiveFailures: 1, stopped: false }]);
+    expect(rows()).toEqual([
+      { owner: "runtime", at_ms: 100, failures: 0 },
+      { owner: "transcript", at_ms: 1_100, failures: 1 },
+    ]);
+    expect(storage.alarm).toBeNull();
+    // The platform's retry belongs to the runtime; the builder waits out its backoff.
+    expect([...alarms.due(600).keys()]).toEqual(["runtime"]);
+  });
+
   it("keeps the builder's wakeup and continues at once while work remains", async () => {
     const { storage, alarms, clock, fire, rows } = harness();
     await alarms.request("transcript", 100);

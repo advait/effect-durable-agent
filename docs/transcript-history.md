@@ -315,22 +315,25 @@ for example `hash(sessionId) < percentage`, so a session's membership changes on
 widens or narrows the ring.
 
 - A disabled session gets no transcript writes, builder slices or wakeups. Reads answer
-  `Disabled`, the status reports `enabled: false` without writing, and transcript sockets are
-  refused (409).
+  `Disabled`, the status is `Disabled` (read without writing), and transcript sockets are refused
+  (409).
 - Enabling a session takes the first-introduction path: a build from the log in bounded slices,
   then activation. A session enabled from its first event starts `current` at seq 0.
 - Disabling a session leaves its rows exactly as they are; nothing maintains them.
 - Re-enabling a session whose active version is behind the head never serves that version as
   current. Appends do not maintain it (its cursor is not the head), builder slices catch it up from
-  its cursor, and until they reach the head reads report `UpdatingHistory` at its real cursor.
+  its cursor, and until they reach the head reads report `UpdatingHistory` at its real cursor;
+  connected sockets are re-read when it reaches the head.
   Narrowing a ring is therefore safe, though the host normally only widens.
-- The backfill's proof covers only enabled sessions; `transcriptStatus.enabled` says which.
+- The backfill's proof covers only enabled sessions; the status's `Enabled`/`Disabled` tag says
+  which.
 
-**Bounded retries (as built).** A builder slice that throws counts against its build target. After
-a configured number of consecutive failures (default 5) the build is frozen as `failed`, which is
-never retried, and alerted. A failing builder alarm backs off exponentially and stops scheduling
-itself after the same number of persisted consecutive failures, so no session can loop on its
-alarm.
+**Bounded retries (as built).** A builder slice that throws while advancing its build target counts
+against that target. After a configured number of consecutive failures (default 5) the build is
+frozen as `failed`, which is never retried, and alerted. A failing builder alarm backs off
+exponentially and stops scheduling itself after the same number of persisted consecutive failures,
+so no session can loop on its alarm; only a later object start, status call or pending-work kick
+tries again, bounded the same way.
 
 ### 7.1 Forward-only formats
 

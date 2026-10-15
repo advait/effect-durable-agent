@@ -769,16 +769,20 @@ reuses), and live delivery over transcript-window sockets (§10). Hosts still re
     from its alarm and from `transcriptStatus`, never through the model runtime.
   - _Bounded retries._ A slice that throws (its transaction rolls back; for example a storage error,
     or on celld a write failing after planning) counts against its build target
-    (`_eda_transcript_meta.slice_failures`, migration 3, reset by a slice that completes). At
-    `maxSliceFailures` consecutive failures (default 5) the target is frozen as failed, alerted
-    (`ProjectionFailed`) and never retried. A failed builder alarm retries with exponential backoff
-    from 30 s; its consecutive failures persist with its wakeup (`_eda_alarm_wakeups.failures`), so
-    eviction cannot reset them, and after 5 the builder stops scheduling itself and raises
-    `BuilderStopped` until the object next starts. No failure re-arms the alarm sooner than its
-    backoff.
+    (`_eda_transcript_meta.slice_failures`, migration 3, reset by a slice that completes) only
+    when it threw while advancing that target; a failing reconciliation or cleanup is never
+    charged to a build. At `maxSliceFailures` consecutive failures (default 5, tunable through
+    `transcript.sliceLimits`) the target is frozen as failed, alerted (`ProjectionFailed`) and
+    never retried. A failed builder alarm retries with exponential backoff from 30 s; its
+    consecutive failures persist with its wakeup (`_eda_alarm_wakeups.failures`), so eviction
+    cannot reset them, and after `maxSliceFailures` the builder stops scheduling itself and raises
+    `BuilderStopped`. Its wakeup (and count) is then gone, so only a later object start, a
+    `transcriptStatus` call or a pending-work kick can try again, each bounded the same way. No
+    failure re-arms the alarm sooner than its backoff.
   - _Active but behind._ An active version whose cursor is behind the head (a session re-enabled
     after it was disabled) is not maintained in appends; builder slices catch it up, and until they
-    reach the head its reads report `UpdatingHistory` at its real cursor rather than `Ready`.
+    reach the head its reads report `UpdatingHistory` at its real cursor rather than `Ready`. The
+    slice that reaches the head re-reads every transcript socket (`onCaughtUp`).
   - _Reads._ `DurableObjectTranscriptStore` (also `.layer` for the `EDATranscriptStore` port) reads
     windows, meta and status synchronously from storage with no runtime. A stored row this release
     cannot decode serves an empty `Unreadable` window.
@@ -905,13 +909,14 @@ Current production host:
 - host entrypoints expose RPC methods for submit, submitBatch, submitAndBlock, blockOnCommand, snapshot, messages, backup/destroy, alarm, and WebSocket events;
 - two storage-only RPC methods never construct the model runtime, reducers or sinks:
   `transcriptStatus` advances pending transcript build work by up to 16 bounded slices and returns
-  the status (`enabled`, incarnation, head, current version, every version's meta, `pending`,
-  `converged`) a host backfill records; `readTranscriptWindow` serves SSR and CLI reads (`Window`,
+  the status a host backfill records: `Enabled` (incarnation, head, current version, every
+  version's meta, `pending`, `converged`) or, for a session outside the rollout ring, `Disabled`
+  (read-only: head, current version, stored versions, and the incarnation only if one exists); `readTranscriptWindow` serves SSR and CLI reads (`Window`,
   `CursorMismatch` or `Disabled`). Hosts authorize callers;
 - transcript maintenance is **opt-in per session** (`transcript.enabled`: a boolean or a
   `(sessionId) => boolean` predicate, default off), resolved once per object instance. A disabled
   session's runtime store maintains nothing and the object schedules no builder work;
-  `transcriptStatus` reports `enabled: false` read-only (no version initialized, no incarnation
+  `transcriptStatus` reports `Disabled` read-only (no version initialized, no incarnation
   minted) and `readTranscriptWindow` answers `Disabled`; a `?stream=transcript` upgrade is refused
   with 409. An upgrade naming a session other than the object's is refused with 400;
 - on activation of a rebuilt version, the object re-reads every transcript socket (held or

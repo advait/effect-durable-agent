@@ -30,6 +30,7 @@ import {
   publishTranscriptEffects,
   reconcileTranscriptSlots,
   recordTranscriptSliceFailure,
+  TranscriptBuildSliceError,
   runTranscriptSlice,
   type DurableObjectTranscriptOptions,
   type DurableObjectTranscriptSliceLimits,
@@ -50,23 +51,29 @@ import {
 /**
  * Maintenance state of one session's transcript, as a host backfill records it (§7).
  *
- * `converged` is the backfill's proof condition: the active version is `currentVersion`, healthy,
- * and no builder or cleanup work remains.
+ * - `Enabled`: the host maintains this session's transcript. `converged` is the backfill's proof
+ *   condition: the active version is `currentVersion`, healthy and at the head, and no builder or
+ *   cleanup work remains.
+ * - `Disabled`: the host has not enabled this session (a rollout ring). It is reported read-only:
+ *   any stored versions are listed as they are, nothing is maintained, and no incarnation is
+ *   minted, so `incarnation` is present only when one already exists or can be adopted.
  */
-export const TranscriptStorageStatus = Schema.Struct({
-  /**
-   * Whether the host enabled transcript maintenance for this session. A disabled session is
-   * reported read-only: its rows (if any) are listed as they are and nothing is maintained.
-   */
-  enabled: Schema.Boolean,
-  /** Absent only for a disabled session whose log has no incarnation yet; reads never mint one. */
-  incarnation: Schema.optionalKey(TranscriptLogIncarnation),
-  headSeq: SequenceNumber,
-  currentVersion: TranscriptVersion,
-  versions: Schema.Array(TranscriptVersionMeta),
-  pending: Schema.Boolean,
-  converged: Schema.Boolean,
-});
+export const TranscriptStorageStatus = Schema.Union([
+  Schema.TaggedStruct("Enabled", {
+    incarnation: TranscriptLogIncarnation,
+    headSeq: SequenceNumber,
+    currentVersion: TranscriptVersion,
+    versions: Schema.Array(TranscriptVersionMeta),
+    pending: Schema.Boolean,
+    converged: Schema.Boolean,
+  }),
+  Schema.TaggedStruct("Disabled", {
+    incarnation: Schema.optionalKey(TranscriptLogIncarnation),
+    headSeq: SequenceNumber,
+    currentVersion: TranscriptVersion,
+    versions: Schema.Array(TranscriptVersionMeta),
+  }),
+]);
 export type TranscriptStorageStatus = typeof TranscriptStorageStatus.Type;
 
 /** Construction options for the runtime-free transcript store of one session. */
@@ -155,14 +162,14 @@ export class DurableObjectTranscriptStore {
   }
 
   /** Status for builders, backfill proofs and alerts. */
-  status(): TranscriptStorageStatus {
+  status(): Extract<TranscriptStorageStatus, { readonly _tag: "Enabled" }> {
     const { incarnation, slots } = this.#prepare();
     const headSeq = this.#log.head();
     const config = this.#options.definitions;
     const pending = hasPendingTranscriptWork(this.#storage, config, headSeq);
     const active = slots.find((slot) => slot.role === "active");
     return {
-      enabled: true,
+      _tag: "Enabled",
       incarnation,
       headSeq,
       currentVersion: config.current.version,
@@ -177,18 +184,16 @@ export class DurableObjectTranscriptStore {
    * Status of a session the host has not enabled, read without writing anything: no version is
    * initialized or reconciled and no incarnation is minted.
    */
-  disabledStatus(): TranscriptStorageStatus {
+  disabledStatus(): Extract<TranscriptStorageStatus, { readonly _tag: "Disabled" }> {
     const incarnation = readLogIncarnation(this.#storage.sql, this.#options.adoptIncarnation);
     return {
-      enabled: false,
+      _tag: "Disabled",
       ...(incarnation === undefined ? {} : { incarnation }),
       headSeq: this.#log.head(),
       currentVersion: this.#options.definitions.current.version,
       versions: readTranscriptSlots(this.#storage.sql).flatMap(
         (slot) => transcriptVersionMetaOf(slot) ?? [],
       ),
-      pending: false,
-      converged: false,
     };
   }
 
@@ -217,9 +222,11 @@ export class DurableObjectTranscriptStore {
         ),
       );
     } catch (error) {
-      // The slice rolled back. Count it against its build target, which freezes at the limit.
-      if (this.#recordSliceFailure(error)) return this.hasPendingWork();
-      throw error;
+      // The slice rolled back. A failure while advancing its build target counts against that
+      // target, which freezes at the limit; any other failure is bounded by the builder alarm.
+      if (!(error instanceof TranscriptBuildSliceError)) throw error;
+      if (this.#recordSliceFailure(error.cause)) return this.hasPendingWork();
+      throw error.cause;
     }
   }
 

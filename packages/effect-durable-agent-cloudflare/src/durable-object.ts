@@ -53,10 +53,12 @@ import {
   DurableObjectTranscriptBuilder,
   DurableObjectTranscriptStore,
 } from "./durable-object-transcript";
-import type {
-  DurableObjectTranscriptObserver,
-  DurableObjectTranscriptOptions,
-  TranscriptAlert,
+import {
+  defaultTranscriptSliceLimits,
+  type DurableObjectTranscriptObserver,
+  type DurableObjectTranscriptOptions,
+  type DurableObjectTranscriptSliceLimits,
+  type TranscriptAlert,
 } from "./durable-object-transcript-maintenance";
 
 export type { EDAWebSocketProjection } from "./websocket/projection";
@@ -129,6 +131,12 @@ export interface EDASessionTranscriptOptions {
    */
   readonly enabled?: boolean | ((sessionId: SessionId) => boolean);
   /**
+   * Builder bounds: events per slice, rows deleted per slice, and `maxSliceFailures` (default 5),
+   * the consecutive failures after which a build freezes as failed and a failing builder alarm
+   * stops scheduling itself.
+   */
+  readonly sliceLimits?: Partial<DurableObjectTranscriptSliceLimits>;
+  /**
    * The transcript definitions this release carries. Defaults to the definition with no host
    * mappings. A host changing its mappings ships `current` = new, `previous` = old, then runs
    * its backfill through `transcriptStatus` (see `docs/transcript-history.md` §7).
@@ -165,8 +173,6 @@ const transcriptStatusMaxSlices = 16;
 /** Server bounds on one `readTranscriptWindow` RPC, whatever limits the caller asks for. */
 const transcriptWindowMaxRecords = 500;
 const transcriptWindowMaxBytes = 8 * 1_048_576;
-/** Consecutive failed builder alarms before the builder stops scheduling itself. */
-const transcriptMaxBuilderFailures = 5;
 /** First retry delay after a failed builder alarm; doubled per consecutive failure. */
 const transcriptBuilderRetryDelayMs = 30_000;
 /** Slices one builder alarm runs before rescheduling itself. */
@@ -484,11 +490,9 @@ export abstract class EDASessionDurableObject<
   }
 
   /**
-   * The alarm is shared by the runtime heartbeat and the transcript builder. A builder wakeup
-   * runs storage-only slices; the runtime runs only for its own wakeup, or for an alarm neither
-   * owner recorded (one armed before wakeups were recorded).
+   * The alarm is shared by the runtime heartbeat and the transcript builder; see
+   * `runEDASessionAlarm`.
    */
-  /** The alarm is shared by the runtime heartbeat and the transcript builder. */
   async alarm(): Promise<void> {
     const transcript = this.maintainedTranscript();
     await runEDASessionAlarm({
@@ -504,7 +508,9 @@ export abstract class EDASessionDurableObject<
         transcript === undefined
           ? undefined
           : () => transcript.builder.runSlices(transcriptAlarmMaxSlices),
-      maxBuilderFailures: transcriptMaxBuilderFailures,
+      maxBuilderFailures:
+        this.#transcriptOptions.sliceLimits?.maxSliceFailures ??
+        defaultTranscriptSliceLimits.maxSliceFailures,
       builderRetryDelayMs: transcriptBuilderRetryDelayMs,
       onBuilderFailure: ({ error, consecutiveFailures, stopped }) => {
         console.error("EDA transcript builder slice failed", error);
@@ -528,6 +534,7 @@ export abstract class EDASessionDurableObject<
         current: Effect.runSync(makeTranscriptDefinition(emptyTranscriptMappings)),
       },
       ...(key === undefined ? {} : { adoptIncarnation: { key, kv: this.ctx.storage.kv } }),
+      ...(options?.sliceLimits === undefined ? {} : { sliceLimits: options.sliceLimits }),
       observer: {
         onAlert:
           options?.onAlert ??
@@ -535,6 +542,10 @@ export abstract class EDASessionDurableObject<
         onPendingWork: () => {
           const builder = this.maintainedTranscript()?.builder;
           if (builder !== undefined) this.ctx.waitUntil(builder.kick());
+        },
+        onCaughtUp: () => {
+          // A re-enabled session's active version reached the head: sockets re-read it as Ready.
+          this.ctx.waitUntil(this.#controller.refreshTranscriptWebSockets());
         },
         onActivated: (activation) => {
           // Connected transcript sockets get one complete replacement in the new version.
@@ -550,7 +561,12 @@ export abstract class EDASessionDurableObject<
     const port = () => this.maintainedTranscript()?.store.port;
     const unbound = () =>
       Effect.fail(
-        new EDASessionStoreError({ message: "EDA transcript read before the session was named" }),
+        new EDASessionStoreError({
+          message:
+            this.objectTranscript()?.enabled === false
+              ? "EDA transcript is not enabled for this session"
+              : "EDA transcript read before the session was named",
+        }),
       );
     return {
       readTranscriptWindow: (selector, limits) =>

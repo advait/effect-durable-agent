@@ -66,6 +66,12 @@ export interface DurableObjectTranscriptObserver {
   }) => void;
   /** Bounded builder or cleanup work is pending; the host schedules a slice. */
   readonly onPendingWork?: () => void;
+  /**
+   * An active version that was behind the head (a re-enabled session) reached it, so what reads
+   * serve changed from `UpdatingHistory` to `Ready` without a publication; connected clients need
+   * a re-read.
+   */
+  readonly onCaughtUp?: () => void;
 }
 
 /** Bounds on one builder slice. */
@@ -77,9 +83,9 @@ export interface DurableObjectTranscriptSliceLimits {
   /** Rows of retired versions deleted per slice. */
   readonly maxDeletedRows: number;
   /**
-   * Consecutive slices that may throw while targeting one build before it is frozen as failed
-   * (and so never retried), and consecutive builder alarms that may fail before the builder stops
-   * scheduling itself.
+   * Consecutive slices that may throw while advancing one build target before it is frozen as
+   * failed (and so never retried). The session object also stops its builder alarm after this
+   * many consecutive failed alarms.
    */
   readonly maxSliceFailures: number;
 }
@@ -115,6 +121,8 @@ export interface TranscriptEffects {
     readonly version: TranscriptVersion;
     readonly previousVersion: TranscriptVersion | undefined;
   };
+  /** An active version that was behind the head reached it. */
+  caughtUp?: boolean;
   pendingWork: boolean;
 }
 
@@ -141,6 +149,7 @@ export const publishTranscriptEffects = (
   for (const alert of effects.alerts) notify(() => observer?.onAlert?.(alert));
   const activated = effects.activated;
   if (activated !== undefined) notify(() => observer?.onActivated?.(activated));
+  if (effects.caughtUp === true) notify(() => observer?.onCaughtUp?.());
   if (effects.pendingWork) notify(() => observer?.onPendingWork?.());
 };
 
@@ -387,24 +396,39 @@ export const runTranscriptSlice = (
     const definition = carriedDefinition(config, target.version);
     let slot = target;
     let remaining = limits.maxEvents;
-    while (
-      definition !== undefined &&
-      slot.status._tag === "Ok" &&
-      slot.cursor < head &&
-      remaining > 0
-    ) {
-      let page: ReadonlyArray<CommittedDurableEvent>;
-      try {
-        page = log.after(slot.cursor, Math.min(limits.pageEvents, remaining));
-      } catch (cause) {
-        // A log event this release cannot decode: the build cannot pass it, so freeze it
-        // rather than retry forever. A new definition (with a reader for it) repairs it.
-        slot = freezeSlot(storage, slot, SequenceNumber.make(slot.cursor + 1), cause, effects);
-        break;
+    try {
+      while (
+        definition !== undefined &&
+        slot.status._tag === "Ok" &&
+        slot.cursor < head &&
+        remaining > 0
+      ) {
+        let page: ReadonlyArray<CommittedDurableEvent>;
+        try {
+          page = log.after(slot.cursor, Math.min(limits.pageEvents, remaining));
+        } catch (cause) {
+          // A log event this release cannot decode: the build cannot pass it, so freeze it
+          // rather than retry forever. A new definition (with a reader for it) repairs it.
+          slot = freezeSlot(storage, slot, SequenceNumber.make(slot.cursor + 1), cause, effects);
+          break;
+        }
+        if (page.length === 0) break;
+        remaining -= page.length;
+        slot = advanceSlot(storage, slot, definition, page, effects);
       }
-      if (page.length === 0) break;
-      remaining -= page.length;
-      slot = advanceSlot(storage, slot, definition, page, effects);
+    } catch (cause) {
+      // Only a failure while advancing the target is charged to it (see
+      // `recordTranscriptSliceFailure`); reconciliation and cleanup failures are not.
+      throw new TranscriptBuildSliceError(cause);
+    }
+    if (
+      target.role === "active" &&
+      target.cursor < head &&
+      slot.status._tag === "Ok" &&
+      slot.cursor === log.head()
+    ) {
+      // An active version behind the head (a re-enabled session) is current again.
+      effects.caughtUp = true;
     }
     // A slice that completes resets its target's consecutive failures.
     if (target.sliceFailures > 0) setTranscriptSliceFailures(sql, target.slot, 0);
@@ -425,8 +449,17 @@ export const runTranscriptSlice = (
   return hasPendingTranscriptWork(storage, config, log.head());
 };
 
+/** A builder slice threw while advancing its build target; the cause is the original error. */
+export class TranscriptBuildSliceError extends Error {
+  override readonly name = "TranscriptBuildSliceError";
+  constructor(override readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
+
 /**
- * Record a builder slice that threw (its own transaction rolled back), in a new transaction.
+ * Record a builder slice that threw while advancing its build target (its own transaction rolled
+ * back), in a new transaction.
  *
  * The slice's build target counts the failure; at `maxSliceFailures` consecutive failures it is
  * frozen as failed at its cursor and alerted, so it is never retried, as the design requires of a
