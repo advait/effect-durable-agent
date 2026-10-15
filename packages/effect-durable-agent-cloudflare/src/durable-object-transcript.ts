@@ -197,6 +197,16 @@ export class DurableObjectTranscriptStore {
     };
   }
 
+  /**
+   * This log's incarnation, minted (or adopted from the host's key) inside a transaction the
+   * same way window reads mint it. Body and summary reads check a reference against it.
+   */
+  incarnation(): TranscriptLogIncarnation {
+    return this.#transact(() =>
+      readOrMintLogIncarnation(this.#storage.sql, this.#options.adoptIncarnation),
+    );
+  }
+
   /** Raise the missed-session alert if the active version is no longer carried. */
   auditMissedSession(): void {
     const alert = missedSessionAlert(this.#storage, this.#options.definitions);

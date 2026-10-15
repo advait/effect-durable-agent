@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `effect-durable-agent-cloudflare`: storage-only RPCs `readTranscriptBody`
+  (`SessionTranscriptBodyInput { source: { seq, path }, incarnation }` →
+  `Body | NotFound | IncarnationMismatch | Disabled`) and `readTranscriptSummary`
+  (`SessionTranscriptSummaryInput { summaryId, incarnation }` →
+  `Summary { TranscriptCompactionSummary } | NotFound | IncarnationMismatch | Disabled`). They
+  resolve only the interpreter's body sites, require the reference's log incarnation, and are
+  pinned to the object's session. **`EDASessionRpcSurface` gains both as required members**, so
+  hand-written implementations and mocks must add them. `DurableObjectTranscriptStore` gains
+  `incarnation()`.
+- `effect-durable-agent/transcript`: `resolveTranscriptBody` / `ResolvedTranscriptBody`, sharing
+  the interpreter's body normalization (transcript output is unchanged).
+- `effect-durable-agent/testkit/layers`: `TestModelParts` may be a function choosing each model
+  call's stream from its prompt.
 - `effect-durable-agent/websocket/events`: the raw live-event WebSocket contract (frames, delivery
   rules, messages) without the transcript-window stream. `effect-durable-agent/websocket` is
   unchanged; event-socket clients that import the new entry no longer bundle the transcript

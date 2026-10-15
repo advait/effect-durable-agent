@@ -17,3 +17,4 @@ export {
 } from "./window-read";
 export * from "./active-content";
 export * from "./subscription";
+export { resolveTranscriptBody, type ResolvedTranscriptBody } from "./body";

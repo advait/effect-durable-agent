@@ -2,9 +2,11 @@ import * as Schema from "effect/Schema";
 import { EDACommand, GrantRunCommand } from "effect-durable-agent/types/commands";
 import {
   CommandId,
+  CompactionId,
   RunRequestId,
   SequenceNumber,
   SessionId,
+  SummaryId,
 } from "effect-durable-agent/types/core";
 import { EDATraceMetadata } from "effect-durable-agent/types/tracing";
 import { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
@@ -15,6 +17,8 @@ import {
 } from "effect-durable-agent/services/session-query";
 import { RunGrantResult, RunRequestOutcome } from "effect-durable-agent/domain/run-scheduling";
 import {
+  TranscriptBodySource,
+  TranscriptLogIncarnation,
   TranscriptWindow,
   TranscriptWindowLimits,
   TranscriptWindowSelector,
@@ -66,6 +70,48 @@ export const SessionTranscriptWindowResult = Schema.Union([
   /** The host has not enabled transcript maintenance for this session. */
   Schema.TaggedStruct("Disabled", {}),
 ]);
+/** A runtime-free read of the body a transcript `Ref` names, by its immutable log source. */
+export const SessionTranscriptBodyInput = Schema.Struct({
+  ...SessionScopedInput.fields,
+  source: TranscriptBodySource,
+  /**
+   * The log incarnation the reference was minted in (the window's `incarnation`). Required: a
+   * wiped log invalidates every reference, so a reference never resolves against another log.
+   */
+  incarnation: TranscriptLogIncarnation,
+});
+/** The body as the JSON the interpreter would have inlined, or why the log has none there. */
+export const SessionTranscriptBodyResult = Schema.Union([
+  Schema.TaggedStruct("Body", { value: Schema.Json }),
+  Schema.TaggedStruct("NotFound", { message: Schema.String }),
+  /** The reference names another log: the client takes a new window. */
+  Schema.TaggedStruct("IncarnationMismatch", { incarnation: TranscriptLogIncarnation }),
+  /** The session is outside the host's transcript rollout. */
+  Schema.TaggedStruct("Disabled", {}),
+]);
+/** A runtime-free read of the summary a transcript `compaction` record references. */
+export const SessionTranscriptSummaryInput = Schema.Struct({
+  ...SessionScopedInput.fields,
+  summaryId: SummaryId,
+  /** The log incarnation the compaction record was read from (the window's `incarnation`). */
+  incarnation: TranscriptLogIncarnation,
+});
+/** The user-visible part of one compaction summary: its text and the log span it summarizes. */
+export const TranscriptCompactionSummary = Schema.Struct({
+  compactionId: CompactionId,
+  summaryId: SummaryId,
+  text: Schema.String,
+  sourceFromSeq: SequenceNumber,
+  sourceToSeq: SequenceNumber,
+});
+export type TranscriptCompactionSummary = typeof TranscriptCompactionSummary.Type;
+/** The summary, or `NotFound` when this log has no summary with that id. */
+export const SessionTranscriptSummaryResult = Schema.Union([
+  Schema.TaggedStruct("Summary", { summary: TranscriptCompactionSummary }),
+  Schema.TaggedStruct("NotFound", { message: Schema.String }),
+  Schema.TaggedStruct("IncarnationMismatch", { incarnation: TranscriptLogIncarnation }),
+  Schema.TaggedStruct("Disabled", {}),
+]);
 /** Private session RPC contracts retain the deployed structured-clone shapes, including snapshot Maps. */
 export const edaSessionRpc = {
   submit: { input: SessionCommandInput, output: CommittedDurableEvent },
@@ -81,5 +127,10 @@ export const edaSessionRpc = {
   readTranscriptWindow: {
     input: SessionTranscriptWindowInput,
     output: SessionTranscriptWindowResult,
+  },
+  readTranscriptBody: { input: SessionTranscriptBodyInput, output: SessionTranscriptBodyResult },
+  readTranscriptSummary: {
+    input: SessionTranscriptSummaryInput,
+    output: SessionTranscriptSummaryResult,
   },
 };

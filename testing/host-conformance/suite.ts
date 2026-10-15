@@ -56,11 +56,32 @@ interface TranscriptStatus {
   readonly versions: ReadonlyArray<{ readonly cursor: number }>;
 }
 
+interface BodySource {
+  readonly seq: number;
+  readonly path: ReadonlyArray<string | number>;
+}
+
+type WireBody =
+  | { readonly _tag: "Inline"; readonly value: unknown; readonly source: BodySource }
+  | { readonly _tag: "Ref"; readonly source: BodySource };
+
+/** A record as windows encode it: its stored envelope, with kind-specific fields in `body`. */
+interface WireRecord {
+  readonly kind: string;
+  readonly updatedSeq: number;
+  readonly body?: {
+    readonly summaryId?: string;
+    readonly lifecycle?: { readonly _tag: string; readonly result?: WireBody };
+  };
+}
+
 interface TranscriptRead {
   readonly _tag: string;
   readonly window: {
+    readonly incarnation: string;
     readonly readiness: { readonly _tag: string };
-    readonly records: ReadonlyArray<{ readonly kind: string }>;
+    readonly records: ReadonlyArray<WireRecord>;
+    readonly dependencies: ReadonlyArray<WireRecord>;
   };
 }
 
@@ -650,6 +671,20 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
 
         // A real session: the runtime maintains the transcript in its appends.
         await submitMessage(host, sessionId, { idempotencyKey: "transcript:first", text: "ping" });
+        // Sessions whose transcripts hold a tool body and a compaction summary (see the fixture's
+        // model and compaction policy), read back storage-only after the restart below.
+        const toolSessionId = `${sessionId.slice(0, -4)}5c01`;
+        const compactSessionId = `${sessionId.slice(0, -4)}5c02`;
+        await submitMessage(host, toolSessionId, {
+          idempotencyKey: "transcript:tool",
+          text: "please echo hello",
+        });
+        await submitMessage(host, compactSessionId, {
+          idempotencyKey: "transcript:compact",
+          text: "please compact",
+        });
+        const toolLive = await get<TranscriptRead>(`/sessions/${toolSessionId}/transcript`);
+        const compactLive = await get<TranscriptRead>(`/sessions/${compactSessionId}/transcript`);
         const status = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
         expect(status.converged).toBe(true);
         expect(status.versions).toHaveLength(1);
@@ -677,6 +712,63 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         const cold = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
         expect(cold).toEqual(status);
         expect(await get<TranscriptRead>(`/sessions/${sessionId}/transcript`)).toEqual(live);
+        // Body references and summaries resolve storage-only too, to exactly what the window
+        // inlined, only within the log the reference names, and only at transcript body sites.
+        const bodyAt = (id: string, source: BodySource, incarnation: string) =>
+          get(
+            `/sessions/${id}/transcript-body?seq=${source.seq}&path=${encodeURIComponent(
+              JSON.stringify(source.path),
+            )}&incarnation=${encodeURIComponent(incarnation)}`,
+          );
+        const toolBody = toolLive.window.dependencies.flatMap((record) =>
+          record.kind === "tool" &&
+          record.body?.lifecycle?._tag === "Completed" &&
+          record.body.lifecycle.result !== undefined
+            ? [record.body.lifecycle.result]
+            : [],
+        )[0];
+        if (toolBody?._tag !== "Inline") throw new Error("the echo tool's result is inline");
+        expect(await bodyAt(toolSessionId, toolBody.source, toolLive.window.incarnation)).toEqual({
+          _tag: "Body",
+          value: toolBody.value,
+        });
+        expect(
+          await bodyAt(toolSessionId, toolBody.source, status.incarnation /* another log */),
+        ).toEqual({ _tag: "IncarnationMismatch", incarnation: toolLive.window.incarnation });
+        const firstUser = live.window.records[0];
+        expect(
+          await bodyAt(
+            sessionId,
+            { seq: firstUser?.updatedSeq ?? 0, path: [] },
+            status.incarnation,
+          ),
+        ).toMatchObject({ _tag: "NotFound" });
+        expect(
+          await bodyAt(
+            sessionId,
+            { seq: 999_999, path: ["promptPart", "result"] },
+            status.incarnation,
+          ),
+        ).toMatchObject({ _tag: "NotFound" });
+        const compaction = compactLive.window.records.find(
+          (record) => record.kind === "compaction",
+        );
+        const summaryId = compaction?.body?.summaryId;
+        if (summaryId === undefined) throw new Error("the session compacted");
+        const summaryAt = (id: string, summaryId: string, incarnation: string) =>
+          get(
+            `/sessions/${id}/transcript-summary?summaryId=${summaryId}&incarnation=${encodeURIComponent(incarnation)}`,
+          );
+        expect(
+          await summaryAt(compactSessionId, summaryId, compactLive.window.incarnation),
+        ).toMatchObject({ _tag: "Summary", summary: { summaryId, text: "Conformance summary" } });
+        expect(
+          await summaryAt(
+            compactSessionId,
+            "018f6bd5-2f2a-7b1e-8f1a-000000000000",
+            compactLive.window.incarnation,
+          ),
+        ).toMatchObject({ _tag: "NotFound" });
         expect(await get(`/sessions/${sessionId}/runtime-builds`)).toEqual({ count: 0 });
 
         // An alarm armed by an earlier release stays the runtime's even when the builder also
@@ -709,6 +801,14 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         });
         expect(wiped.headSeq).toBe(0);
         expect(wiped.converged).toBe(true);
+        // A reference minted before the wipe never resolves against the new log.
+        expect(
+          await get(
+            `/sessions/${sessionId}/transcript-body?seq=1&path=${encodeURIComponent(
+              JSON.stringify(["promptPart", "result"]),
+            )}&incarnation=${status.incarnation}`,
+          ),
+        ).toEqual({ _tag: "IncarnationMismatch", incarnation: wiped.incarnation });
       } finally {
         await host.stop();
       }
@@ -731,6 +831,20 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         const disabled = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
         expect(disabled).toMatchObject({ _tag: "Disabled", versions: [] });
         expect(await get(`/sessions/${sessionId}/transcript`)).toEqual({ _tag: "Disabled" });
+        // Body and summary reads answer Disabled too, and mint nothing (status is unchanged).
+        expect(
+          await get(
+            `/sessions/${sessionId}/transcript-body?seq=1&path=${encodeURIComponent(
+              JSON.stringify(["promptPart", "result"]),
+            )}&incarnation=any`,
+          ),
+        ).toEqual({ _tag: "Disabled" });
+        expect(
+          await get(
+            `/sessions/${sessionId}/transcript-summary?summaryId=018f6bd5-2f2a-7b1e-8f1a-000000000000&incarnation=any`,
+          ),
+        ).toEqual({ _tag: "Disabled" });
+        expect(await get(`/sessions/${sessionId}/transcript-status`)).toEqual(disabled);
         expect(await get(`/sessions/${sessionId}/transcript-upgrade`)).toEqual({ status: 409 });
         expect(
           await get(

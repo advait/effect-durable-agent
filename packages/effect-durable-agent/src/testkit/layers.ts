@@ -52,10 +52,17 @@ export const makeFixedClock = (nowMs: number): Clock.Clock => ({
 /** Layer pinning the ambient Clock reference to a fixed instant. */
 export const FixedClock = (nowMs: number) => Layer.succeed(Clock.Clock, makeFixedClock(nowMs));
 
-/** Fake provider stream input; arrays are consumed one streamText call at a time. */
+/**
+ * Fake provider stream input; arrays are consumed one streamText call at a time, and a function
+ * chooses each call's stream from its prompt (for hosts serving many sessions at once).
+ */
 export type TestModelParts =
   | Stream.Stream<InferenceRunnerStreamPart, unknown>
-  | ReadonlyArray<Stream.Stream<InferenceRunnerStreamPart, unknown>>;
+  | ReadonlyArray<Stream.Stream<InferenceRunnerStreamPart, unknown>>
+  | ((input: {
+      readonly index: number;
+      readonly prompt: Prompt.RawInput;
+    }) => Stream.Stream<InferenceRunnerStreamPart, unknown>);
 
 /** Options for the fake Effect AI LanguageModel used by EDA runtime tests. */
 export interface TestLanguageModelOptions {
@@ -87,6 +94,9 @@ export const makeLanguageModelLayer = (options: TestModelParts | TestLanguageMod
               prompt: input.prompt,
               toolNames: Object.keys(inputToolkit(input)?.tools ?? {}),
             });
+            if (typeof config.parts === "function") {
+              return config.parts({ index, prompt: input.prompt });
+            }
             if (!Array.isArray(config.parts)) {
               return config.parts;
             }
