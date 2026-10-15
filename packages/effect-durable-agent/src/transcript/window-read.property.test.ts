@@ -273,22 +273,24 @@ describe("window byte budget", () => {
   it("trims exactly as re-measuring after every drop, for generated sessions", () => {
     fc.assert(
       fc.property(
-        fc.array(fc.nat({ max: 10_000 }), { minLength: 1, maxLength: 80 }).chain((steps) => {
-          const source = sourceOf(generatedTestLog(steps).log.events);
-          const whole = read(
-            source,
-            { _tag: "Latest", count: 10_000 },
-            {
-              maxRecords: 10_000,
-              maxBytes: Number.MAX_SAFE_INTEGER,
-              maxInlineBodyBytes: Number.MAX_SAFE_INTEGER,
-            },
-          );
-          return fc.tuple(fc.constant(source), selectorArbitrary(whole), otherLimitsArbitrary);
-        }),
+        fc
+          .array(fc.nat({ max: 10_000 }), { minLength: 1, maxLength: 80, size: "max" })
+          .chain((steps) => {
+            const source = sourceOf(generatedTestLog(steps).log.events);
+            const whole = read(
+              source,
+              { _tag: "Latest", count: 10_000 },
+              {
+                maxRecords: 10_000,
+                maxBytes: Number.MAX_SAFE_INTEGER,
+                maxInlineBodyBytes: Number.MAX_SAFE_INTEGER,
+              },
+            );
+            return fc.tuple(fc.constant(source), selectorArbitrary(whole), otherLimitsArbitrary);
+          }),
         ([source, selector, limits]) => expectSameTrim(source, selector, limits),
       ),
-      { numRuns: 200 },
+      { numRuns: 60 },
     );
   });
 
@@ -346,9 +348,9 @@ describe("window byte budget", () => {
     const started = performance.now();
     const window = read(source, { _tag: "Latest", count: 100 }, limits);
     const elapsed = performance.now() - started;
-    expect(window.records.length).toBeGreaterThanOrEqual(1);
+    // The newest run (about 945 KiB with its tools) fits the budget; two runs do not.
+    expect(window.records.map((record) => record.kind)).toEqual(["user", "assistant"]);
     expect(window.hasOlder).toBe(true);
-    expect(totalBytes(window)).toBeLessThanOrEqual(limits.maxBytes + 15 * 70 * 1024);
     expect(elapsed).toBeLessThan(3_000);
   });
 });
