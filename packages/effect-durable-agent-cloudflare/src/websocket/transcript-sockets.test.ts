@@ -16,7 +16,34 @@ import {
   type EDATranscriptStoreShape,
 } from "effect-durable-agent/transcript";
 import { SubmitMessageCommand } from "effect-durable-agent/types/commands";
-import { CommandId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
+import {
+  CommandId,
+  EventId,
+  InferenceId,
+  Position,
+  RunId,
+  SequenceNumber,
+  SessionId,
+  SubSequenceNumber,
+  TurnId,
+  durablePosition,
+} from "effect-durable-agent/types/core";
+import {
+  InferenceCompletedEvent,
+  InferenceStartedEvent,
+  PositionedEvent,
+  ProviderPartId,
+  TextDeltaEvent,
+  UnixEpochMillis,
+  effectDurableAgentNamespace,
+  schemaV1,
+} from "effect-durable-agent/types/events";
+import { SessionEventObserver } from "effect-durable-agent/services/session-event-observer";
+import {
+  TranscriptLogIncarnation,
+  TranscriptVersion,
+  type TranscriptWindow,
+} from "effect-durable-agent/transcript";
 import { makeRootEDATraceMetadata } from "effect-durable-agent/types/tracing";
 import {
   EDA_WS_CLOSE_TRANSCRIPT_RESUBSCRIBE,
@@ -55,6 +82,7 @@ const decodeUpdate = Schema.decodeUnknownSync(TranscriptUpdate);
 /** One isolate: a connection manager, and optionally a live runtime publishing into it. */
 class Isolate {
   readonly timers: Array<() => void> = [];
+  nowMs = 1_000;
   readonly manager: EDAWebSocketConnectionManager;
   private store: EDATranscriptStoreShape | undefined;
   runtime: ManagedRuntime.ManagedRuntime<EDARuntime | EDATranscriptStore, never> | undefined;
@@ -87,6 +115,7 @@ class Isolate {
         transcriptStore,
         flowControl,
         schedule: (_delayMs, run) => void this.timers.push(run),
+        now: () => this.nowMs,
       },
     });
   }
@@ -407,5 +436,124 @@ describe("transcript-window sockets", () => {
     await socket.pump(second.manager);
     expect(socket.closeCode).toBeUndefined();
     expect(socket.client.window?.records).toHaveLength(3);
+  });
+  it("holds a capture taken between commit and publication until publication catches up", async () => {
+    const ids = {
+      run: RunId.make("018f6bd5-2f2a-7b1e-9f1a-1f2e3d4c5b6a"),
+      turn: TurnId.make("018f6bd5-2f2a-7b1e-af1a-1f2e3d4c5b6a"),
+      inference: InferenceId.make("018f6bd5-2f2a-7b1e-bf1a-1f2e3d4c5b6a"),
+    };
+    const envelope = (slot: number) => ({
+      namespace: effectDurableAgentNamespace,
+      schemaVersion: schemaV1,
+      eventId: EventId.make(`018f6bd5-2f2a-7b1e-${(0x9000 + slot).toString(16)}-1f2e3d4c5b6a`),
+      sessionId: SESSION_ID,
+      createdAtMs: UnixEpochMillis.make(1_715_000_000_000 + slot),
+    });
+    const started = (seq: number) =>
+      PositionedEvent.make({
+        position: durablePosition(SequenceNumber.make(seq)),
+        event: InferenceStartedEvent.make({
+          ...envelope(seq),
+          type: "InferenceStarted",
+          durability: "durable",
+          payload: { runId: ids.run, turnId: ids.turn, inferenceId: ids.inference },
+        }),
+      });
+    const completed = (seq: number) =>
+      PositionedEvent.make({
+        position: durablePosition(SequenceNumber.make(seq)),
+        event: InferenceCompletedEvent.make({
+          ...envelope(seq),
+          type: "InferenceCompleted",
+          durability: "durable",
+          payload: { runId: ids.run, turnId: ids.turn, inferenceId: ids.inference },
+        }),
+      });
+    const delta = (seq: number, text: string) =>
+      PositionedEvent.make({
+        position: Position.make({
+          seq: SequenceNumber.make(seq),
+          subSeq: SubSequenceNumber.make(1),
+        }),
+        event: TextDeltaEvent.make({
+          ...envelope(100 + seq),
+          type: "TextDelta",
+          durability: "ephemeral",
+          payload: { providerPartId: ProviderPartId.make("t"), delta: text },
+        }),
+      });
+
+    // The store's committed head runs ahead of what has been published, as between an append and
+    // its publication.
+    let head = 0;
+    const window = (): TranscriptWindow => ({
+      incarnation: TranscriptLogIncarnation.make("memory:fence"),
+      version: TranscriptVersion.make("a".repeat(64)),
+      throughSeq: SequenceNumber.make(head),
+      records: [],
+      dependencies: [],
+      hasOlder: false,
+      hasNewer: false,
+      readiness: { _tag: "Ready" },
+    });
+    const socket = new TestSocket();
+    const isolate = new Isolate(() => [socket], defaultEDAWebSocketFlowControl, {
+      readTranscriptWindow: () => Effect.sync(window),
+      readTranscriptMeta: Effect.succeed([]),
+    });
+    const publish = async (event: PositionedEvent) => {
+      await Effect.runPromise(
+        Effect.flatMap(Effect.service(SessionEventObserver), (observer) =>
+          observer.onEvent(event),
+        ).pipe(Effect.provide(isolate.manager.observerLayer)),
+      );
+      await isolate.manager.settled();
+    };
+
+    isolate.manager.acceptTranscript({
+      sessionId: SESSION_ID,
+      trace: TRACE,
+      webSocket: socket.asWebSocket(),
+    });
+    await socket.request(isolate.manager, edaTranscriptSubscribeRequest(socket.client));
+    await socket.pump(isolate.manager);
+    head = 1;
+    await publish(started(1));
+    await publish(delta(1, "live"));
+    await isolate.tick();
+    await socket.pump(isolate.manager);
+    expect(socket.client.window?.activeContent[0]?.parts[0]?.part).toEqual({
+      _tag: "Text",
+      text: "live",
+    });
+
+    // Committed but not yet published: a capture now would pair the commit with stale live parts.
+    head = 2;
+    const applied = socket.applied.length;
+    await socket.request(isolate.manager, { _tag: "subscribe", tail: true });
+    await isolate.tick();
+    await socket.pump(isolate.manager);
+    expect(socket.applied.length).toBe(applied);
+
+    // Publication catches up: the held capture is served at the new head with live content retired.
+    await publish(completed(2));
+    await isolate.tick();
+    await socket.pump(isolate.manager);
+    expect(socket.client.window?.throughSeq).toBe(2);
+    expect(socket.client.window?.activeContent).toEqual([]);
+
+    // A capture that waits past the fence bound is served without live content.
+    head = 3;
+    await publish(started(3));
+    await publish(delta(3, "again"));
+    head = 4;
+    await socket.request(isolate.manager, { _tag: "subscribe", tail: true });
+    expect(socket.client.window?.throughSeq).toBe(2);
+    isolate.nowMs += 5_000;
+    await isolate.tick();
+    await socket.pump(isolate.manager);
+    expect(socket.client.window?.throughSeq).toBe(4);
+    expect(socket.client.window?.activeContent).toEqual([]);
   });
 });

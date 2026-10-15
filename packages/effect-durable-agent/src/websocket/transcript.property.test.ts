@@ -60,13 +60,14 @@ const encoded = (records: ReadonlyArray<TranscriptRecordView>) =>
   records.map((record) => JSON.stringify(encodeRecord(record)));
 
 /**
- * A store over one projected version that commits a batch at a time. `beforeRead` lets a test
- * commit between the helper reads and the final read of one request.
+ * A store over one projected version that commits a batch at a time. `commitBeforeRead` commits
+ * one batch just before the given read (1-based) of the next request, so a test can commit
+ * between a page's helper read and the reads after it.
  */
 class SteppedStore {
   version: InMemoryTranscriptVersion = emptyTranscriptVersion(definition.version, "active");
   lastRead: InMemoryTranscriptVersion = this.version;
-  beforeRead: (() => void) | undefined;
+  commitBeforeRead: number | undefined;
   private next = 0;
 
   constructor(private readonly batches: ReadonlyArray<ReadonlyArray<CommittedDurableEvent>>) {}
@@ -96,9 +97,13 @@ class SteppedStore {
   readonly store: EDATranscriptStoreShape = {
     readTranscriptWindow: (selector, limits) =>
       Effect.suspend(() => {
-        const hook = this.beforeRead;
-        this.beforeRead = undefined;
-        hook?.();
+        if (this.commitBeforeRead !== undefined) {
+          this.commitBeforeRead -= 1;
+          if (this.commitBeforeRead === 0) {
+            this.commitBeforeRead = undefined;
+            this.commit();
+          }
+        }
         this.lastRead = this.version;
         const window = this.readAt(this.version, selector, limits);
         return Result.isSuccess(window)
@@ -274,10 +279,10 @@ describe("transcript window delivery", () => {
                   1 + (operation % 2),
                 );
                 if (page === undefined) break;
-                // Commit between the page's helper reads and its final read.
-                if (operation % 4 === 0) stepped.beforeRead = () => void stepped.commit();
+                // Commit after the page's first (helper) read, before the reads that follow it.
+                if (operation % 4 === 0) stepped.commitBeforeRead = 2;
                 serve(stepped, simulation, toRequest(page));
-                stepped.beforeRead = undefined;
+                stepped.commitBeforeRead = undefined;
                 break;
               }
               case 3: {

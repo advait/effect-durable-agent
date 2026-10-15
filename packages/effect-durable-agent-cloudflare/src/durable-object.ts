@@ -42,8 +42,8 @@ export type { EDAWebSocketProjection } from "./websocket/projection";
 export const EDA_WEB_SOCKET_PROJECTION_HEADER = "x-eda-websocket-projection";
 
 /**
- * Upgrade query parameter selecting the socket's stream: `events` (the default raw event
- * stream) or `transcript` (the ordered transcript-window stream).
+ * Upgrade query parameter selecting the socket's stream: `transcript` selects the ordered
+ * transcript-window stream; anything else keeps the raw event stream.
  */
 export const EDA_WEB_SOCKET_STREAM_PARAM = "stream";
 
@@ -166,8 +166,7 @@ export abstract class EDASessionDurableObject<
     const sessionId = this.parseSessionId(sessionIdRaw);
     const trace = traceMetadataFromRequest(request);
 
-    const stream = url.searchParams.get(EDA_WEB_SOCKET_STREAM_PARAM) ?? "events";
-    if (stream === "transcript") {
+    if (url.searchParams.get(EDA_WEB_SOCKET_STREAM_PARAM) === "transcript") {
       if (projectionId !== undefined || !this.#controller.supportsTranscriptWebSocket) {
         return new Response("Unsupported transcript stream.", { status: 400 });
       }
@@ -176,9 +175,7 @@ export abstract class EDASessionDurableObject<
       this.#controller.acceptTranscriptWebSocket({ sessionId, trace, webSocket: pair[1] });
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
-    if (stream !== "events") {
-      return new Response("Unsupported stream.", { status: 400 });
-    }
+
     const prepared = await this.#controller.prepareEventWebSocket({
       ...(afterSeq === undefined ? {} : { afterSeq: SequenceNumber.make(afterSeq) }),
       sessionId,

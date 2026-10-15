@@ -216,24 +216,38 @@ export class EDATranscriptSockets {
 
   /**
    * Observe one published event, in publication order. Folds it into the active-content
-   * accumulator, then lets each listed subscriber act on it: a durable event triggers a read at
-   * the new boundary; changed live content is coalesced to the display cadence.
+   * accumulator synchronously, then lets each listed subscriber act on it: a durable event
+   * schedules a read at the new boundary; changed live content is coalesced to the display
+   * cadence.
+   *
+   * Reads are scheduled, not awaited, so subscribers never hold the session's append gate. The
+   * fence does not need the gate: every capture is checked against the accumulator's folded head
+   * when its read resolves.
    */
-  async onPublished(event: PositionedEvent, webSockets: ReadonlyArray<WebSocket>): Promise<void> {
+  onPublished(event: PositionedEvent, webSockets: ReadonlyArray<WebSocket>): void {
     const revision = this.active.revision;
     this.active = foldTranscriptActiveContent(this.active, event);
     if (event.event.durability !== "durable") {
       if (this.active.revision !== revision) this.armCadence();
       return;
     }
-    await Promise.all(
-      webSockets.flatMap((webSocket) => {
-        const socket = this.sockets.get(webSocket);
-        if (socket === undefined) return [];
-        socket.dirty = true;
-        return [this.drain(webSocket, socket)];
-      }),
-    );
+    for (const webSocket of webSockets) {
+      const socket = this.sockets.get(webSocket);
+      if (socket === undefined) continue;
+      socket.dirty = true;
+      this.track(this.drain(webSocket, socket));
+    }
+  }
+
+  /**
+   * The session's log was destroyed: live content belongs to a log that no longer exists and
+   * every subscription names its incarnation. Close transcript sockets so clients resubscribe.
+   */
+  reset(): void {
+    this.active = emptyTranscriptActiveContentState;
+    for (const webSocket of [...this.sockets.keys()]) {
+      this.close(webSocket, EDA_WS_CLOSE_TRANSCRIPT_RESUBSCRIBE, "session-reset");
+    }
   }
 
   async message(webSocket: WebSocket, message: string): Promise<void> {
@@ -283,9 +297,20 @@ export class EDATranscriptSockets {
     });
   }
 
-  /** Wait for scheduled cadence flushes; for orderly shutdown and tests. */
+  /** Wait for scheduled reads and cadence flushes; for orderly shutdown and tests. */
   async settled(): Promise<void> {
     while (this.background.size > 0) await Promise.all([...this.background]);
+  }
+
+  /**
+   * Own scheduled subscriber work until it settles. Drains never reject: `enqueue` contains every
+   * failure and closes the socket.
+   */
+  private track(work: Promise<void>): void {
+    const tracked: Promise<void> = work.finally(() => {
+      this.background.delete(tracked);
+    });
+    this.background.add(tracked);
   }
 
   private armCadence(): void {
@@ -293,11 +318,7 @@ export class EDATranscriptSockets {
     this.timerArmed = true;
     this.schedule(this.cadenceMs, () => {
       this.timerArmed = false;
-      const flush = Promise.all(
-        [...this.sockets].map(([webSocket, socket]) => this.drain(webSocket, socket)),
-      ).then(() => undefined);
-      this.background.add(flush);
-      void flush.finally(() => this.background.delete(flush));
+      for (const [webSocket, socket] of this.sockets) this.track(this.drain(webSocket, socket));
     });
   }
 
@@ -341,7 +362,7 @@ export class EDATranscriptSockets {
         if (base === undefined) return;
         if (!socket.dirty) {
           if (socket.sentActiveRevision === this.active.revision) return;
-          const sent = this.sendActiveOnly(webSocket, socket);
+          const sent = await this.sendActiveOnly(webSocket, socket);
           if (sent === "NeedsRead") {
             socket.dirty = true;
             continue;
@@ -396,7 +417,13 @@ export class EDATranscriptSockets {
         window,
         updateSeq: socket.delivery.nextUpdateSeq,
         activeContent: fenced ? transcriptActiveContentOf(active) : [],
-        includeActiveContent: !fenced || socket.sentActiveRevision !== active.revision,
+        // Also on a return to Ready: live content was withheld while the cut was degraded.
+        includeActiveContent:
+          !fenced ||
+          socket.sentActiveRevision !== active.revision ||
+          (window.readiness._tag === "Ready" &&
+            socket.last !== undefined &&
+            socket.last.readiness._tag !== "Ready"),
         ...(request?.requestId === undefined ? {} : { requestId: request.requestId }),
       });
       const remaining =
@@ -405,7 +432,15 @@ export class EDATranscriptSockets {
         socket.dirty = false;
         continue;
       }
-      if (!this.start(webSocket, socket, update, transcriptSubscriptionBaseOf(window), remaining)) {
+      if (
+        !(await this.start(
+          webSocket,
+          socket,
+          update,
+          transcriptSubscriptionBaseOf(window),
+          remaining,
+        ))
+      ) {
         return;
       }
       socket.dirty = false;
@@ -423,23 +458,24 @@ export class EDATranscriptSockets {
    * Publish changed live content without a store read. Valid only while the accumulator has
    * folded exactly the subscriber's last cut; otherwise a commit is pending and a read is needed.
    */
-  private sendActiveOnly(
+  private async sendActiveOnly(
     webSocket: WebSocket,
     socket: TranscriptSocket,
-  ): "Sent" | "NeedsRead" | "Failed" {
+  ): Promise<"Sent" | "NeedsRead" | "Failed"> {
     const base = socket.delivery.subscription;
     const last = socket.last;
     const active = this.active;
+    // A degraded cut carries no live content; the next Ready read sends it.
+    if (last !== undefined && last.readiness._tag !== "Ready") {
+      socket.sentActiveRevision = active.revision;
+      return "Sent";
+    }
     if (
       base === undefined ||
       last === undefined ||
       active.publishedThroughSeq !== base.throughSeq
     ) {
       return "NeedsRead";
-    }
-    if (last.readiness._tag !== "Ready") {
-      socket.sentActiveRevision = active.revision;
-      return "Sent";
     }
     const update: TranscriptUpdate = {
       updateSeq: socket.delivery.nextUpdateSeq,
@@ -456,7 +492,9 @@ export class EDATranscriptSockets {
       dependencyIds: last.dependencyIds,
       activeContent: transcriptActiveContentOf(active),
     };
-    if (!this.start(webSocket, socket, update, base, socket.delivery.requests)) return "Failed";
+    if (!(await this.start(webSocket, socket, update, base, socket.delivery.requests))) {
+      return "Failed";
+    }
     socket.sentActiveRevision = active.revision;
     return "Sent";
   }
@@ -480,13 +518,13 @@ export class EDATranscriptSockets {
     );
   }
 
-  private start(
+  private async start(
     webSocket: WebSocket,
     socket: TranscriptSocket,
     update: TranscriptUpdate,
     subscription: ReturnType<typeof transcriptSubscriptionBaseOf>,
     requests: ReadonlyArray<EDATranscriptRequestFrame>,
-  ): boolean {
+  ): Promise<boolean> {
     const started = startTranscriptUpdate(
       { ...socket.delivery, requests },
       { update, encodedUpdate: encodeEDATranscriptUpdate(update), subscription },
@@ -494,7 +532,7 @@ export class EDATranscriptSockets {
       this.now(),
     );
     if (started._tag === "TooLarge") {
-      void Effect.runPromise(
+      await Effect.runPromise(
         Effect.logError("EDA transcript update exceeds the staging bound", {
           bytes: started.bytes,
           subscriberId: socket.subscriberId,

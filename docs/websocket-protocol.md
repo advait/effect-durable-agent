@@ -226,7 +226,8 @@ A socket upgraded with `?stream=transcript` carries the ordered transcript strea
 `docs/transcript-history.md` §9 instead of raw events. It shares the transport above: the hello,
 ACK receipts and their 16-frame window, the lazy ACK timeout (`lagged` + `4008`), the application
 ping and auto-response, and per-socket attachments. A host enables it by passing
-`transcriptSockets: { transcriptStore }`; without it the upgrade is rejected with 400. The
+`transcriptSockets: { transcriptStore }`; without it the upgrade is rejected with 400. Any other
+`stream` value keeps the raw event stream. The
 projection header cannot be combined with it. Accepting a transcript socket never prepares the
 model runtime: windows are storage-level reads.
 
@@ -262,8 +263,8 @@ Each request is answered by exactly one update, in arrival order (at most 4 may 
   update is a patch over that range; otherwise it replaces the window with the latest `count`
   records (default 100).
 - `page { requestId?, direction, cursor, count }`: `cursor` is the coverage's `from` (`before`) or
-  `to` (`after`); at most 100 records per page. A cursor that is not the current edge is answered
-  with an unchanged window.
+  `to` (`after`); at most 100 records per page. A cursor that is not the current edge (the coverage
+  moved while the request was in flight) is answered with a re-read of the current coverage.
 - `retain { requestId?, from, to }`: narrows the coverage to a span inside it.
 
 Coverage is contiguous and holds at most 300 top-level records: paging back evicts the newest,
@@ -317,7 +318,12 @@ The attachment kind `eda-transcript-v1` stores the transport receipts, the appli
 subscription base (incarnation, version, `throughSeq`, coverage, tail) and unanswered requests. An
 idle socket that wakes re-reads its coverage at the next opportunity and continues with patches.
 Chunk data is never persisted: a socket that wakes mid-transfer is closed with `4009`, and the client
-discards the partial transfer, reconnects, and resubscribes from what it last applied.
+discards the partial transfer, reconnects, and resubscribes from what it last applied. Destroying
+the session also closes its transcript sockets with `4009` and drops live content.
+
+The applied cut's `throughSeq` is not monotonic (a new incarnation or a building window may lower
+it); the server validates that `appliedUpdateSeq` never moves backwards, names only a fully sent
+update, and that `durableThroughSeq` matches the last completed update when it names it.
 
 ### Client reference store
 

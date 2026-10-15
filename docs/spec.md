@@ -442,8 +442,10 @@ serve the ordered transcript stream of `docs/transcript-history.md` §9 on the e
   every publication into the active-content accumulator (the publication fence) and serves live
   content only with a window read at exactly the accumulator's published head; coalesces changed
   live content to a display cadence (50 ms) without a store read; persists its checkpoint before
-  every send. A socket that wakes from hibernation mid-transfer is closed with `4009`; an idle one
-  resumes from its persisted subscription. Transcript sockets never prepare the model runtime.
+  every send. Window reads are scheduled off the append gate, so subscribers never backpressure
+  appends. A socket that wakes from hibernation mid-transfer is closed with `4009`; an idle one
+  resumes from its persisted subscription; destroying the session closes transcript sockets with
+  `4009`. Transcript sockets never prepare the model runtime.
 - **Client reference store** (`src/websocket/transcript-client.ts`): pure helpers that assemble
   chunks, apply complete updates only, evict by coverage, produce ACKs, and build
   `subscribe`/`page`/`retain` requests (including the SSR handoff from a window).

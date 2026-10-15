@@ -274,8 +274,7 @@ export const onTranscriptAck = (
   ack: EDAWebSocketWireAckFrame,
 ): EDATranscriptAckResult => {
   const appliedUpdateSeq = ack.appliedUpdateSeq ?? state.appliedUpdateSeq;
-  const advancesApplied =
-    appliedUpdateSeq > state.appliedUpdateSeq || ack.durableThroughSeq > state.appliedThroughSeq;
+  const advancesApplied = appliedUpdateSeq > state.appliedUpdateSeq;
   if (ack.frameId <= state.lastAckedFrameId) {
     return advancesApplied
       ? { _tag: "ProtocolError", message: "Duplicate ACK attempted to advance the applied cut" }
@@ -284,17 +283,20 @@ export const onTranscriptAck = (
   if (ack.frameId >= state.nextFrameId) {
     return { _tag: "ProtocolError", message: "ACK referenced an unsent frame" };
   }
-  if (
-    appliedUpdateSeq < state.appliedUpdateSeq ||
-    ack.durableThroughSeq < state.appliedThroughSeq
-  ) {
+  if (appliedUpdateSeq < state.appliedUpdateSeq) {
     return { _tag: "ProtocolError", message: "ACK applied cut moved backwards" };
   }
-  if (
-    appliedUpdateSeq > state.completedUpdateSeq ||
-    ack.durableThroughSeq > state.completedThroughSeq
-  ) {
+  if (appliedUpdateSeq > state.completedUpdateSeq) {
     return { _tag: "ProtocolError", message: "ACK applied an incomplete update" };
+  }
+  // `throughSeq` may fall between updates (a new incarnation, a building window), so it is not
+  // monotonic; it must match the update it names when that update is the last one completed.
+  if (
+    advancesApplied &&
+    appliedUpdateSeq === state.completedUpdateSeq &&
+    ack.durableThroughSeq !== state.completedThroughSeq
+  ) {
+    return { _tag: "ProtocolError", message: "ACK applied cut names another update's seq" };
   }
   return {
     _tag: "Applied",
@@ -303,7 +305,9 @@ export const onTranscriptAck = (
       lastAckedFrameId: ack.frameId,
       inFlight: state.inFlight.filter((frame) => frame.frameId > ack.frameId),
       appliedUpdateSeq,
-      appliedThroughSeq: SequenceNumber.make(ack.durableThroughSeq),
+      appliedThroughSeq: advancesApplied
+        ? SequenceNumber.make(ack.durableThroughSeq)
+        : state.appliedThroughSeq,
     },
   };
 };

@@ -107,6 +107,11 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
     this.transcript.accept(input);
   }
 
+  /** The session's log was destroyed: close transcript sockets and drop live content. */
+  resetTranscript(): void {
+    this.transcript?.reset();
+  }
+
   /** Wait for scheduled transcript flushes; for orderly shutdown and tests. */
   async settled(): Promise<void> {
     await this.transcript?.settled();
@@ -258,9 +263,7 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
     }
     // The transcript fence folds every publication, even with no transcript socket open, so a
     // later subscriber captures live content consistent with what has been published.
-    if (this.transcript !== undefined) {
-      deliveries.push(this.transcript.onPublished(event, transcriptSockets));
-    }
+    this.transcript?.onPublished(event, transcriptSockets);
     await Promise.all(deliveries);
   }
 

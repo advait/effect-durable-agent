@@ -340,8 +340,9 @@ export const readTranscriptSubscription = (
       from: coverage.from,
       to: tailCursor(coverage.from),
     });
+    // The span outgrew the bound: keep as many of its newest records as the Range read held.
     return window.hasNewer && overflowToNewest
-      ? yield* read({ _tag: "Latest", count: policy.limits.maxRecords })
+      ? yield* read({ _tag: "Latest", count: Math.max(1, window.records.length) })
       : window;
   });
 
