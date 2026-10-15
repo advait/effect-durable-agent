@@ -3,6 +3,7 @@ import { durableEventEnvelope } from "effect-durable-agent/types/events/durable"
 import { encodeEdaRpcDurableEvent } from "./rpc-codec";
 import {
   SessionScopedInput,
+  SessionTranscriptWindowInput,
   SessionCommandInput,
   SessionGrantRunInput,
   SessionBatchInput,
@@ -36,6 +37,26 @@ import {
   EDA_WEB_SOCKET_PING_MESSAGE,
   EDA_WEB_SOCKET_PONG_MESSAGE,
 } from "effect-durable-agent/websocket";
+import * as Result from "effect/Result";
+import {
+  defaultTranscriptWindowLimits,
+  emptyTranscriptMappings,
+  makeTranscriptDefinition,
+  type EDATranscriptStoreShape,
+  type TranscriptMaintenanceConfig,
+} from "effect-durable-agent/transcript";
+import { DurableObjectAlarmScheduler } from "./durable-object-alarms";
+import type { EDATranscriptSocketOptions } from "./websocket/transcript-sockets";
+import { EDASessionStoreError } from "effect-durable-agent/services/session-store";
+import {
+  DurableObjectTranscriptBuilder,
+  DurableObjectTranscriptStore,
+} from "./durable-object-transcript";
+import type {
+  DurableObjectTranscriptObserver,
+  DurableObjectTranscriptOptions,
+  TranscriptAlert,
+} from "./durable-object-transcript-maintenance";
 
 export type { EDAWebSocketProjection } from "./websocket/projection";
 /** Internal Worker-to-object header selecting an app-owned WebSocket projection. */
@@ -85,13 +106,55 @@ export interface EDASessionRpcSurface {
   readonly destroySession: (
     input: EDASessionScopedRpcInput,
   ) => Promise<typeof edaSessionRpc.destroySession.output.Encoded>;
+  readonly transcriptStatus: (
+    input: EDASessionScopedRpcInput,
+  ) => Promise<typeof edaSessionRpc.transcriptStatus.output.Encoded>;
+  readonly readTranscriptWindow: (
+    input: typeof SessionTranscriptWindowInput.Encoded,
+  ) => Promise<typeof edaSessionRpc.readTranscriptWindow.output.Encoded>;
+}
+
+/** Host transcript configuration of a session Durable Object. */
+export interface EDASessionTranscriptOptions {
+  /**
+   * The transcript definitions this release carries. Defaults to the definition with no host
+   * mappings. A host changing its mappings ships `current` = new, `previous` = old, then runs
+   * its backfill through `transcriptStatus` (see `docs/transcript-history.md` §7).
+   */
+  readonly definitions?: TranscriptMaintenanceConfig;
+  /**
+   * Adopt the host's existing log incarnation from this `ctx.storage.kv` key (Gia:
+   * `gia.log_incarnation`). Without it the adapter mints its own.
+   */
+  readonly adoptIncarnationKey?: string;
+  /** Alerts (frozen versions, missed sessions). Defaults to `console.error`. */
+  readonly onAlert?: (alert: TranscriptAlert) => void;
+  /** A rebuilt version became active. */
+  readonly onActivated?: DurableObjectTranscriptObserver["onActivated"];
 }
 
 /** Constructor options for concrete app subclasses of the EDA Durable Object base. */
 export type EDASessionDurableObjectOptions<ProjectionState extends object = never> = Omit<
   EDASessionControllerOptions<ProjectionState>,
-  "background" | "getWebSockets" | "storage"
->;
+  "alarmStorage" | "background" | "getWebSockets" | "storage" | "transcript" | "transcriptSockets"
+> & {
+  readonly transcript?: EDASessionTranscriptOptions;
+  /**
+   * Serve transcript-window sockets (`?stream=transcript`). `transcriptStore` defaults to this
+   * object's own runtime-free Durable Object transcript store.
+   */
+  readonly transcriptSockets?: Omit<EDATranscriptSocketOptions, "transcriptStore"> & {
+    readonly transcriptStore?: EDATranscriptSocketOptions["transcriptStore"];
+  };
+};
+
+/** Slices a backfill `transcriptStatus` call may run before it returns. */
+const transcriptStatusMaxSlices = 16;
+/** Server bounds on one `readTranscriptWindow` RPC, whatever limits the caller asks for. */
+const transcriptWindowMaxRecords = 500;
+const transcriptWindowMaxBytes = 8 * 1_048_576;
+/** Slices one builder alarm runs before rescheduling itself. */
+const transcriptAlarmMaxSlices = 4;
 
 /** Resolve a concrete EDA session Durable Object binding by domain session id. */
 export const getEDASessionDurableObjectByName = <
@@ -115,6 +178,15 @@ export abstract class EDASessionDurableObject<
 > extends DurableObject<EnvType> {
   readonly #controller: EDASessionController<ProjectionState>;
   readonly #webSocketProjectionId: string | undefined;
+  readonly #alarms: DurableObjectAlarmScheduler;
+  readonly #transcriptOptions: DurableObjectTranscriptOptions;
+  #transcript:
+    | {
+        readonly sessionId: SessionId;
+        readonly store: DurableObjectTranscriptStore;
+        readonly builder: DurableObjectTranscriptBuilder;
+      }
+    | undefined;
 
   protected constructor(
     ctx: DurableObjectState,
@@ -124,11 +196,25 @@ export abstract class EDASessionDurableObject<
     super(ctx, env);
     this.#webSocketProjectionId = options.webSocketProjection?.id;
     const storage = toEDASessionStorage(this.ctx.storage);
+    this.#alarms = new DurableObjectAlarmScheduler(storage);
+    const { transcript: transcriptHostOptions, transcriptSockets, ...controllerOptions } = options;
+    const transcript = this.transcriptOptions(transcriptHostOptions);
+    this.#transcriptOptions = transcript;
     this.#controller = new EDASessionController({
-      ...options,
+      ...controllerOptions,
+      alarmStorage: this.#alarms.owner("runtime"),
       background: this.ctx,
       getWebSockets: () => this.ctx.getWebSockets(),
       storage,
+      transcript,
+      ...(transcriptSockets === undefined
+        ? {}
+        : {
+            transcriptSockets: {
+              ...transcriptSockets,
+              transcriptStore: transcriptSockets.transcriptStore ?? this.transcriptPort(),
+            },
+          }),
     });
 
     // Answer client liveness pings at the runtime layer so idle sockets never
@@ -139,6 +225,10 @@ export abstract class EDASessionDurableObject<
 
     this.ctx.blockConcurrencyWhile(async () => {
       await Effect.runPromise(EDASessionController.migrate(storage));
+      // Keep an alarm armed by an earlier release for the runtime, then resume any builder
+      // work an earlier instance left (or a new release created).
+      await this.#alarms.adoptUnrecordedAlarm();
+      await this.objectTranscript()?.builder.start();
     });
   }
 
@@ -170,6 +260,7 @@ export abstract class EDASessionDurableObject<
       if (projectionId !== undefined || !this.#controller.supportsTranscriptWebSocket) {
         return new Response("Unsupported transcript stream.", { status: 400 });
       }
+      this.transcriptFor(sessionId);
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1]);
       this.#controller.acceptTranscriptWebSocket({ sessionId, trace, webSocket: pair[1] });
@@ -319,13 +410,151 @@ export abstract class EDASessionDurableObject<
     });
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
+    // The wiped storage is a brand-new log: recreate the tables storage-only entry points read,
+    // synchronously, so no other work observes the object without them.
+    Effect.runSync(EDASessionController.migrate(toEDASessionStorage(this.ctx.storage)));
   }
 
-  async alarm(): Promise<void> {
-    const sessionId = this.sessionIdFromObjectName();
-    await this.#controller.alarm(
-      sessionId === undefined ? undefined : { sessionId, trace: makeRootEDATraceMetadata() },
+  /**
+   * Storage-only backfill entry point: advance pending transcript build work by bounded slices
+   * and return the transcript status. It never starts the model runtime, reducers or sinks.
+   */
+  async transcriptStatus(
+    raw: typeof SessionScopedInput.Encoded,
+  ): Promise<typeof edaSessionRpc.transcriptStatus.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionScopedInput)(raw);
+    const transcript = this.transcriptFor(this.parseSessionId(input.sessionId));
+    await transcript.builder.run(transcriptStatusMaxSlices);
+    return Schema.encodeSync(edaSessionRpc.transcriptStatus.output)(transcript.store.status());
+  }
+
+  /** Runtime-free transcript window read for SSR and CLIs. Hosts authorize the caller. */
+  async readTranscriptWindow(
+    raw: typeof SessionTranscriptWindowInput.Encoded,
+  ): Promise<typeof edaSessionRpc.readTranscriptWindow.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionTranscriptWindowInput)(raw);
+    const transcript = this.transcriptFor(this.parseSessionId(input.sessionId));
+    const limits = input.limits ?? defaultTranscriptWindowLimits;
+    const window = transcript.store.readWindow(input.selector, {
+      ...limits,
+      maxRecords: Math.min(limits.maxRecords, transcriptWindowMaxRecords),
+      maxBytes: Math.min(limits.maxBytes, transcriptWindowMaxBytes),
+    });
+    return Schema.encodeSync(edaSessionRpc.readTranscriptWindow.output)(
+      Result.isSuccess(window)
+        ? { _tag: "Window", window: window.success }
+        : { _tag: "CursorMismatch", message: window.failure.message },
     );
+  }
+
+  /**
+   * The alarm is shared by the runtime heartbeat and the transcript builder. A builder wakeup
+   * runs storage-only slices; the runtime runs only for its own wakeup, or for an alarm neither
+   * owner recorded (one armed before wakeups were recorded).
+   */
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    const due = this.#alarms.due(now);
+    let runtimeFailure: { readonly error: unknown } | undefined;
+    if (due.has("runtime") || due.size === 0) {
+      const sessionId = this.sessionIdFromObjectName();
+      try {
+        await this.#controller.alarm(
+          sessionId === undefined ? undefined : { sessionId, trace: makeRootEDATraceMetadata() },
+        );
+        this.#alarms.clearThrough("runtime", due.get("runtime") ?? now);
+      } catch (error) {
+        runtimeFailure = { error };
+      }
+    }
+    const builderWakeup = due.get("transcript");
+    if (builderWakeup !== undefined) {
+      try {
+        const builder = this.objectTranscript()?.builder;
+        const more =
+          builder === undefined ? false : await builder.runSlices(transcriptAlarmMaxSlices);
+        if (more) this.#alarms.retain("transcript", Date.now());
+        else this.#alarms.clearThrough("transcript", builderWakeup);
+      } catch (error) {
+        console.error("EDA transcript builder slice failed", error);
+        this.#alarms.retain("transcript", Date.now() + 30_000);
+      }
+    }
+    // A failed runtime alarm leaves the platform alarm alone: the platform's retry (with its
+    // backoff and cap) runs it again, with every wakeup it fired for still recorded.
+    if (runtimeFailure !== undefined) throw runtimeFailure.error;
+    await this.#alarms.sync();
+  }
+
+  private transcriptOptions(
+    options: EDASessionTranscriptOptions | undefined,
+  ): DurableObjectTranscriptOptions {
+    const key = options?.adoptIncarnationKey;
+    return {
+      definitions: options?.definitions ?? {
+        current: Effect.runSync(makeTranscriptDefinition(emptyTranscriptMappings)),
+      },
+      ...(key === undefined ? {} : { adoptIncarnation: { key, kv: this.ctx.storage.kv } }),
+      observer: {
+        onAlert:
+          options?.onAlert ??
+          ((alert) => console.error("EDA transcript alert", JSON.stringify(alert))),
+        onPendingWork: () => {
+          const builder = this.objectTranscript()?.builder;
+          if (builder !== undefined) this.ctx.waitUntil(builder.kick());
+        },
+        onActivated: (activation) => {
+          // Connected transcript sockets get one complete replacement in the new version.
+          this.ctx.waitUntil(this.#controller.refreshTranscriptWebSockets());
+          options?.onActivated?.(activation);
+        },
+      },
+    };
+  }
+
+  /** This object's transcript store as the port transcript sockets read, resolved per call. */
+  private transcriptPort(): EDATranscriptStoreShape {
+    const port = () => this.objectTranscript()?.store.port;
+    const unbound = () =>
+      Effect.fail(
+        new EDASessionStoreError({ message: "EDA transcript read before the session was named" }),
+      );
+    return {
+      readTranscriptWindow: (selector, limits) =>
+        Effect.suspend(() => port()?.readTranscriptWindow(selector, limits) ?? unbound()),
+      readTranscriptMeta: Effect.suspend(() => port()?.readTranscriptMeta ?? unbound()),
+    };
+  }
+
+  /** The transcript service of this object's session, created on first use. */
+  private transcriptFor(sessionId: SessionId) {
+    if (this.#transcript !== undefined) {
+      if (this.#transcript.sessionId !== sessionId) {
+        throw new Error(
+          `EDA transcript is scoped to session ${this.#transcript.sessionId}; received ${sessionId}`,
+        );
+      }
+      return this.#transcript;
+    }
+    const store = new DurableObjectTranscriptStore({
+      sessionId,
+      storage: toEDASessionStorage(this.ctx.storage),
+      transcript: this.#transcriptOptions,
+    });
+    const builder = new DurableObjectTranscriptBuilder(store, () =>
+      this.#alarms.request("transcript", Date.now()),
+    );
+    this.#transcript = { sessionId, store, builder };
+    return this.#transcript;
+  }
+
+  /** The transcript service when the object is named by a valid session id. */
+  private objectTranscript() {
+    if (this.#transcript !== undefined) return this.#transcript;
+    const name = this.ctx.id.name;
+    return name !== undefined && Schema.is(SessionId)(name)
+      ? this.transcriptFor(SessionId.make(name))
+      : undefined;
   }
 
   private parseSessionId(input: string): SessionId {

@@ -226,7 +226,10 @@ A socket upgraded with `?stream=transcript` carries the ordered transcript strea
 `docs/transcript-history.md` §9 instead of raw events. It shares the transport above: the hello,
 ACK receipts and their 16-frame window, the lazy ACK timeout (`lagged` + `4008`), the application
 ping and auto-response, and per-socket attachments. A host enables it by passing
-`transcriptSockets: { transcriptStore }`; without it the upgrade is rejected with 400. Any other
+`transcriptSockets: { transcriptStore }` (on `EDASessionDurableObject`, `transcriptSockets: {}`
+suffices: `transcriptStore` defaults to the object's own Durable Object transcript store); without
+it the upgrade is rejected with 400. When a rebuilt transcript version activates, every transcript
+socket, held or hibernated, is re-read and receives one complete replacement in the new version. Any other
 `stream` value keeps the raw event stream. The
 projection header cannot be combined with it. Accepting a transcript socket never prepares the
 model runtime: windows are storage-level reads.

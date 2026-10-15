@@ -7,6 +7,13 @@ import { join, resolve } from "node:path";
 import { build } from "esbuild";
 import { describe, expect, it } from "vite-plus/test";
 
+import {
+  applyEDATranscriptServerMessage,
+  edaTranscriptSubscribeRequest,
+  emptyEDATranscriptClientState,
+  type EDATranscriptClientState,
+} from "effect-durable-agent/websocket";
+
 import { installCelld } from "../../packages/effect-durable-agent-celld/scripts/install-celld.mjs";
 
 /** Runtime variants required to satisfy the shared EDA host contract. */
@@ -27,6 +34,27 @@ interface MessageResult {
   readonly terminal: {
     readonly event: { readonly type: string };
     readonly position: { readonly seq: number };
+  };
+}
+
+interface TranscriptProbeResult {
+  readonly failures: ReadonlyArray<string>;
+  readonly info: Record<string, number>;
+}
+
+interface TranscriptStatus {
+  readonly incarnation: string;
+  readonly headSeq: number;
+  readonly converged: boolean;
+  readonly pending: boolean;
+  readonly versions: ReadonlyArray<{ readonly cursor: number }>;
+}
+
+interface TranscriptRead {
+  readonly _tag: string;
+  readonly window: {
+    readonly readiness: { readonly _tag: string };
+    readonly records: ReadonlyArray<{ readonly kind: string }>;
   };
 }
 
@@ -204,8 +232,9 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
           CELLD_ADDR: `127.0.0.1:${port}`,
           CELLD_INTERNAL_ADDR: `127.0.0.1:${internalPort}`,
           CELLD_TEST_DATA_DIR: dataDirectory,
-          CELLD_TEST_DO_BINDINGS: "EDA_SESSION=EDAConformanceSession",
-          CELLD_TEST_DO_CLASSES: "EDAConformanceSession",
+          CELLD_TEST_DO_BINDINGS:
+            "EDA_SESSION=EDAConformanceSession,TRANSCRIPT_PROBE=EDATranscriptProbe",
+          CELLD_TEST_DO_CLASSES: "EDAConformanceSession,EDATranscriptProbe",
           CELLD_TEST_SCRIPT_PATH: celldBundle!,
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -395,6 +424,39 @@ class EventSocket {
   }
 }
 
+/** Open a transcript-window socket, subscribe to the latest window and return the client state. */
+const subscribeTranscript = async (
+  host: HostProcess,
+  sessionId: string,
+): Promise<EDATranscriptClientState> => {
+  const url = new URL(`${host.baseUrl}/sessions/${sessionId}/events`);
+  url.protocol = "ws:";
+  url.searchParams.set("stream", "transcript");
+  const socket = new WebSocket(url);
+  let client = emptyEDATranscriptClientState;
+  try {
+    return await new Promise<EDATranscriptClientState>((resolveClient, reject) => {
+      const timeout = setTimeout(() => reject(new Error("no transcript window")), 30_000);
+      socket.addEventListener("error", () => reject(new Error("transcript socket failed")));
+      socket.addEventListener("open", () => {
+        socket.send(JSON.stringify(edaTranscriptSubscribeRequest(client)));
+      });
+      socket.addEventListener("message", (event) => {
+        const step = applyEDATranscriptServerMessage(client, String(event.data));
+        client = step.state;
+        if (step.ack !== undefined) socket.send(JSON.stringify(step.ack));
+        if (step.outcome._tag === "Resubscribe") reject(new Error(step.outcome.reason));
+        if (step.outcome._tag === "Applied" && client.window !== undefined) {
+          clearTimeout(timeout);
+          resolveClient(client);
+        }
+      });
+    });
+  } finally {
+    socket.close(1000, "conformance step complete");
+  }
+};
+
 /** Register the identical durable-session behavior suite for one concrete host package. */
 export const defineHostConformanceSuite = (kind: HostKind): void => {
   describe(`${kind} host conformance`, () => {
@@ -521,5 +583,157 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         await host.stop();
       }
     }, 240_000);
+
+    it("maintains transcripts in the real platform's transactions and serves them storage-only", async () => {
+      const host = await startHost(kind);
+      const get = async <A>(path: string): Promise<A> =>
+        await decodeJson<A>(
+          await fetch(`${host.baseUrl}${path}`, { signal: AbortSignal.timeout(60_000) }),
+        );
+      const probe = (object: string, step: string) =>
+        get<TranscriptProbeResult>(
+          `/transcript-probe/${kind}-${object}/${encodeURIComponent(step)}`,
+        );
+      const sessionId =
+        kind === "cloudflare"
+          ? "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b7a"
+          : "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b7a";
+      try {
+        // The interpretation oracle, through the real nested transactions.
+        const { info: oracle } = await probe("oracle-count", "oracle-count");
+        expect(oracle.scenarios).toBeGreaterThan(10);
+        for (let index = 0; index < (oracle.scenarios ?? 0); index += 1) {
+          expect((await probe(`oracle-${index}`, `oracle:${index}`)).failures).toEqual([]);
+        }
+
+        // A projection failure at every statement of the inner transaction, each in a fresh
+        // object: events commit, the projection rolls back, and the version freezes for good.
+        // Where the platform nests transactions (workerd) even a failing write only freezes the
+        // version; where it does not (celld) a failing write fails the append atomically.
+        const { info: faults } = await probe("fault-count", "fault-count");
+        expect(faults.projectionStatements).toBeGreaterThan(10);
+        if (kind === "cloudflare") expect(faults.innerStatements).toBeGreaterThan(10);
+        else expect(faults.innerStatements).toBe(0);
+        for (let failAt = 1; failAt <= (faults.projectionStatements ?? 0); failAt += 1) {
+          const result = await probe(`fault-${failAt}`, `fault:${failAt}`);
+          expect(result.failures).toEqual([]);
+          expect(result.info.appendFailed ?? 0).toBe(
+            kind === "celld" && result.info.writeFault === 1 ? 1 : 0,
+          );
+        }
+
+        for (const step of ["activate", "discard-and-repair", "missed-session", "init"]) {
+          expect((await probe(step, step)).failures).toEqual([]);
+        }
+
+        // A build resumes from its committed cursor after the process dies.
+        const started = await probe("build", "build-start");
+        expect(started).toEqual({ failures: [], info: { cursor: 5 } });
+        await host.restart({ hard: true });
+        const resumed = await probe("build", "build-resume");
+        expect(resumed.failures).toEqual([]);
+        expect(resumed.info.cursorAtResume).toBe(5);
+
+        // A real session: the runtime maintains the transcript in its appends.
+        await submitMessage(host, sessionId, { idempotencyKey: "transcript:first", text: "ping" });
+        const status = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
+        expect(status.converged).toBe(true);
+        expect(status.versions).toHaveLength(1);
+        expect(status.versions[0]?.cursor).toBe(status.headSeq);
+        // The adapter writes the incarnation it minted to the host's key, so both agree.
+        expect(await get(`/sessions/${sessionId}/kv-incarnation`)).toEqual({
+          incarnation: status.incarnation,
+        });
+        const live = await get<TranscriptRead>(`/sessions/${sessionId}/transcript`);
+        expect(live._tag).toBe("Window");
+        expect(live.window.readiness._tag).toBe("Ready");
+        expect(live.window.records.map((record) => record.kind)).toEqual(["user", "assistant"]);
+
+        // The object serves transcript sockets from its own transcript store, without the runtime.
+        const subscribed = await subscribeTranscript(host, sessionId);
+        expect(subscribed.window?.readiness._tag).toBe("Ready");
+        expect(subscribed.window?.records.map((record) => record.kind)).toEqual([
+          "user",
+          "assistant",
+        ]);
+        expect(subscribed.window?.incarnation).toBe(status.incarnation);
+
+        // Cold reads and backfill status never build the model runtime.
+        await host.restart({ hard: true });
+        const cold = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
+        expect(cold).toEqual(status);
+        expect(await get<TranscriptRead>(`/sessions/${sessionId}/transcript`)).toEqual(live);
+        expect(await get(`/sessions/${sessionId}/runtime-builds`)).toEqual({ count: 0 });
+
+        // An alarm armed by an earlier release stays the runtime's even when the builder also
+        // wants the alarm: after the restart (a deploy), the builder's wakeup runs storage-only
+        // and the earlier alarm still builds the runtime when it fires.
+        await get(`/sessions/${sessionId}/arm-unrecorded-alarm?delayMs=4000`);
+        await host.restart({ hard: true });
+        const afterDeploy = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
+        expect(afterDeploy.pending).toBe(false);
+        expect(await get(`/sessions/${sessionId}/runtime-builds`)).toEqual({ count: 0 });
+        const deadline = Date.now() + 30_000;
+        let runtimeBuilds = 0;
+        while (runtimeBuilds === 0 && Date.now() < deadline) {
+          await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+          ({ count: runtimeBuilds } = await get<{ readonly count: number }>(
+            `/sessions/${sessionId}/runtime-builds`,
+          ));
+        }
+        expect(runtimeBuilds).toBeGreaterThan(0);
+
+        // A wiped log is a new incarnation.
+        const destroyed = await fetch(`${host.baseUrl}/sessions/${sessionId}/destroy`, {
+          method: "DELETE",
+        });
+        expect(destroyed.status).toBe(204);
+        const wiped = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
+        expect(wiped.incarnation).not.toBe(status.incarnation);
+        expect(await get(`/sessions/${sessionId}/kv-incarnation`)).toEqual({
+          incarnation: wiped.incarnation,
+        });
+        expect(wiped.headSeq).toBe(0);
+        expect(wiped.converged).toBe(true);
+      } finally {
+        await host.stop();
+      }
+    }, 600_000);
+
+    // Opt-in measurement (design §13 gate 6): EDA_TRANSCRIPT_PERF=true.
+    it.skipIf(process.env.EDA_TRANSCRIPT_PERF !== "true")(
+      "measures append overhead and build cost at 10k events",
+      async () => {
+        const host = await startHost(kind);
+        const timed = async (object: string, step: string) => {
+          const started = performance.now();
+          const result = await decodeJson<TranscriptProbeResult>(
+            await fetch(
+              `${host.baseUrl}/transcript-probe/${kind}-${object}/${encodeURIComponent(step)}`,
+              {
+                signal: AbortSignal.timeout(600_000),
+              },
+            ),
+          );
+          expect(result.failures).toEqual([]);
+          return { ms: performance.now() - started, info: result.info };
+        };
+        try {
+          await timed("perf-warm", "perf-append:on");
+          const off = await timed("perf-off", "perf-append:off");
+          const on = await timed("perf-on", "perf-append:on");
+          const build = await timed("perf-off", "perf-build");
+          const appends = on.info.appends ?? 1;
+          process.stderr.write(
+            `\n[${kind}] 10k events in ${appends} appends: without transcript ${off.ms.toFixed(0)} ms, ` +
+              `with ${on.ms.toFixed(0)} ms (+${(((on.ms - off.ms) / appends) * 1000).toFixed(0)} us/append); ` +
+              `build ${build.ms.toFixed(0)} ms in ${build.info.slices} slices\n`,
+          );
+        } finally {
+          await host.stop();
+        }
+      },
+      1_200_000,
+    );
   });
 };

@@ -518,8 +518,8 @@ describe("EDASessionController", () => {
     await Effect.runPromise(EDASessionController.migrate(storage));
     await Effect.runPromise(EDASessionController.migrate(storage));
 
-    expect(storage.appliedMigrations).toEqual([1]);
-    expect(storage.migrationInsertCount).toBe(1);
+    expect(storage.appliedMigrations).toEqual([1, 2]);
+    expect(storage.migrationInsertCount).toBe(2);
     expect(storage.createdReducerCheckpointTable).toBe(true);
   });
 

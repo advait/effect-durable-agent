@@ -14,6 +14,12 @@ import {
   DurableTranscriptMessages,
 } from "effect-durable-agent/services/session-query";
 import { RunGrantResult, RunRequestOutcome } from "effect-durable-agent/domain/run-scheduling";
+import {
+  TranscriptWindow,
+  TranscriptWindowLimits,
+  TranscriptWindowSelector,
+} from "effect-durable-agent/transcript";
+import { TranscriptStorageStatus } from "./durable-object-transcript";
 import { EDARpcSubmittable } from "./rpc-codec";
 
 /** Names the session isolation boundary and carries caller trace metadata. */
@@ -44,6 +50,17 @@ export const SessionOutcomeInput = Schema.Struct({
   ...SessionScopedInput.fields,
   requestId: RunRequestId,
 });
+/** A runtime-free transcript window read; `limits` defaults to the transcript window defaults. */
+export const SessionTranscriptWindowInput = Schema.Struct({
+  ...SessionScopedInput.fields,
+  selector: TranscriptWindowSelector,
+  limits: Schema.optionalKey(TranscriptWindowLimits),
+});
+/** A window, or a cursor minted for another incarnation or version (the client takes `Latest`). */
+export const SessionTranscriptWindowResult = Schema.Union([
+  Schema.TaggedStruct("Window", { window: TranscriptWindow }),
+  Schema.TaggedStruct("CursorMismatch", { message: Schema.String }),
+]);
 /** Private session RPC contracts retain the deployed structured-clone shapes, including snapshot Maps. */
 export const edaSessionRpc = {
   submit: { input: SessionCommandInput, output: CommittedDurableEvent },
@@ -55,4 +72,9 @@ export const edaSessionRpc = {
   snapshot: { input: SessionScopedInput, output: EDASessionSnapshot },
   messages: { input: SessionScopedInput, output: DurableTranscriptMessages },
   destroySession: { input: SessionScopedInput, output: Schema.Void },
+  transcriptStatus: { input: SessionScopedInput, output: TranscriptStorageStatus },
+  readTranscriptWindow: {
+    input: SessionTranscriptWindowInput,
+    output: SessionTranscriptWindowResult,
+  },
 };

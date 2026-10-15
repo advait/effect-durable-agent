@@ -260,6 +260,11 @@ export class EDASessionController<ProjectionState extends object = never> {
     return this.webSockets.accept(input);
   }
 
+  /** The served transcript version changed: give every transcript socket a replacement. */
+  refreshTranscriptWebSockets(): Promise<void> {
+    return this.webSockets.refreshTranscript();
+  }
+
   /** Whether transcript-window sockets are served. */
   get supportsTranscriptWebSocket(): boolean {
     return this.webSockets.supportsTranscript;

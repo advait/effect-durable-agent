@@ -1,5 +1,6 @@
 import * as Prompt from "effect/ai/Prompt";
 import * as AIResponse from "effect/ai/Response";
+import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import { ModelResolver } from "effect-durable-agent/services/model-resolver";
@@ -16,9 +17,36 @@ import { encodeEdaRpcCommand } from "../../packages/effect-durable-agent-cloudfl
 
 declare const EDA_CONFORMANCE_BLOCK_MODEL: boolean;
 
-interface ConformanceEnv {
-  readonly EDA_SESSION: DurableObjectNamespace<EDASessionDurableObject>;
+/** A conformance session object that also reports whether its model runtime was built. */
+type ConformanceSession = EDASessionDurableObject & {
+  readonly runtimeBuilds: () => Promise<number>;
+  readonly armUnrecordedAlarm: (delayMs: number) => Promise<void>;
+  readonly kvIncarnation: () => Promise<unknown>;
+};
+
+/** Storage-level transcript probe object; see `transcript-probe.ts`. */
+interface TranscriptProbeObject {
+  readonly probe: (step: string) => Promise<{
+    readonly failures: ReadonlyArray<string>;
+    readonly info: Record<string, number>;
+  }>;
 }
+
+interface ConformanceEnv {
+  readonly EDA_SESSION: DurableObjectNamespace<ConformanceSession>;
+  readonly TRANSCRIPT_PROBE: DurableObjectNamespace<
+    TranscriptProbeObject & Rpc.DurableObjectBranded
+  >;
+}
+
+/**
+ * Model runtimes built in this isolate. The model resolver layer is part of every runtime, so a
+ * storage-only entry point that leaves this unchanged did not start the runtime or its sinks.
+ */
+export const conformanceRuntimeBuilds = { count: 0 };
+
+/** Host key/value the conformance hosts adopt their log incarnation from, as Gia does. */
+export const conformanceIncarnationKey = "conformance.log_incarnation";
 
 const usage = () =>
   new AIResponse.Usage({
@@ -35,9 +63,19 @@ const finishedStream = (text: string) =>
 /** Deterministic model and runtime configuration shared by both real-host fixtures. */
 export const conformanceHostOptions = (): EDASessionDurableObjectOptions => ({
   config: { modelSelection: { provider: "conformance", modelId: "fixed-pong" } },
-  modelResolverLayer: ModelResolver.Fixed.pipe(
-    Layer.provide(
-      makeLanguageModelLayer(EDA_CONFORMANCE_BLOCK_MODEL ? Stream.never : finishedStream("pong")),
+  transcript: { adoptIncarnationKey: conformanceIncarnationKey },
+  // Transcript sockets read the object's own Durable Object transcript store.
+  transcriptSockets: {},
+  modelResolverLayer: Layer.merge(
+    ModelResolver.Fixed.pipe(
+      Layer.provide(
+        makeLanguageModelLayer(EDA_CONFORMANCE_BLOCK_MODEL ? Stream.never : finishedStream("pong")),
+      ),
+    ),
+    Layer.effectDiscard(
+      Effect.sync(() => {
+        conformanceRuntimeBuilds.count += 1;
+      }),
     ),
   ),
 });
@@ -60,7 +98,16 @@ export const conformanceWorker = {
       return json({ ok: true });
     }
 
-    const match = /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy)\/?$/.exec(url.pathname);
+    const probe = /^\/transcript-probe\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+    if (probe !== null) {
+      const [, objectName = "", step = ""] = probe;
+      return json(await env.TRANSCRIPT_PROBE.getByName(objectName).probe(decodeURIComponent(step)));
+    }
+
+    const match =
+      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|runtime-builds|arm-unrecorded-alarm|kv-incarnation)\/?$/.exec(
+        url.pathname,
+      );
     if (match === null) {
       return json({ error: "Not found" }, 404);
     }
@@ -80,6 +127,8 @@ export const conformanceWorker = {
       const eventsUrl = new URL("https://eda.invalid/events");
       eventsUrl.searchParams.set("sessionId", sessionId);
       eventsUrl.searchParams.set("afterSeq", url.searchParams.get("afterSeq") ?? "0");
+      const stream = url.searchParams.get("stream");
+      if (stream !== null) eventsUrl.searchParams.set("stream", stream);
       const eventsRequest = new Request(eventsUrl, request);
       if (url.searchParams.get("projection") === "conformance") {
         eventsRequest.headers.set("x-eda-websocket-projection", "conformance-projection-v1");
@@ -93,6 +142,25 @@ export const conformanceWorker = {
       }
       await session.destroySession(scoped);
       return new Response(null, { status: 204 });
+    }
+
+    if (operation === "transcript-status") {
+      return json(await session.transcriptStatus(scoped));
+    }
+    if (operation === "transcript") {
+      return json(
+        await session.readTranscriptWindow({ ...scoped, selector: { _tag: "Latest", count: 100 } }),
+      );
+    }
+    if (operation === "arm-unrecorded-alarm") {
+      await session.armUnrecordedAlarm(Number(url.searchParams.get("delayMs") ?? "0"));
+      return json({ ok: true });
+    }
+    if (operation === "kv-incarnation") {
+      return json({ incarnation: await session.kvIncarnation() });
+    }
+    if (operation === "runtime-builds") {
+      return json({ count: await session.runtimeBuilds() });
     }
 
     if (operation === "snapshot") {

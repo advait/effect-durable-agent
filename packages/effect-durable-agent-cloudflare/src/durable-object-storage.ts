@@ -1,4 +1,5 @@
 import type { SessionId } from "effect-durable-agent/types/core";
+import type { DurableObjectTranscriptOptions } from "./durable-object-transcript-maintenance";
 
 /**
  * Minimal synchronous SQL cursor surface used by Cloudflare Durable Object storage.
@@ -40,4 +41,9 @@ export interface DurableObjectSessionStorage {
 export interface DurableObjectSessionStoreOptions {
   readonly sessionId: SessionId;
   readonly storage: DurableObjectSessionStorage;
+  /**
+   * Transcript definitions to maintain inside every append. Without it the store maintains no
+   * transcript; the Durable Object host always supplies one.
+   */
+  readonly transcript?: DurableObjectTranscriptOptions;
 }

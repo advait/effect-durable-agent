@@ -9,12 +9,20 @@
         "name": "EDA_SESSION",
         "class_name": "EDAConformanceSession",
       },
+      {
+        "name": "TRANSCRIPT_PROBE",
+        "class_name": "EDATranscriptProbe",
+      },
     ],
   },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["EDAConformanceSession"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["EDATranscriptProbe"],
     },
   ],
 }

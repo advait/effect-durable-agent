@@ -28,8 +28,10 @@ import type {
 import type { SessionId } from "effect-durable-agent/types/core";
 import {
   DurableObjectKeepAlive,
+  type DurableObjectAlarmStorage,
   type DurableObjectBackgroundWaiter,
 } from "../durable-object-keepalive";
+import type { DurableObjectTranscriptOptions } from "../durable-object-transcript-maintenance";
 import { DurableObjectSinkCheckpointStore } from "../durable-object-sink-checkpoints";
 import { DurableObjectSessionStore } from "../durable-object-store";
 import {
@@ -45,6 +47,12 @@ export type EDATracerFactory = (input: { readonly sessionId: SessionId }) => Tra
 
 /** Configuration owned by the lazy per-isolate Effect runtime. */
 export interface EDASessionRuntimeOptions {
+  /**
+   * The runtime's own view of the object's alarm. Hosts that share the alarm with other owners
+   * (the session Durable Object shares it with the transcript builder) pass that owner's view, so
+   * the keep-alive heartbeat never deletes another owner's wakeup. Defaults to `storage`.
+   */
+  readonly alarmStorage?: DurableObjectAlarmStorage;
   readonly background?: DurableObjectBackgroundWaiter;
   readonly appEvents?: EDAAppEvents;
   readonly config: EDARuntimeConfig;
@@ -63,6 +71,8 @@ export interface EDASessionRuntimeOptions {
   readonly toolkit?: EDAModelToolkit | EDAToolkitFactory;
   readonly toolRegistry?: EDAToolRegistryShape | EDAToolRegistryFactory;
   readonly tracer?: Tracer.Tracer | EDATracerFactory;
+  /** Transcript definitions the session store maintains in every append. */
+  readonly transcript?: DurableObjectTranscriptOptions;
 }
 
 interface RuntimeState {
@@ -78,7 +88,8 @@ export class EDASessionRuntime {
 
   constructor(private readonly options: EDASessionRuntimeOptions) {
     this.keepAlive =
-      options.keepAlive ?? new DurableObjectKeepAlive(options.storage, options.background);
+      options.keepAlive ??
+      new DurableObjectKeepAlive(options.alarmStorage ?? options.storage, options.background);
   }
 
   static readonly migrate = (
@@ -172,6 +183,7 @@ export class EDASessionRuntime {
         toolkit: resolveFactory(this.options.toolkit, sessionId),
         toolRegistry: resolveFactory(this.options.toolRegistry, sessionId),
         tracer: resolveFactory(this.options.tracer, sessionId),
+        transcript: this.options.transcript,
       }),
     );
     const state = { runtime, sessionId } satisfies RuntimeState;
