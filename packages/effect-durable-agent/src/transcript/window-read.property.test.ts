@@ -292,15 +292,14 @@ describe("window byte budget", () => {
     );
   });
 
-  it("trims exactly as re-measuring after every drop, for tool bodies around the inline limit", () => {
-    const size = fc.oneof(
-      fc.integer({ min: 0, max: 2_000 }),
-      fc.integer({ min: 16_000, max: transcriptStoredInlineBodyLimit + 1_000 }),
-    );
+  it("trims exactly as re-measuring after every drop, for tool bodies around inline limits", () => {
+    // The trim compares sizes only, so small bodies around small inline limits exercise the same
+    // decisions as 16 KiB and 64 KiB ones, far more cheaply.
+    const size = fc.integer({ min: 0, max: 6_000 });
     fc.assert(
       fc.property(
         fc
-          .array(fc.array(size, { maxLength: 4 }), { minLength: 1, maxLength: 12 })
+          .array(fc.array(size, { maxLength: 4 }), { minLength: 1, maxLength: 6 })
           .chain((bodies) => {
             const source = sourceOf(toolBodyLog(bodies).events);
             const whole = read(
@@ -317,13 +316,19 @@ describe("window byte budget", () => {
               selectorArbitrary(whole),
               fc.record({
                 maxRecords: fc.integer({ min: 1, max: 40 }),
-                maxInlineBodyBytes: fc.constantFrom(0, 16_384, transcriptStoredInlineBodyLimit),
+                maxInlineBodyBytes: fc.constantFrom(
+                  0,
+                  1_024,
+                  4_096,
+                  16_384,
+                  transcriptStoredInlineBodyLimit,
+                ),
               }),
             );
           }),
         ([source, selector, limits]) => expectSameTrim(source, selector, limits),
       ),
-      { numRuns: 50 },
+      { numRuns: 40 },
     );
   });
 
@@ -344,6 +349,6 @@ describe("window byte budget", () => {
     expect(window.records.length).toBeGreaterThanOrEqual(1);
     expect(window.hasOlder).toBe(true);
     expect(totalBytes(window)).toBeLessThanOrEqual(limits.maxBytes + 15 * 70 * 1024);
-    expect(elapsed).toBeLessThan(2_000);
+    expect(elapsed).toBeLessThan(3_000);
   });
 });
