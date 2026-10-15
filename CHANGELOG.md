@@ -3,7 +3,8 @@
 ## 0.1.0-alpha.24
 
 Transcript history, part 3: Durable Object storage. **Development release: do not adopt in
-production.** In this release, maintenance and builds run for every session of every host;
+production.** In this release, maintenance and builds run for every `EDASessionDurableObject` /
+`EDASessionCell` session;
 0.1.0-alpha.25 makes them opt-in per session and bounds builder retries.
 
 - `effect-durable-agent-cloudflare`: the Durable Object session store maintains transcripts inside
@@ -27,6 +28,16 @@ production.** In this release, maintenance and builds run for every session of e
 - Destroying a session closes hibernated transcript sockets (4009); the client-frame limit counts
   UTF-8 bytes.
 - New `effect-durable-agent/testkit/transcript` test helpers.
+- `EDASessionRpcSurface` gains required members `transcriptStatus` and `readTranscriptWindow`
+  (hand-written implementations or mocks must add them).
+- Additive lower-level options and exports: a `transcript` option on
+  `DurableObjectSessionStoreOptions`, `EDADurableObjectRuntimeLayerOptions` and
+  `EDASessionRuntimeOptions`; `EDASessionRuntimeOptions.alarmStorage`;
+  `EDASessionController.refreshTranscriptWebSockets()`; `TranscriptStorageStatus`,
+  `SessionTranscriptWindowInput` / `SessionTranscriptWindowResult`, `AdoptedLogIncarnation`,
+  `DurableObjectAlarmOwner`.
+- Migration 2 is forward-only; rolling back to an earlier release is unsupported
+  (`docs/transcript-history.md` decision 10).
 
 ## 0.1.0-alpha.23
 
