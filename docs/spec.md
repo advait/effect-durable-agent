@@ -600,11 +600,13 @@ Current prompt context is derived from durable state:
 
 Prompt hydration preserves model-facing prefix fidelity. Durable assistant/tool transcript events store exact typed prompt parts in stable model-facing order. Semantic UI/query views derive from those parts rather than rewriting the model-facing history.
 
-### Transcript history contracts
+### Transcript history
 
-`effect-durable-agent/transcript` exports the contracts for the user-visible transcript designed in
-`docs/transcript-history.md`. The contracts are current; no store maintains or serves transcripts
-yet, and hosts still derive their UI from the pruned `ReducedState`.
+`effect-durable-agent/transcript` implements the user-visible transcript designed in
+`docs/transcript-history.md`: its contracts, its interpreter and mapping executor, and maintenance
+and window reads in the in-memory store. The Cloudflare store does not maintain a transcript yet, so
+production hosts still derive their UI from the pruned `ReducedState`. The model path is unchanged:
+prompts are still built from `ReducedState`, which never reads transcript records.
 
 - **Records** (`src/transcript/records.ts`): `user`, `assistant` (inference or import),
   `compaction`, `tool`, `runGroup` and `sessionContext`, plus an internal `decorationBuffer` that
@@ -630,10 +632,60 @@ yet, and hosts still derive their UI from the pruned `ReducedState`.
 - **Interpreter boundary** (`src/transcript/plan.ts`): `PlanTranscriptBatch` is a synchronous pure
   function from an indexed `TranscriptLookup`, a committed batch and a definition to a change plan
   of record upserts, alias inserts and the new cursor. There are no deletions.
+- **Interpreter** (`src/transcript/interpreter.ts`, `planTranscriptBatch`): an exhaustive switch
+  over every framework durable event, after the legacy-attempt normalizer. It mirrors the
+  `ReducedState` message, inference and tool fold without pruning:
+  - a user record is created at `SubmitMessage` admission (or the first message event) and moves
+    through pending, paused, promoted, steering, consumed and cancelled; it is positioned once, at
+    the event that makes it model context (`TurnStarted` input, or `UserMessageCommitted`);
+  - a replacement message id for the same command joins the same record as an alias;
+  - a cancelled user submission is withdrawn even after consumption and consumed steering is not,
+    exactly as the prompt does; a command cancelled or failed before it ever became a message (an
+    interrupt) is withdrawn;
+  - an assistant record is positioned at `InferenceStarted` (or its first commit), takes the parts
+    of the last commit, keeps a partial commit's reason, and follows the inference lifecycle;
+    imports are `import:<eventId>` records; tool-call parts link to tool records whichever is
+    written first;
+  - tool records follow creation, rejection, start and the last terminal; bodies are normalized to
+    the JSON a persisted log holds, and bodies above `transcriptStoredInlineBodyLimit` are stored
+    as log references;
+  - `ContextRebased` only adds a compaction record; nothing is removed;
+  - a run that reuses a finished group's command ids (a startup-recovery continuation) joins that
+    group, and `RecoveryCompleted` records `continuationOf`;
+  - the session context tracks the active run and compaction, model selection, and token totals by
+    the same rules as `ReducedState`;
+  - events with no transcript meaning in this revision are ignored deliberately, and events at or
+    below the version's cursor are skipped.
+- **Mapping executor** (`src/transcript/mapping-executor.ts`): applies host mappings to `__foreign`
+  events of a mapped namespace, type and schema version; others are ignored. Values are normalized
+  to the JSON a persisted log holds. A missing, non-JSON or oversize value, an invalid list-entry
+  key, or an operation that would take a record's decorations past `maxDecorationBytes` skips only
+  that operation; an unresolvable target skips only its mapping. Decorations whose user record does
+  not exist yet are parked in a bounded `decorations:<association>:<key>` record, applied in arrival
+  order when the record is created, and then drained. The declared user fallbacks follow, within
+  the byte budget, except for a record already classified when it is created.
+- **Plan validation**: every record a plan writes must satisfy the strict stored-row schema and
+  encode to a JSON envelope; anything else fails that version's projection (freezing it, with the
+  cause in its meta) instead of producing a row no reader can decode or encode. Bodies, failures
+  and model selections are normalized to the JSON a persisted log holds; model settings with no
+  JSON form are dropped.
+- **In-memory store** (`EDASessionStore.InMemory` / `InMemorySeeded`, `src/transcript/in-memory.ts`):
+  also provides `EDATranscriptStore`. It takes `{ transcript: TranscriptMaintenanceConfig }`
+  (default: the definition with no mappings), builds `current` from the seeded log at construction,
+  and maintains every carried, healthy version inside the append's `Ref.modify` critical section.
+  A projection failure marks only that version failed at its unchanged cursor and never fails the
+  append. `convergeTranscripts` models the adapter's convergence: discard a non-current build,
+  build `current` from the log, activate it at the head and delete the old version, and keep the
+  active version serving when a build fails.
+- **Window reads** (`src/transcript/window-read.ts`, `readTranscriptWindowFrom`): shared window
+  assembly over a store's synchronous `TranscriptWindowSource`: paging in both directions and by
+  range, dependencies (session context, run groups, tools in part order, pending users in submission
+  order), body references above the inline limit, trimming to the byte budget from the far end, and
+  readiness from the served version's health and carriage.
 - **Store port** (`src/transcript/store.ts`): `EDATranscriptStore` provides `readTranscriptWindow`
   and `readTranscriptMeta`. `TranscriptMaintenanceConfig` (`current`, optional `previous`) is the
-  configuration a maintaining store takes at construction; no store accepts it yet.
-  `EDASessionStore` method semantics are unchanged.
+  configuration a maintaining store takes at construction. `EDASessionStore` method semantics are
+  unchanged.
 
 ### Current compaction implementation
 
@@ -829,7 +881,8 @@ EDA currently provides:
 EDA currently does **not** provide:
 
 - storage pruning/BaseState;
-- a maintained transcript or transcript window reads (only the `transcript` contracts exist);
+- a maintained transcript or transcript window reads in the Cloudflare store (the in-memory store
+  maintains and serves one);
 - coalesced live-state snapshots for reconnect;
 - direct tool ephemerals or per-tool retry policy objects;
 - provider-executed tool projection/replay;

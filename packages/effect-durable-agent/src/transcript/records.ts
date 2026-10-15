@@ -406,6 +406,8 @@ const CompactionBodyFields = {
   contextVersion: ContextVersion,
   retainedFromContextSeq: SequenceNumber,
   createdAtMs: UnixEpochMillis,
+  /** Set by the first `CompactionCompleted`; later completions add no token usage. */
+  completedAtMs: Schema.optionalKey(UnixEpochMillis),
 };
 
 /** Lifecycle of one framework tool call. The last terminal event wins. */
