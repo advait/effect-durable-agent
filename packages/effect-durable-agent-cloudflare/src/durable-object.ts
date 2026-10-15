@@ -432,15 +432,8 @@ export abstract class EDASessionDurableObject<
    */
   async alarm(): Promise<void> {
     const due = this.#alarms.takeDue(Date.now());
-    const transcript = this.objectTranscript();
-    if (due.has("transcript") && transcript !== undefined) {
-      try {
-        await transcript.builder.run(transcriptAlarmMaxSlices);
-      } catch (error) {
-        console.error("EDA transcript builder slice failed", error);
-        await this.#alarms.request("transcript", Date.now() + 30_000);
-      }
-    }
+    // The runtime runs first: if it throws, nothing has re-armed the platform alarm, so the
+    // platform's retry (with its backoff and cap) stays in force.
     if (due.has("runtime") || !due.has("transcript")) {
       const sessionId = this.sessionIdFromObjectName();
       try {
@@ -452,6 +445,19 @@ export abstract class EDASessionDurableObject<
         // would replace the platform's backoff with an immediate retry loop).
         this.#alarms.retain("runtime", Date.now());
         throw error;
+      }
+    }
+    const transcript = this.objectTranscript();
+    if (due.has("transcript")) {
+      try {
+        // A builder that still has work re-requests now, keeping its wakeup.
+        const more =
+          transcript === undefined ? false : await transcript.builder.run(transcriptAlarmMaxSlices);
+        if (!more) this.#alarms.clear("transcript");
+      } catch (error) {
+        console.error("EDA transcript builder slice failed", error);
+        this.#alarms.clear("transcript");
+        await this.#alarms.request("transcript", Date.now() + 30_000);
       }
     }
     await this.#alarms.sync();

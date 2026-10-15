@@ -22,12 +22,22 @@ export type DurableObjectAlarmOwner = "runtime" | "transcript";
 export class DurableObjectAlarmScheduler {
   #tail: Promise<void> = Promise.resolve();
 
-  constructor(private readonly storage: DurableObjectSessionStorage & DurableObjectAlarmStorage) {}
+  constructor(
+    private readonly storage: DurableObjectSessionStorage & DurableObjectAlarmStorage,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
 
-  /** One owner's alarm, behaving like the platform alarm restricted to that owner. */
+  /**
+   * One owner's alarm, behaving like the platform alarm restricted to that owner. Like the
+   * platform's, it reports no alarm once its time has passed: a wakeup left behind when the
+   * platform gave up retrying a failed alarm must not look armed, or its owner would never re-arm.
+   */
   owner(owner: DurableObjectAlarmOwner): DurableObjectAlarmStorage {
     return {
-      getAlarm: () => this.#wakeup(owner) ?? null,
+      getAlarm: () => {
+        const wakeup = this.#wakeup(owner);
+        return wakeup === undefined || wakeup < this.now() ? null : wakeup;
+      },
       setAlarm: (scheduledTimeMs) => {
         this.#write(owner, scheduledTimeMs);
         return this.sync();
@@ -68,9 +78,11 @@ export class DurableObjectAlarmScheduler {
   }
 
   /**
-   * Called when the platform alarm fires: remove and return the owners it fired for (every
-   * wakeup at or before now, and always the earliest one). Owners re-request what they still
-   * need; call `sync` afterwards.
+   * Called when the platform alarm fires: return the owners it fired for (every wakeup at or
+   * before now, and always the earliest one). The runtime's wakeup is consumed here, because its
+   * keep-alive re-arms through its view as it does with the platform alarm. Other owners' wakeups
+   * stay until they `clear` them after their work succeeds, so a handler that dies mid-work leaves
+   * the platform's retry attributed to them. Call `sync` afterwards.
    */
   takeDue(nowMs: number): ReadonlySet<DurableObjectAlarmOwner> {
     const rows = this.#rows();
@@ -80,10 +92,15 @@ export class DurableObjectAlarmScheduler {
     for (const row of rows) {
       if (row.at_ms <= threshold && isOwner(row.owner)) {
         due.add(row.owner);
-        this.#write(row.owner, undefined);
+        if (row.owner === "runtime") this.#write(row.owner, undefined);
       }
     }
     return due;
+  }
+
+  /** Remove `owner`'s wakeup once its work is done; call `sync` afterwards. */
+  clear(owner: DurableObjectAlarmOwner): void {
+    this.#write(owner, undefined);
   }
 
   /** Point the platform alarm at the earliest wakeup, or clear it when none remains. */

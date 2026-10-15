@@ -909,8 +909,11 @@ Current production host:
   wakeup row and the platform alarm is set to the earliest, so neither owner deletes or postpones the
   other's. The keep-alive uses its owner's view unchanged. At startup, a platform alarm no owner
   recorded (armed by a release before wakeups were recorded) is adopted as the runtime's.
-  `alarm()` runs builder slices for a builder wakeup and the runtime only for its own wakeup or an
-  alarm no owner recorded; a runtime alarm that throws keeps its wakeup for the platform's retry;
+  `alarm()` runs the runtime only for its own wakeup or an alarm no owner recorded, then builder
+  slices for a builder wakeup. A runtime alarm that throws keeps its wakeup without re-arming, so
+  the platform's own retry (backoff and cap) runs it; an owner's view reports a past wakeup as no
+  alarm, so the keep-alive re-arms after the platform gives up. The builder's wakeup is cleared only
+  after its slices succeed;
 - session destruction shuts down in-memory keep-alive state and deletes the Durable Object alarm before deleting storage, then recreates the empty tables (a new log and incarnation);
 - WebSocket hibernation restores exact ACK-window state from an Effect Schema attachment.
 

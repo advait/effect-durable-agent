@@ -665,10 +665,12 @@ describe("Durable Object transcript upgrades and edge failures", () => {
 });
 
 describe("DurableObjectAlarmScheduler", () => {
+  let clock = 0;
   const scheduler = () => {
     const storage = new SqliteDurableObjectStorage();
     Effect.runSync(DurableObjectSessionStore.migrate(storage));
-    return { storage, alarms: new DurableObjectAlarmScheduler(storage) };
+    clock = 0;
+    return { storage, alarms: new DurableObjectAlarmScheduler(storage, () => clock) };
   };
 
   it("never lets the idle keep-alive delete the builder's wakeup", async () => {
@@ -684,8 +686,27 @@ describe("DurableObjectAlarmScheduler", () => {
     expect(storage.alarm).toBe(500);
 
     expect(alarms.takeDue(600)).toEqual(new Set(["transcript"]));
+    // The builder's wakeup stays until its work succeeds.
+    await alarms.sync();
+    expect(storage.alarm).toBe(500);
+    alarms.clear("transcript");
     await alarms.sync();
     expect(storage.alarm).toBeNull();
+  });
+
+  it("re-arms the keep-alive after the platform gives up retrying a failed runtime alarm", async () => {
+    const { storage, alarms } = scheduler();
+    const keepAlive = new DurableObjectKeepAlive(alarms.owner("runtime"), undefined, {
+      intervalMs: 5_000,
+      now: () => clock,
+    });
+    // A failed runtime alarm keeps its wakeup; the platform then exhausts its retries.
+    storage.alarm = null;
+    alarms.retain("runtime", 1_000);
+    clock = 120_000;
+    expect(alarms.owner("runtime").getAlarm()).toBeNull();
+    await keepAlive.setRunSchedulingPending(true);
+    expect(storage.alarm).toBe(125_000);
   });
 
   it("keeps a failed runtime alarm's claim on the platform retry without re-arming the alarm", async () => {
@@ -707,6 +728,7 @@ describe("DurableObjectAlarmScheduler", () => {
     await alarms.request("transcript", 1_000);
     expect(storage.alarm).toBe(1_000);
     expect(alarms.takeDue(1_000)).toEqual(new Set(["transcript"]));
+    alarms.clear("transcript");
     await alarms.sync();
     // The earlier release's runtime alarm is still armed and still the runtime's.
     expect(storage.alarm).toBe(9_000);
@@ -726,6 +748,7 @@ describe("DurableObjectAlarmScheduler", () => {
     expect(storage.alarm).toBe(3_000);
     // An alarm that fires early still belongs to the earliest owner.
     expect(alarms.takeDue(1_000)).toEqual(new Set(["transcript"]));
+    alarms.clear("transcript");
     await alarms.owner("runtime").deleteAlarm();
     expect(storage.alarm).toBeNull();
   });

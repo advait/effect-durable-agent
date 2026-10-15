@@ -381,7 +381,9 @@ export const makeTranscriptLookup = (
 
 const topLevel = (record: TranscriptRecord): TranscriptTopLevelRecord => {
   if (!isTopLevelTranscriptRecord(record)) {
-    throw new Error(`transcript record ${record.id} is indexed as top-level but is not`);
+    throw new TranscriptRowDecodeError(
+      `transcript record ${record.id} is indexed as top-level but is not`,
+    );
   }
   return record;
 };
