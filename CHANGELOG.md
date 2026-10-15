@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Transcript semantic revision 2: submissions consumed by one turn are ordered by submission, as
+  the prompt orders them, instead of by the turn's input list (for example a promoted queued
+  message and later steering read together). Every transcript version changes, so sessions rebuild
+  and hosts run their backfill; no host maintains a transcript yet.
+
 ## 0.1.0-alpha.22
 
 Transcript history, part 1: the EDA core transcript projection (design:

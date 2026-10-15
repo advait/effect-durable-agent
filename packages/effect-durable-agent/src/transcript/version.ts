@@ -12,8 +12,11 @@ import { TranscriptVersion } from "./records";
  *
  * A CI fingerprint over a fixed scenario corpus (added with the interpreter) fails when
  * interpretation output changes and this constant does not; re-record it together with the bump.
+ *
+ * History: 1 — the initial interpreter (0.1.0-alpha.22). 2 — submissions consumed by one turn are
+ * ordered by submission, as the prompt orders them, not by the turn's input list.
  */
-export const transcriptSemanticRevision = 1;
+export const transcriptSemanticRevision = 2;
 
 /**
  * Deterministic JSON: object keys sorted by code unit, no whitespace. Only JSON values are
