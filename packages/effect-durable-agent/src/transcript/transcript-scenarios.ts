@@ -478,6 +478,30 @@ const legacyAttempts = () => {
   return log.runCompleted(1, [1]);
 };
 
+const failuresAndRepeatedCompletion = () => {
+  const log = new TestLog().configure();
+  // An interrupt submission whose start fails never becomes a message: it is withdrawn.
+  log.admitOnly({ command: 1, text: "stop and do this" });
+  log.append("CommandStarted", { commandId: ids.command(1) });
+  log.append("CommandFailed", { commandId: ids.command(1), error: { message: "start failed" } });
+  log.submit({ command: 2, message: 2, text: "next" });
+  log.startRun({ run: 1, commands: [2] });
+  log.assistantTurn({ run: 1, turn: 1, inference: 1, message: 101, text: "ok", inputs: [2] });
+  log.compaction({
+    compaction: 1,
+    summary: 1,
+    retainedFromContextSeq: log.events.length,
+    contextVersion: 1,
+  });
+  // A repeated completion adds no usage, as in the reduced state.
+  log.append("CompactionCompleted", {
+    compactionId: ids.compaction(1),
+    modelSelection: { provider: "test", modelId: "model-a" },
+    usage: { inputTokens: 100, outputTokens: 20 },
+  });
+  return log.runCompleted(1, [2]);
+};
+
 const scenario = (name: string, compacted: boolean, build: () => TestLog): TranscriptScenario => ({
   name,
   compacted,
@@ -498,4 +522,5 @@ export const transcriptScenarios = (): ReadonlyArray<TranscriptScenario> => [
   scenario("host-decorations", false, decorations),
   scenario("events-without-transcript-meaning", false, ignoredEvents),
   scenario("legacy-attempts", false, legacyAttempts),
+  scenario("failed-interrupt-repeated-compaction-completion", true, failuresAndRepeatedCompletion),
 ];

@@ -113,7 +113,7 @@ describe("in-memory transcript maintenance", () => {
     log.turn({ run: 1, turn: 1, inputs: [1] });
     log.inferenceStarted({ run: 1, turn: 1, inference: 1 });
     const good = [...log.durableEnvelopes];
-    // A non-JSON tool body cannot be projected: a recoverable projection failure.
+    // A body with no JSON form cannot be projected: a recoverable projection failure.
     log.append("ToolCallCreated", {
       runId: ids.run(1),
       turnId: ids.turn(1),
@@ -123,7 +123,7 @@ describe("in-memory transcript maintenance", () => {
         type: "tool-call",
         id: "call_1",
         name: "binary",
-        params: new Uint8Array([1, 2, 3]),
+        params: { count: 1n },
         providerExecuted: false,
       },
     });

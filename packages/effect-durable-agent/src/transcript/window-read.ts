@@ -11,15 +11,14 @@ import {
   transcriptRecordId,
   type AssistantRecordId,
   type TranscriptAssistantPart,
-  type TranscriptAssistantRecord,
   type TranscriptBody,
-  type TranscriptCompactionRecord,
   type TranscriptCursor,
   type TranscriptLogIncarnation,
   type TranscriptOrderKey,
   type TranscriptRecord,
   type TranscriptRecordId,
   type TranscriptToolRecord,
+  type TranscriptTopLevelRecord,
   type TranscriptUserRecord,
   type TranscriptVersion,
 } from "./records";
@@ -31,12 +30,6 @@ import type {
   TranscriptWindowLimits,
   TranscriptWindowSelector,
 } from "./window";
-
-/** A positioned record that counts toward a window's record limit. */
-export type TranscriptTopLevelRecord =
-  | TranscriptUserRecord
-  | TranscriptAssistantRecord
-  | TranscriptCompactionRecord;
 
 /**
  * Synchronous indexed reads of the served version at one cut, as a store provides them.

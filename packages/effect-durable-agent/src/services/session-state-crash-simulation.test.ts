@@ -32,6 +32,12 @@ import { makeEDAToolkit, type EDAModelToolkit } from "./tool-registry";
 import type { InferenceRunnerStreamPart } from "./inference-runner";
 import { makeEdaTestLayer, type TestModelParts } from "../testkit/layers";
 import {
+  projectBatches,
+  reducedStateHistory,
+  renderedTranscriptHistory,
+  testDefinition,
+} from "../transcript/transcript-testkit";
+import {
   ASSISTANT_MESSAGE_EVENT_ID,
   ASSISTANT_MESSAGE_ID,
   INFERENCE_COMPLETED_EVENT_ID,
@@ -559,7 +565,16 @@ const assertCommonRecovery = (input: {
   assertNoRecoverableWork(input.recovered.snapshot);
   assertLifecycleTerminals(input.recovered.committed);
   expect(input.recovered.snapshot).toEqual(reduceCommittedEvents(input.recovered.committed));
+  // The transcript interprets every real recovered log without failing, and renders exactly the
+  // history the model sees today (these logs are never compacted).
+  const transcript = projectBatches(crashTranscriptDefinition, [input.recovered.committed]);
+  expect(transcript.meta.status).toEqual({ _tag: "Ok" });
+  expect(renderedTranscriptHistory(transcript)).toEqual(
+    reducedStateHistory(input.recovered.committed),
+  );
 };
+
+const crashTranscriptDefinition = testDefinition();
 
 const recoverWithoutContext = (
   effect: Effect.Effect<RecoveredSession>,

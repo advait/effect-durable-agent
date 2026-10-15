@@ -11,11 +11,12 @@ import {
   type TranscriptOrderKey,
   type TranscriptRecord,
   type TranscriptRecordId,
+  type TranscriptTopLevelRecord,
   type TranscriptVersion,
 } from "./records";
 import type { TranscriptMaintenanceConfig } from "./store";
 import type { TranscriptVersionMeta } from "./window";
-import type { TranscriptTopLevelRecord, TranscriptWindowSource } from "./window-read";
+import type { TranscriptWindowSource } from "./window-read";
 
 /**
  * The in-memory store's transcript state: the semantic model of the adapter's tables

@@ -640,13 +640,15 @@ prompts are still built from `ReducedState`, which never reads transcript record
     the event that makes it model context (`TurnStarted` input, or `UserMessageCommitted`);
   - a replacement message id for the same command joins the same record as an alias;
   - a cancelled user submission is withdrawn even after consumption and consumed steering is not,
-    exactly as the prompt does; a command cancelled before it ever became a message is withdrawn;
+    exactly as the prompt does; a command cancelled or failed before it ever became a message (an
+    interrupt) is withdrawn;
   - an assistant record is positioned at `InferenceStarted` (or its first commit), takes the parts
     of the last commit, keeps a partial commit's reason, and follows the inference lifecycle;
     imports are `import:<eventId>` records; tool-call parts link to tool records whichever is
     written first;
-  - tool records follow creation, rejection, start and the last terminal; bodies above
-    `transcriptStoredInlineBodyLimit` are stored as log references;
+  - tool records follow creation, rejection, start and the last terminal; bodies are normalized to
+    the JSON a persisted log holds, and bodies above `transcriptStoredInlineBodyLimit` are stored
+    as log references;
   - `ContextRebased` only adds a compaction record; nothing is removed;
   - a run that reuses a finished group's command ids (a startup-recovery continuation) joins that
     group, and `RecoveryCompleted` records `continuationOf`;
@@ -656,7 +658,8 @@ prompts are still built from `ReducedState`, which never reads transcript record
     below the version's cursor are skipped.
 - **Mapping executor** (`src/transcript/mapping-executor.ts`): applies host mappings to `__foreign`
   events of a mapped namespace, type and schema version; others are ignored. A missing, non-JSON or
-  oversize value skips only its operation, and an unresolvable target skips only its mapping.
+  oversize value skips only its operation (as does one that would take a record's decorations past
+  `maxDecorationBytes`), and an unresolvable target skips only its mapping.
   Decorations whose user record does not exist yet are parked in a bounded
   `decorations:<association>:<key>` record and applied in arrival order when the record is created,
   followed by the declared user fallbacks.

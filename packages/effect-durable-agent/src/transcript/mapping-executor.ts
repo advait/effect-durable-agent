@@ -171,11 +171,12 @@ const park = (
     kind: "decorationBuffer",
     id,
     updatedSeq: seq,
-    // Bounded: an orphaned key (its command never arrives) cannot grow without limit.
-    operations: [
+    // Bounded in count and bytes: an orphaned key (its command never arrives) cannot grow
+    // without limit.
+    operations: withinBudget([
       ...(existing?.operations ?? []),
       ...prepared.map((operation) => ({ ...operation, seq })),
-    ].slice(0, transcriptDecorationBufferLimit),
+    ]),
   };
   batch.put(buffer);
 };
@@ -239,7 +240,36 @@ const decorateUser = (
   };
 };
 
+/** The longest prefix of parked operations within the buffer's count and byte bounds. */
+const withinBudget = (
+  operations: ReadonlyArray<TranscriptBufferedDecoration>,
+): ReadonlyArray<TranscriptBufferedDecoration> => {
+  const kept: Array<TranscriptBufferedDecoration> = [];
+  let bytes = 2;
+  for (const operation of operations.slice(0, transcriptDecorationBufferLimit)) {
+    bytes += jsonBytes(operation) + 1;
+    if (bytes > transcriptMappingBounds.maxDecorationBytes) break;
+    kept.push(operation);
+  }
+  return kept;
+};
+
+/** Apply one operation unless the record's decorations would exceed their byte budget. */
 const applyPrepared = (
+  definition: TranscriptDefinition,
+  target: Decorated,
+  prepared: PreparedOperation,
+): Decorated => {
+  const next = applyOperation(definition, target, prepared);
+  return next === target ||
+    jsonBytes(next.decorations) <= transcriptMappingBounds.maxDecorationBytes
+    ? next
+    : target;
+};
+
+const jsonBytes = (value: unknown): number => encoder.encode(canonicalJson(value)).length;
+
+const applyOperation = (
   definition: TranscriptDefinition,
   target: Decorated,
   prepared: PreparedOperation,

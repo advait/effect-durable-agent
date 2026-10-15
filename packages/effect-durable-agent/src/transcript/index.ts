@@ -13,6 +13,5 @@ export {
   buildingTranscriptWindow,
   readTranscriptWindowFrom,
   transcriptReadiness,
-  type TranscriptTopLevelRecord,
   type TranscriptWindowSource,
 } from "./window-read";

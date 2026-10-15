@@ -114,7 +114,7 @@ describe("transcript interpreter", () => {
 
   it("tracks promote, pause and cancel, and withdraws a command that never became a message", () => {
     const version = scenario("promote-pause-cancel");
-    expect(user(version, 2).state._tag).toBe("Consumed");
+    expect(user(version, 2)).toMatchObject({ disposition: "steer", state: { _tag: "Consumed" } });
     expect(user(version, 3).state).toEqual({ _tag: "Paused", byCommandId: ids.command(7) });
     expect(user(version, 3).disposition).toBe("queue");
     expect(user(version, 4).state).toMatchObject({ _tag: "Cancelled", reason: "user-cancel" });
@@ -273,6 +273,26 @@ describe("transcript interpreter", () => {
     expect(user(projectBatches(gia, [log.events]), 1).decorations).toEqual({
       author: { _tag: "Value", value: "a@example.com" },
     });
+  });
+
+  it("withdraws a failed interrupt and counts a compaction's usage once", () => {
+    const version = scenario("failed-interrupt-repeated-compaction-completion");
+    expect(user(version, 1)).toMatchObject({
+      messageIds: [],
+      state: { _tag: "Cancelled", reason: "failed: start failed" },
+    });
+    expect(user(version, 1).position).toBeUndefined();
+    const session = record(version, transcriptRecordId.session);
+    expect(session.kind === "sessionContext" && session.tokenUsage.byModel[0]?.usage).toMatchObject(
+      {
+        inputTokens: 110,
+        outputTokens: 25,
+      },
+    );
+    const compaction = Array.from(version.records.values()).find(
+      (candidate) => candidate.kind === "compaction",
+    );
+    expect(compaction).toMatchObject({ completedAtMs: expect.any(Number) });
   });
 
   it("ignores events without transcript meaning", () => {

@@ -2,6 +2,8 @@ import * as Prompt from "effect/ai/Prompt";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { durableMessageTranscript } from "../domain/message-transcript";
+import { reduceCommittedEvents } from "../domain/reduced-state";
 import type { CommittedDurableEvent } from "../services/session-store";
 import { SequenceNumber, SessionId, durablePosition } from "../types/core";
 import { effectDurableAgentNamespace, type DurableEventEnvelope } from "../types/events/envelope";
@@ -19,7 +21,11 @@ import {
   type TranscriptDefinition,
   type TranscriptMappings,
 } from "./mapping";
-import { TranscriptRecordFromEnvelope, type TranscriptRecord } from "./records";
+import {
+  TranscriptRecordFromEnvelope,
+  isTopLevelTranscriptRecord,
+  type TranscriptRecord,
+} from "./records";
 
 /**
  * Test-only builders for transcript interpretation: deterministic ids, a log writer that goes
@@ -510,3 +516,42 @@ export const projectionJson = (records: Iterable<TranscriptRecord>): string =>
       .map((record) => Schema.encodeSync(TranscriptRecordFromEnvelope)(record))
       .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)),
   );
+
+/** History the transcript renders: consumed users and committed assistants, in order. */
+export const renderedTranscriptHistory = (
+  version: InMemoryTranscriptVersion,
+): ReadonlyArray<string> =>
+  Array.from(version.records.values())
+    .filter(isTopLevelTranscriptRecord)
+    .sort(
+      (left, right) =>
+        left.position.anchorSeq - right.position.anchorSeq ||
+        left.position.ordinal - right.position.ordinal,
+    )
+    .flatMap((record) => {
+      switch (record.kind) {
+        case "user":
+          return [`user:${record.commandId}`];
+        case "assistant":
+          return record.messageId === undefined ? [] : [`assistant:${record.inferenceId}`];
+        case "compaction":
+          return [];
+      }
+    });
+
+/** The same history as the model sees it today, from the (possibly pruned) reduced state. */
+export const reducedStateHistory = (
+  events: ReadonlyArray<CommittedDurableEvent>,
+): ReadonlyArray<string> =>
+  durableMessageTranscript(reduceCommittedEvents(events))
+    .filter(
+      (message) =>
+        message._tag !== "User" ||
+        message.requestedDisposition === undefined ||
+        message.consumedSeq !== undefined,
+    )
+    .map((message) =>
+      message._tag === "User" || message._tag === "Steering"
+        ? `user:${message.commandId}`
+        : `assistant:${message.inferenceId}`,
+    );

@@ -269,15 +269,23 @@ const interpretEvent = (
       });
       return;
     }
-    case commandCancelledEventType: {
+    case commandCancelledEventType:
+    case commandFailedEventType: {
       const user = batch.user(transcriptRecordId.user(event.payload.commandId));
-      // Only a submission that never became a message is withdrawn by its command; messages
-      // follow their own lifecycle events, as in the reduced state.
+      // Only a submission that never became a message is withdrawn by its command (an interrupt
+      // whose start failed or was cancelled); messages follow their own lifecycle events, as in
+      // the reduced state.
       if (user === undefined || user.messageIds.length > 0 || !isWaiting(user.state)) return;
       batch.put({
         ...user,
         updatedSeq: seq,
-        state: { _tag: "Cancelled", reason: event.payload.reason },
+        state: {
+          _tag: "Cancelled",
+          reason:
+            event.type === commandFailedEventType
+              ? `failed: ${event.payload.error.message}`
+              : event.payload.reason,
+        },
       });
       return;
     }
@@ -335,7 +343,12 @@ const interpretEvent = (
       const user = userByMessage(batch, event.payload.messageId);
       if (user === undefined) return;
       if (user.state._tag !== "Pending" && user.state._tag !== "Paused") return;
-      batch.put({ ...user, updatedSeq: seq, state: { _tag: "Promoted" } });
+      batch.put({
+        ...user,
+        updatedSeq: seq,
+        ...(user.steering === undefined ? { disposition: "steer" as const } : {}),
+        state: { _tag: "Promoted" },
+      });
       return;
     }
     case userMessageCancelledEventType: {
@@ -579,6 +592,20 @@ const interpretEvent = (
     case compactionCompletedEventType:
     case compactionFailedEventType: {
       const { compactionId, modelSelection, usage } = event.payload;
+      // As in the reduced state, a repeated completion adds no usage; failures always do.
+      const compactionRecordId = transcriptRecordId.compaction(compactionId);
+      const compaction = batch.get(compactionRecordId);
+      const repeated =
+        event.type === compactionCompletedEventType &&
+        compaction?.kind === "compaction" &&
+        compaction.completedAtMs !== undefined;
+      if (
+        event.type === compactionCompletedEventType &&
+        compaction?.kind === "compaction" &&
+        compaction.completedAtMs === undefined
+      ) {
+        batch.put({ ...compaction, updatedSeq: seq, completedAtMs: at });
+      }
       const session = batch.session(seq);
       const { activeCompactionId, ...rest } = session;
       batch.put({
@@ -588,7 +615,7 @@ const interpretEvent = (
           ? {}
           : { activeCompactionId }),
         tokenUsage:
-          modelSelection === undefined
+          modelSelection === undefined || repeated
             ? session.tokenUsage
             : addModelUsage(session.tokenUsage, modelSelection, usage),
       });
@@ -641,7 +668,6 @@ const interpretEvent = (
     case runSchedulingGrantedEventType:
     case commandStartedEventType:
     case commandCompletedEventType:
-    case commandFailedEventType:
     case turnCompletedEventType:
     case turnFailedEventType:
     case turnStoppedEventType:
@@ -971,21 +997,32 @@ const timingOf = (record: TranscriptToolRecord | undefined) => ({
 
 const bodyEncoder = new TextEncoder();
 
-/** A body read from a committed event. Logs are JSON, so anything else is a projection defect. */
+/**
+ * A body read from a committed event, normalized to the JSON a persisted log holds, so a live
+ * projection and a rebuild from storage agree. A value with no JSON form (a bigint or a cycle) is
+ * a projection failure.
+ */
 const inlineBody = (
   value: unknown,
   seq: SequenceNumber,
   path: TranscriptFieldPath,
 ): TranscriptBody => {
-  if (!Schema.is(Schema.Json)(value)) {
-    throw new TranscriptProjectionError({
+  const notJson = () =>
+    new TranscriptProjectionError({
       message: `body at seq ${seq} ${JSON.stringify(path)} is not JSON`,
     });
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(value);
+  } catch {
+    throw notJson();
   }
+  const normalized: unknown = json === undefined ? null : JSON.parse(json);
+  if (!Schema.is(Schema.Json)(normalized)) throw notJson();
   // Large bodies stay in the log; the stored row keeps only a reference to them.
-  const byteLength = bodyEncoder.encode(JSON.stringify(value)).length;
+  const byteLength = json === undefined ? 4 : bodyEncoder.encode(json).length;
   return byteLength <= transcriptStoredInlineBodyLimit
-    ? { _tag: "Inline", value, source: { seq, path } }
+    ? { _tag: "Inline", value: normalized, source: { seq, path } }
     : { _tag: "Ref", source: { seq, path }, byteLength };
 };
 

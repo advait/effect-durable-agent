@@ -14,7 +14,7 @@
       "prompt": "012a2d7b58e02dd21b937239d0a959bcc14ce4ddc3d57e6f1c3b0ee4d753349d"
     },
     "promote-pause-cancel": {
-      "transcript": "2c20b2d91c56c3fa7d54a5c95487b4de8444c0549b660bf9c7e1a0842034f24e",
+      "transcript": "abb790f81bc6b0413e895a471175d2e92745e9ddfff17a96ca72d59a9ae7d901",
       "prompt": "150803f2938f57d1a1cab44b73298af63b4529b8e1919a2a9f29ff0e7d290e0c"
     },
     "partial-failure-empty-success-import": {
@@ -30,11 +30,11 @@
       "prompt": "de8ec272d04a4787f087352988df6b68114332e0135499ea65388a4b6223b577"
     },
     "mid-run-compaction": {
-      "transcript": "b8d58c6cc8b2474686d5232095bd48ee0e782e70cade9b4b44c32b26c2116b3b",
+      "transcript": "ac27a3d178c38240b3f21eec69d4cf799c046db6967857c505f8cc2d1e59bf3e",
       "prompt": "edfdaca9a225b1bf7a9b7583bfdd027770282053794ad087b831412be33e26a0"
     },
     "replacement-message-id": {
-      "transcript": "35432f7c30b8dca3935ef3e08696adc90c6e2db4bb4c588f470b0ce2fbe896f9",
+      "transcript": "7421aaab75f4479a9795c0e15a1fd52ddc1c6728081f31d722d7e110d7de36ec",
       "prompt": "ada9749cfd8f066e491210442e7b002d2a63e1923b5a884d817124dd4a63729f"
     },
     "host-decorations": {
@@ -48,6 +48,10 @@
     "legacy-attempts": {
       "transcript": "6a8f37a339d7b3c49207a04c725aaab222a50b5589bd85ff835386ea806c5b77",
       "prompt": "72cb0698732bd7a2148f767dd03f0fcb905ad18d10cf918fc86c88ec4ef2e9b2"
+    },
+    "failed-interrupt-repeated-compaction-completion": {
+      "transcript": "4f59ffcab969408545736bede86372dc60d732c95ef5cffeac040372ab365339",
+      "prompt": "8b7fb2ee6c7d1497a79337d55090fe5bf8ce18333e94303e2b2a6d4ec554479b"
     }
   }
 }

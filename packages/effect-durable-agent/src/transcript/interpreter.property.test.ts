@@ -1,19 +1,17 @@
 import * as fc from "fast-check";
 import { describe, expect, it } from "vite-plus/test";
 
-import { durableMessageTranscript } from "../domain/message-transcript";
-import { reduceCommittedEvents } from "../domain/reduced-state";
 import type { CommittedDurableEvent } from "../services/session-store";
-import { isTopLevelTranscriptRecord } from "./records";
 import { giaLikeTestMappings, transcriptScenarios } from "./transcript-scenarios";
 import {
   TestLog,
+  reducedStateHistory,
+  renderedTranscriptHistory,
   ids,
   normalizedProjection,
   projectBatches,
   testDefinition,
 } from "./transcript-testkit";
-import type { InMemoryTranscriptVersion } from "./in-memory";
 
 const propertyRuns = 100;
 const plain = testDefinition();
@@ -188,39 +186,6 @@ const generatedLog = (steps: ReadonlyArray<number>): { log: TestLog; compacted: 
 const stepsArbitrary = fc.array(fc.nat({ max: 10_000 }), { minLength: 1, maxLength: 60 });
 const cutsArbitrary = fc.array(fc.nat({ max: 10_000 }), { maxLength: 20 });
 
-/** History the transcript renders: consumed users and committed assistants, in order. */
-const renderedHistory = (version: InMemoryTranscriptVersion): ReadonlyArray<string> =>
-  Array.from(version.records.values())
-    .filter(isTopLevelTranscriptRecord)
-    .filter(
-      (record) =>
-        record.kind !== "compaction" &&
-        (record.kind !== "assistant" || record.messageId !== undefined),
-    )
-    .sort(
-      (left, right) =>
-        (left.position?.anchorSeq ?? 0) - (right.position?.anchorSeq ?? 0) ||
-        (left.position?.ordinal ?? 0) - (right.position?.ordinal ?? 0),
-    )
-    .map((record) =>
-      record.kind === "user" ? `user:${record.commandId}` : `assistant:${record.inferenceId}`,
-    );
-
-/** The same history as the model sees it today, from the (possibly pruned) reduced state. */
-const reducedHistory = (events: ReadonlyArray<CommittedDurableEvent>): ReadonlyArray<string> =>
-  durableMessageTranscript(reduceCommittedEvents(events))
-    .filter(
-      (message) =>
-        message._tag !== "User" ||
-        message.requestedDisposition === undefined ||
-        message.consumedSeq !== undefined,
-    )
-    .map((message) =>
-      message._tag === "User" || message._tag === "Steering"
-        ? `user:${message.commandId}`
-        : `assistant:${message.inferenceId}`,
-    );
-
 describe("transcript interpretation oracle", () => {
   it("projects every scenario identically under every batch partition", () => {
     for (const { name, events } of transcriptScenarios()) {
@@ -261,8 +226,8 @@ describe("transcript interpretation oracle", () => {
 
   it("renders exactly today's history for uncompacted logs and a superset for compacted ones", () => {
     const check = (events: ReadonlyArray<CommittedDurableEvent>, compacted: boolean) => {
-      const rendered = renderedHistory(projectBatches(gia, [events]));
-      const reduced = reducedHistory(events);
+      const rendered = renderedTranscriptHistory(projectBatches(gia, [events]));
+      const reduced = reducedStateHistory(events);
       if (compacted) {
         expect(reduced.filter((id) => !rendered.includes(id))).toEqual([]);
         expect(rendered.length).toBeGreaterThanOrEqual(reduced.length);
