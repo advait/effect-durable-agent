@@ -608,6 +608,56 @@ describe("transcript-window sockets", () => {
     expect(socket.client.window?.throughSeq).toBe(4);
     expect(socket.client.window?.activeContent).toEqual([]);
   });
+  it("replaces every subscriber's window, held or hibernated, when a rebuilt version activates", async () => {
+    let version = TranscriptVersion.make("a".repeat(64));
+    const store: EDATranscriptStoreShape = {
+      readTranscriptWindow: () =>
+        Effect.sync((): TranscriptWindow => ({
+          incarnation: TranscriptLogIncarnation.make("memory:activation"),
+          version,
+          throughSeq: SequenceNumber.make(4),
+          records: [],
+          dependencies: [],
+          hasOlder: false,
+          hasNewer: false,
+          readiness: { _tag: "Ready" },
+        })),
+      readTranscriptMeta: Effect.succeed([]),
+    };
+    const sockets: TestSocket[] = [new TestSocket(), new TestSocket()];
+    const first = new Isolate(() => sockets, defaultEDAWebSocketFlowControl, store);
+    for (const socket of sockets) {
+      first.manager.acceptTranscript({
+        sessionId: SESSION_ID,
+        trace: TRACE,
+        webSocket: socket.asWebSocket(),
+      });
+      await socket.request(first.manager, edaTranscriptSubscribeRequest(socket.client));
+      await socket.pump(first.manager);
+      expect(socket.client.window?.version).toBe(version);
+    }
+
+    // The builder activates a new version with no new event: nothing was published.
+    version = TranscriptVersion.make("b".repeat(64));
+    await first.manager.refreshTranscript();
+    await first.manager.settled();
+    for (const socket of sockets) {
+      await socket.pump(first.manager);
+      expect(socket.client.window?.version).toBe(version);
+    }
+
+    // After hibernation the sockets are restored from their attachments and replaced too.
+    const second = new Isolate(() => sockets, defaultEDAWebSocketFlowControl, store);
+    version = TranscriptVersion.make("c".repeat(64));
+    await second.manager.refreshTranscript();
+    await second.manager.settled();
+    for (const socket of sockets) {
+      await socket.pump(second.manager);
+      expect(socket.closeCode).toBeUndefined();
+      expect(socket.client.window?.version).toBe(version);
+    }
+  });
+
   it("delivers a commit published while a read is in flight", async () => {
     const gated = new GatedStore();
     const socket = new TestSocket();

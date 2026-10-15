@@ -42,9 +42,12 @@ import {
   defaultTranscriptWindowLimits,
   emptyTranscriptMappings,
   makeTranscriptDefinition,
+  type EDATranscriptStoreShape,
   type TranscriptMaintenanceConfig,
 } from "effect-durable-agent/transcript";
 import { DurableObjectAlarmScheduler } from "./durable-object-alarms";
+import type { EDATranscriptSocketOptions } from "./websocket/transcript-sockets";
+import { EDASessionStoreError } from "effect-durable-agent/services/session-store";
 import {
   DurableObjectTranscriptBuilder,
   DurableObjectTranscriptStore,
@@ -133,8 +136,17 @@ export interface EDASessionTranscriptOptions {
 /** Constructor options for concrete app subclasses of the EDA Durable Object base. */
 export type EDASessionDurableObjectOptions<ProjectionState extends object = never> = Omit<
   EDASessionControllerOptions<ProjectionState>,
-  "alarmStorage" | "background" | "getWebSockets" | "storage" | "transcript"
-> & { readonly transcript?: EDASessionTranscriptOptions };
+  "alarmStorage" | "background" | "getWebSockets" | "storage" | "transcript" | "transcriptSockets"
+> & {
+  readonly transcript?: EDASessionTranscriptOptions;
+  /**
+   * Serve transcript-window sockets (`?stream=transcript`). `transcriptStore` defaults to this
+   * object's own runtime-free Durable Object transcript store.
+   */
+  readonly transcriptSockets?: Omit<EDATranscriptSocketOptions, "transcriptStore"> & {
+    readonly transcriptStore?: EDATranscriptSocketOptions["transcriptStore"];
+  };
+};
 
 /** Slices a backfill `transcriptStatus` call may run before it returns. */
 const transcriptStatusMaxSlices = 16;
@@ -185,15 +197,24 @@ export abstract class EDASessionDurableObject<
     this.#webSocketProjectionId = options.webSocketProjection?.id;
     const storage = toEDASessionStorage(this.ctx.storage);
     this.#alarms = new DurableObjectAlarmScheduler(storage);
-    const transcript = this.transcriptOptions(options.transcript);
+    const { transcript: transcriptHostOptions, transcriptSockets, ...controllerOptions } = options;
+    const transcript = this.transcriptOptions(transcriptHostOptions);
     this.#transcriptOptions = transcript;
     this.#controller = new EDASessionController({
-      ...options,
+      ...controllerOptions,
       alarmStorage: this.#alarms.owner("runtime"),
       background: this.ctx,
       getWebSockets: () => this.ctx.getWebSockets(),
       storage,
       transcript,
+      ...(transcriptSockets === undefined
+        ? {}
+        : {
+            transcriptSockets: {
+              ...transcriptSockets,
+              transcriptStore: transcriptSockets.transcriptStore ?? this.transcriptPort(),
+            },
+          }),
     });
 
     // Answer client liveness pings at the runtime layer so idle sockets never
@@ -239,6 +260,7 @@ export abstract class EDASessionDurableObject<
       if (projectionId !== undefined || !this.#controller.supportsTranscriptWebSocket) {
         return new Response("Unsupported transcript stream.", { status: 400 });
       }
+      this.transcriptFor(sessionId);
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1]);
       this.#controller.acceptTranscriptWebSocket({ sessionId, trace, webSocket: pair[1] });
@@ -481,8 +503,26 @@ export abstract class EDASessionDurableObject<
           const builder = this.objectTranscript()?.builder;
           if (builder !== undefined) this.ctx.waitUntil(builder.kick());
         },
-        ...(options?.onActivated === undefined ? {} : { onActivated: options.onActivated }),
+        onActivated: (activation) => {
+          // Connected transcript sockets get one complete replacement in the new version.
+          this.ctx.waitUntil(this.#controller.refreshTranscriptWebSockets());
+          options?.onActivated?.(activation);
+        },
       },
+    };
+  }
+
+  /** This object's transcript store as the port transcript sockets read, resolved per call. */
+  private transcriptPort(): EDATranscriptStoreShape {
+    const port = () => this.objectTranscript()?.store.port;
+    const unbound = () =>
+      Effect.fail(
+        new EDASessionStoreError({ message: "EDA transcript read before the session was named" }),
+      );
+    return {
+      readTranscriptWindow: (selector, limits) =>
+        Effect.suspend(() => port()?.readTranscriptWindow(selector, limits) ?? unbound()),
+      readTranscriptMeta: Effect.suspend(() => port()?.readTranscriptMeta ?? unbound()),
     };
   }
 

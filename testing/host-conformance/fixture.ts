@@ -64,6 +64,8 @@ const finishedStream = (text: string) =>
 export const conformanceHostOptions = (): EDASessionDurableObjectOptions => ({
   config: { modelSelection: { provider: "conformance", modelId: "fixed-pong" } },
   transcript: { adoptIncarnationKey: conformanceIncarnationKey },
+  // Transcript sockets read the object's own Durable Object transcript store.
+  transcriptSockets: {},
   modelResolverLayer: Layer.merge(
     ModelResolver.Fixed.pipe(
       Layer.provide(
@@ -125,6 +127,8 @@ export const conformanceWorker = {
       const eventsUrl = new URL("https://eda.invalid/events");
       eventsUrl.searchParams.set("sessionId", sessionId);
       eventsUrl.searchParams.set("afterSeq", url.searchParams.get("afterSeq") ?? "0");
+      const stream = url.searchParams.get("stream");
+      if (stream !== null) eventsUrl.searchParams.set("stream", stream);
       const eventsRequest = new Request(eventsUrl, request);
       if (url.searchParams.get("projection") === "conformance") {
         eventsRequest.headers.set("x-eda-websocket-projection", "conformance-projection-v1");

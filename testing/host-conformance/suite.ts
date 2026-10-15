@@ -7,6 +7,13 @@ import { join, resolve } from "node:path";
 import { build } from "esbuild";
 import { describe, expect, it } from "vite-plus/test";
 
+import {
+  applyEDATranscriptServerMessage,
+  edaTranscriptSubscribeRequest,
+  emptyEDATranscriptClientState,
+  type EDATranscriptClientState,
+} from "effect-durable-agent/websocket";
+
 import { installCelld } from "../../packages/effect-durable-agent-celld/scripts/install-celld.mjs";
 
 /** Runtime variants required to satisfy the shared EDA host contract. */
@@ -417,6 +424,39 @@ class EventSocket {
   }
 }
 
+/** Open a transcript-window socket, subscribe to the latest window and return the client state. */
+const subscribeTranscript = async (
+  host: HostProcess,
+  sessionId: string,
+): Promise<EDATranscriptClientState> => {
+  const url = new URL(`${host.baseUrl}/sessions/${sessionId}/events`);
+  url.protocol = "ws:";
+  url.searchParams.set("stream", "transcript");
+  const socket = new WebSocket(url);
+  let client = emptyEDATranscriptClientState;
+  try {
+    return await new Promise<EDATranscriptClientState>((resolveClient, reject) => {
+      const timeout = setTimeout(() => reject(new Error("no transcript window")), 30_000);
+      socket.addEventListener("error", () => reject(new Error("transcript socket failed")));
+      socket.addEventListener("open", () => {
+        socket.send(JSON.stringify(edaTranscriptSubscribeRequest(client)));
+      });
+      socket.addEventListener("message", (event) => {
+        const step = applyEDATranscriptServerMessage(client, String(event.data));
+        client = step.state;
+        if (step.ack !== undefined) socket.send(JSON.stringify(step.ack));
+        if (step.outcome._tag === "Resubscribe") reject(new Error(step.outcome.reason));
+        if (step.outcome._tag === "Applied" && client.window !== undefined) {
+          clearTimeout(timeout);
+          resolveClient(client);
+        }
+      });
+    });
+  } finally {
+    socket.close(1000, "conformance step complete");
+  }
+};
+
 /** Register the identical durable-session behavior suite for one concrete host package. */
 export const defineHostConformanceSuite = (kind: HostKind): void => {
   describe(`${kind} host conformance`, () => {
@@ -608,6 +648,15 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         expect(live._tag).toBe("Window");
         expect(live.window.readiness._tag).toBe("Ready");
         expect(live.window.records.map((record) => record.kind)).toEqual(["user", "assistant"]);
+
+        // The object serves transcript sockets from its own transcript store, without the runtime.
+        const subscribed = await subscribeTranscript(host, sessionId);
+        expect(subscribed.window?.readiness._tag).toBe("Ready");
+        expect(subscribed.window?.records.map((record) => record.kind)).toEqual([
+          "user",
+          "assistant",
+        ]);
+        expect(subscribed.window?.incarnation).toBe(status.incarnation);
 
         // Cold reads and backfill status never build the model runtime.
         await host.restart({ hard: true });

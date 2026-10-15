@@ -112,6 +112,28 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
    * including those still hibernated, which a just-woken object has not restored yet. They are
    * recognised by their attachment kind without being restored.
    */
+  /**
+   * Re-read every transcript socket, held or hibernated, at the current cut. The served version
+   * changed without a publication (a rebuilt version activated), so each subscriber receives a
+   * complete replacement (design §7 step 4, §9.4).
+   */
+  async refreshTranscript(): Promise<void> {
+    if (this.transcript === undefined) return;
+    const sockets = [...this.transcript.webSockets()];
+    for (const webSocket of this.options.getWebSockets?.() ?? []) {
+      if (this.sockets.has(webSocket) || this.transcript.has(webSocket)) continue;
+      const decoded = await decodeWebSocketAttachment(webSocket.deserializeAttachment());
+      if (decoded._tag !== "Decoded" || decoded.attachment.kind !== "eda-transcript-v1") continue;
+      if (
+        this.transcript.has(webSocket) ||
+        this.transcript.restore(webSocket, decoded.attachment)
+      ) {
+        sockets.push(webSocket);
+      }
+    }
+    this.transcript.serveRestored(sockets);
+  }
+
   async resetTranscript(): Promise<void> {
     if (this.transcript === undefined) return;
     const hibernated: WebSocket[] = [];

@@ -429,8 +429,9 @@ The current WebSocket transport is described in detail in `docs/websocket-protoc
 
 ### Transcript-window sockets
 
-Hosts that pass `transcriptSockets: { transcriptStore }` to the controller (or Durable Object base)
-serve the ordered transcript stream of `docs/transcript-history.md` §9 on the existing transport
+Hosts that pass `transcriptSockets: { transcriptStore }` to the controller (or
+`transcriptSockets: {}` to the Durable Object base, whose store defaults to the object's own
+Durable Object transcript store) serve the ordered transcript stream of `docs/transcript-history.md` §9 on the existing transport
 (hello, ACK, application ping, flow control, hibernation). The wire is in
 `docs/websocket-protocol.md`.
 
@@ -894,6 +895,9 @@ Current production host:
   `transcriptStatus` advances pending transcript build work by up to 16 bounded slices and returns
   the status (incarnation, head, current version, every version's meta, `pending`, `converged`) a
   host backfill records; `readTranscriptWindow` serves SSR and CLI reads. Hosts authorize callers;
+- on activation of a rebuilt version, the object re-reads every transcript socket (held or
+  hibernated) through `EDASessionController.refreshTranscriptWebSockets`, so each receives one
+  complete replacement although no event was published;
 - host transcript options (`EDASessionDurableObjectOptions.transcript`): `definitions`
   (default: no host mappings), `adoptIncarnationKey` (Gia: `gia.log_incarnation` in
   `ctx.storage.kv`), `onAlert` (default `console.error`) and `onActivated`;
