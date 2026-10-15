@@ -59,6 +59,10 @@
       "types": "./dist/domain/reduced-state-schema.d.ts",
       "import": "./dist/domain/reduced-state-schema.js"
     },
+    "./transcript": {
+      "types": "./dist/transcript.d.ts",
+      "import": "./dist/transcript.js"
+    },
     "./websocket": {
       "types": "./dist/websocket.d.ts",
       "import": "./dist/websocket.js"

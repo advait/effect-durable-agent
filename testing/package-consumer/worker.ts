@@ -4,6 +4,7 @@ import * as ContextProjection from "effect-durable-agent/domain/context-projecti
 import * as MessageTranscript from "effect-durable-agent/domain/message-transcript";
 import * as ReducedState from "effect-durable-agent/domain/reduced-state";
 import * as ReducedStateSchema from "effect-durable-agent/domain/reduced-state-schema";
+import * as Transcript from "effect-durable-agent/transcript";
 import * as WebSocket from "effect-durable-agent/websocket";
 import * as Compaction from "effect-durable-agent/services/compaction";
 import * as IdGenerator from "effect-durable-agent/services/id-generator";
@@ -48,6 +49,7 @@ const publicModules = [
   SessionController,
   DurableObjectStorage,
   CelldHost,
+  Transcript,
   WebSocket,
   Compaction,
   IdGenerator,
