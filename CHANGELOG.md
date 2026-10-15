@@ -1,7 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.23
 
+Transcript history, part 2: live delivery. Inert until a host passes a transcript store; the raw
+event stream and the model path are unchanged.
+
+- Live delivery (design §9): `readTranscriptSubscription` and `planTranscriptUpdate` answer
+  subscribe, page (before or after) and retain with one read at one cut through the
+  `EDATranscriptStore` port; every update is a complete-cut `replace` or `patch`.
+- Active content: the streaming inference's parts under stable ids (`TranscriptActivePart`),
+  coalesced to a 50 ms display cadence and retired in the same update as the inference's durable
+  result on every terminal. `TranscriptActiveContent.parts` changes shape (no producer existed).
+- Protocol (`websocket/transcript*`): a negotiation envelope decoded before anything
+  version-specific (also for SSR data); request, update and chunk frames; chunked updates applied
+  only when complete; `appliedUpdateSeq` on the existing ACK (additive); a framework-agnostic client
+  reference store.
+- `effect-durable-agent-cloudflare`: `?stream=transcript` sockets enabled with
+  `transcriptSockets: { transcriptStore }`; per-subscriber serialization; a publication fence so
+  live content is served only with a read at the published head; hibernation checkpoint
+  (`eda-transcript-v1`); a socket that wakes mid-transfer closes with 4009 and the client
+  resubscribes. Without a store, `?stream=transcript` returns 400.
 - Transcript semantic revision 2: submissions consumed by one turn are ordered by submission, as
   the prompt orders them, instead of by the turn's input list (for example a promoted queued
   message and later steering read together). Every transcript version changes, so sessions rebuild
