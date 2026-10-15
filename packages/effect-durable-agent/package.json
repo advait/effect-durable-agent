@@ -67,6 +67,10 @@
       "types": "./dist/websocket.d.ts",
       "import": "./dist/websocket.js"
     },
+    "./websocket/events": {
+      "types": "./dist/websocket/events.d.ts",
+      "import": "./dist/websocket/events.js"
+    },
     "./services/keep-alive": {
       "types": "./dist/services/keep-alive.d.ts",
       "import": "./dist/services/keep-alive.js"

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `effect-durable-agent/websocket/events`: the raw live-event WebSocket contract (frames, delivery
+  rules, messages) without the transcript-window stream. `effect-durable-agent/websocket` is
+  unchanged; event-socket clients that import the new entry no longer bundle the transcript
+  protocol, whose schemas cannot be tree-shaken.
+
 ## 0.1.0-alpha.24
 
 Transcript history, part 3: Durable Object storage. **Development release: do not adopt in
