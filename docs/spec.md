@@ -338,13 +338,15 @@ Foundational tables:
 Transcript tables (forward migration 2; see "Transcript history" in §14):
 
 - `_eda_transcript_meta` — one row per stored transcript **slot** (one built instance of one
-  version): version, role (`active`, `building` or `retired`), cursor, status and failure.
+  version): version, role (`active`, `building` or `retired`), cursor, status and failure, and
+  `slice_failures` (consecutive failed builder slices; migration 3).
 - `_eda_transcript_records` — `(slot, id)` → kind, position, `updatedSeq`, flags and the stored
   record envelope. Indexes: transcript order, ordinal allocation per anchor, `updatedSeq`, pending
   users, and tools by assistant.
 - `_eda_transcript_aliases` — `(slot, namespace, key)` → record id; inserts only.
 - `_eda_log_incarnation` — the adapter-owned identity of this physical log.
-- `_eda_alarm_wakeups` — each alarm owner's durable wakeup (`runtime`, `transcript`).
+- `_eda_alarm_wakeups` — each alarm owner's durable wakeup (`runtime`, `transcript`) and its
+  consecutive `failures` (migration 3).
 
 Logical durable events are canonical. The DO store may physically normalize large framework fields into sidecar tables, but `eventsAfter` reconstructs full logical events before returning them to reducers, sinks, query APIs, and live catch-up.
 
@@ -767,6 +769,22 @@ reuses), and live delivery over transcript-window sockets (§10). Hosts still re
     `retired`), and deletes at most 2,000 retired rows. All builder state is in
     `_eda_transcript_meta`; the session object kicks the builder from its constructor and runs it
     from its alarm and from `transcriptStatus`, never through the model runtime.
+  - _Bounded retries._ A slice that throws (its transaction rolls back; for example a storage error,
+    or on celld a write failing after planning) counts against its build target
+    (`_eda_transcript_meta.slice_failures`, migration 3, reset by a slice that completes) only
+    when it threw while advancing that target; a failing reconciliation or cleanup is never
+    charged to a build. At `maxSliceFailures` consecutive failures (default 5, tunable through
+    `transcript.sliceLimits`) the target is frozen as failed, alerted (`ProjectionFailed`) and
+    never retried. A failed builder alarm retries with exponential backoff from 30 s; its
+    consecutive failures persist with its wakeup (`_eda_alarm_wakeups.failures`), so eviction
+    cannot reset them, and after `maxSliceFailures` the builder stops scheduling itself and raises
+    `BuilderStopped`. Its wakeup (and count) is then gone, so only a later object start, a
+    `transcriptStatus` call or a pending-work kick can try again, each bounded the same way. No
+    failure re-arms the alarm sooner than its backoff.
+  - _Active but behind._ An active version whose cursor is behind the head (a session re-enabled
+    after it was disabled) is not maintained in appends; builder slices catch it up, and until they
+    reach the head its reads report `UpdatingHistory` at its real cursor rather than `Ready`. The
+    slice that reaches the head re-reads every transcript socket (`onServedChanged`, also raised when the active version freezes).
   - _Reads._ `DurableObjectTranscriptStore` (also `.layer` for the `EDATranscriptStore` port) reads
     windows, meta and status synchronously from storage with no runtime. A stored row this release
     cannot decode serves an empty `Unreadable` window.
@@ -893,14 +911,24 @@ Current production host:
 - host entrypoints expose RPC methods for submit, submitBatch, submitAndBlock, blockOnCommand, snapshot, messages, backup/destroy, alarm, and WebSocket events;
 - two storage-only RPC methods never construct the model runtime, reducers or sinks:
   `transcriptStatus` advances pending transcript build work by up to 16 bounded slices and returns
-  the status (incarnation, head, current version, every version's meta, `pending`, `converged`) a
-  host backfill records; `readTranscriptWindow` serves SSR and CLI reads. Hosts authorize callers;
+  the status a host backfill records: `Enabled` (incarnation, head, current version, every
+  version's meta, `pending`, `converged`) or, for a session outside the rollout ring, `Disabled`
+  (read-only: head, current version, stored versions, and the incarnation only if one exists); `readTranscriptWindow` serves SSR and CLI reads (`Window`,
+  `CursorMismatch` or `Disabled`). Hosts authorize callers;
+- transcript maintenance is **opt-in per session** (`transcript.enabled`: a boolean or a
+  `(sessionId) => boolean` predicate, default off), resolved once per object instance. A disabled
+  session's runtime store maintains nothing and the object schedules no builder work;
+  `transcriptStatus` reports `Disabled` read-only (no version initialized, no incarnation
+  minted) and `readTranscriptWindow` answers `Disabled`; a `?stream=transcript` upgrade is refused
+  with 409. An upgrade naming a session other than the object's is refused with 400;
 - on activation of a rebuilt version, the object re-reads every transcript socket (held or
   hibernated) through `EDASessionController.refreshTranscriptWebSockets`, so each receives one
   complete replacement although no event was published;
-- host transcript options (`EDASessionDurableObjectOptions.transcript`): `definitions`
+- host transcript options (`EDASessionDurableObjectOptions.transcript`): `enabled` (default off),
+  `definitions`
   (default: no host mappings), `adoptIncarnationKey` (Gia: `gia.log_incarnation` in
-  `ctx.storage.kv`), `onAlert` (default `console.error`) and `onActivated`;
+  `ctx.storage.kv`), `sliceLimits` (positive integers, validated at construction; includes
+  `maxSliceFailures`, default 5), `onAlert` (default `console.error`) and `onActivated`;
 - `EDASessionDurableObject` owns only Cloudflare callbacks, upgrade wiring, and object identity;
 - `EDASessionController` coordinates public session use cases without owning platform state;
 - `EDASessionRuntime` owns lazy `ManagedRuntime` construction, disposal, and keep-alive;
@@ -908,6 +936,8 @@ Current production host:
   and interpretation of core delivery actions;
 - runtime construction retries after a failed hydration/build instead of pinning the warm isolate to a rejected promise;
 - `EDAKeepAlive` integrates with Durable Object alarms/leases so active control/model/sink work can keep the object awake enough to finish or reschedule;
+- `alarm()` is `runEDASessionAlarm` (`cf/durable-object-alarm-handler.ts`), unit-tested over real
+  SQLite;
 - the Durable Object alarm is shared through `DurableObjectAlarmScheduler`: each owner (`runtime`
   for keep-alive and run-scheduling redelivery, `transcript` for the builder) keeps a durable
   wakeup row and the platform alarm is set to the earliest, so neither owner deletes or postpones the

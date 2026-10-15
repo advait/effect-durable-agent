@@ -134,7 +134,8 @@ _As built:_ the adapter's tables use its `_eda_` prefix (`_eda_transcript_record
 `_eda_transcript_aliases`, `_eda_transcript_meta`), and rows are keyed by a **slot**, one stored
 instance of one version, rather than by the version string. A slot's role is `active`, `building`
 or `retired` (discarded or replaced, awaiting bounded deletion), so a retired slot still being
-deleted never collides with a later build of the same version.
+deleted never collides with a later build of the same version. A slot also counts its consecutive
+failed builder slices (`slice_failures`, forward migration 3), which bounds retries (§7).
 
 | Table | Purpose |
 | --- | --- |
@@ -307,6 +308,33 @@ show "unavailable" until the rebuild finishes, never a wrong view.
 
 **First introduction.** "No transcript" is the previous version: a host ships the writers, builder
 and readers with its old reader still serving, runs the backfill, and only then switches its reader.
+
+**Rollout rings (as built).** Maintenance is opt-in per session and off by default
+(`EDASessionTranscriptOptions.enabled`, a boolean or a `(sessionId) => boolean` predicate,
+evaluated once per object instance). A host widens concentric rings with a deterministic predicate,
+for example `hash(sessionId) < percentage`, so a session's membership changes only when the host
+widens or narrows the ring.
+
+- A disabled session gets no transcript writes, builder slices or wakeups. Reads answer
+  `Disabled`, the status is `Disabled` (read without writing), and transcript sockets are refused
+  (409).
+- Enabling a session takes the first-introduction path: a build from the log in bounded slices,
+  then activation. A session enabled from its first event starts `current` at seq 0.
+- Disabling a session leaves its rows exactly as they are; nothing maintains them.
+- Re-enabling a session whose active version is behind the head never serves that version as
+  current. Appends do not maintain it (its cursor is not the head), builder slices catch it up from
+  its cursor, and until they reach the head reads report `UpdatingHistory` at its real cursor;
+  connected sockets are re-read when it reaches the head.
+  Narrowing a ring is therefore safe, though the host normally only widens.
+- The backfill's proof covers only enabled sessions; the status's `Enabled`/`Disabled` tag says
+  which.
+
+**Bounded retries (as built).** A builder slice that throws while advancing its build target counts
+against that target. After a configured number of consecutive failures (default 5) the build is
+frozen as `failed`, which is never retried, and alerted. A failing builder alarm backs off
+exponentially and stops scheduling itself after the same number of persisted consecutive failures,
+so no session can loop on its alarm; only a later object start, status call or pending-work kick
+tries again, bounded the same way.
 
 ### 7.1 Forward-only formats
 

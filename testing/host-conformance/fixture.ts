@@ -16,6 +16,8 @@ import type {
 import { encodeEdaRpcCommand } from "../../packages/effect-durable-agent-cloudflare/dist/index.js";
 
 declare const EDA_CONFORMANCE_BLOCK_MODEL: boolean;
+/** The one session this launch leaves out of the transcript rollout ring ("" for none). */
+declare const EDA_CONFORMANCE_TRANSCRIPT_DISABLED: string;
 
 /** A conformance session object that also reports whether its model runtime was built. */
 type ConformanceSession = EDASessionDurableObject & {
@@ -63,7 +65,11 @@ const finishedStream = (text: string) =>
 /** Deterministic model and runtime configuration shared by both real-host fixtures. */
 export const conformanceHostOptions = (): EDASessionDurableObjectOptions => ({
   config: { modelSelection: { provider: "conformance", modelId: "fixed-pong" } },
-  transcript: { adoptIncarnationKey: conformanceIncarnationKey },
+  transcript: {
+    adoptIncarnationKey: conformanceIncarnationKey,
+    // A rollout ring: every session except the one this launch disables.
+    enabled: (sessionId) => sessionId !== EDA_CONFORMANCE_TRANSCRIPT_DISABLED,
+  },
   // Transcript sockets read the object's own Durable Object transcript store.
   transcriptSockets: {},
   modelResolverLayer: Layer.merge(
@@ -105,7 +111,7 @@ export const conformanceWorker = {
     }
 
     const match =
-      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|runtime-builds|arm-unrecorded-alarm|kv-incarnation)\/?$/.exec(
+      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|runtime-builds|arm-unrecorded-alarm|kv-incarnation|transcript-upgrade)\/?$/.exec(
         url.pathname,
       );
     if (match === null) {
@@ -155,6 +161,18 @@ export const conformanceWorker = {
     if (operation === "arm-unrecorded-alarm") {
       await session.armUnrecordedAlarm(Number(url.searchParams.get("delayMs") ?? "0"));
       return json({ ok: true });
+    }
+    if (operation === "transcript-upgrade") {
+      // Ask the object to upgrade a transcript socket for `as` (default: its own session).
+      const upgradeUrl = new URL("https://eda.invalid/events");
+      upgradeUrl.searchParams.set("sessionId", url.searchParams.get("as") ?? sessionId);
+      upgradeUrl.searchParams.set("stream", "transcript");
+      const response = await session.fetch(
+        new Request(upgradeUrl, { headers: { Upgrade: "websocket" } }),
+      );
+      response.webSocket?.accept();
+      response.webSocket?.close(1000, "conformance probe");
+      return json({ status: response.status });
     }
     if (operation === "kv-incarnation") {
       return json({ incarnation: await session.kvIncarnation() });

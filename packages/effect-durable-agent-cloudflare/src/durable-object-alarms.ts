@@ -65,8 +65,25 @@ export class DurableObjectAlarmScheduler {
    * caller syncs once at the end, or not at all when it rethrows, which leaves the platform's own
    * retry (with its backoff and cap) in force.
    */
-  retain(owner: DurableObjectAlarmOwner, atMs: number): void {
-    this.#write(owner, atMs);
+  retain(owner: DurableObjectAlarmOwner, atMs: number, failures = 0): void {
+    this.#write(owner, atMs, failures);
+  }
+
+  /** Consecutive failures recorded with `owner`'s wakeup; 0 without one. */
+  failures(owner: DurableObjectAlarmOwner): number {
+    return (
+      this.storage.sql
+        .exec<{ readonly failures: number }>(
+          "SELECT failures FROM _eda_alarm_wakeups WHERE owner = ?",
+          owner,
+        )
+        .toArray()[0]?.failures ?? 0
+    );
+  }
+
+  /** Remove `owner`'s wakeup whatever its time; call `sync` afterwards. */
+  clear(owner: DurableObjectAlarmOwner): void {
+    this.#write(owner, undefined);
   }
 
   /** Wake `owner` no later than `atMs`; an earlier wakeup it already holds is kept. */
@@ -146,16 +163,27 @@ export class DurableObjectAlarmScheduler {
       .toArray()[0]?.at_ms;
   }
 
-  #write(owner: DurableObjectAlarmOwner, atMs: number | undefined): void {
+  /** Upsert or delete `owner`'s wakeup. Without `failures`, an existing count is kept. */
+  #write(owner: DurableObjectAlarmOwner, atMs: number | undefined, failures?: number): void {
     if (atMs === undefined) {
       this.storage.sql.exec("DELETE FROM _eda_alarm_wakeups WHERE owner = ?", owner);
       return;
     }
+    if (failures === undefined) {
+      this.storage.sql.exec(
+        `INSERT INTO _eda_alarm_wakeups (owner, at_ms) VALUES (?, ?)
+        ON CONFLICT(owner) DO UPDATE SET at_ms = excluded.at_ms`,
+        owner,
+        atMs,
+      );
+      return;
+    }
     this.storage.sql.exec(
-      `INSERT INTO _eda_alarm_wakeups (owner, at_ms) VALUES (?, ?)
-      ON CONFLICT(owner) DO UPDATE SET at_ms = excluded.at_ms`,
+      `INSERT INTO _eda_alarm_wakeups (owner, at_ms, failures) VALUES (?, ?, ?)
+      ON CONFLICT(owner) DO UPDATE SET at_ms = excluded.at_ms, failures = excluded.failures`,
       owner,
       atMs,
+      failures,
     );
   }
 }

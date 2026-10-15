@@ -518,8 +518,8 @@ describe("EDASessionController", () => {
     await Effect.runPromise(EDASessionController.migrate(storage));
     await Effect.runPromise(EDASessionController.migrate(storage));
 
-    expect(storage.appliedMigrations).toEqual([1, 2]);
-    expect(storage.migrationInsertCount).toBe(2);
+    expect(storage.appliedMigrations).toEqual([1, 2, 3]);
+    expect(storage.migrationInsertCount).toBe(3);
     expect(storage.createdReducerCheckpointTable).toBe(true);
   });
 
@@ -1389,6 +1389,7 @@ class FakeDurableObjectStorage implements EDASessionDurableObjectStorage {
 
     if (
       normalized.startsWith("CREATE TABLE") ||
+      normalized.startsWith("ALTER TABLE") ||
       normalized.startsWith("CREATE INDEX") ||
       normalized.startsWith("CREATE UNIQUE INDEX") ||
       normalized.startsWith("DROP TABLE") ||

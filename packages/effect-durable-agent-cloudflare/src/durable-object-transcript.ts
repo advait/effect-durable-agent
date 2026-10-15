@@ -23,20 +23,24 @@ import type { DurableObjectSessionStorage } from "./durable-object-storage";
 import { makeDurableObjectEventLog } from "./durable-object-store";
 import {
   carriedDefinition,
-  defaultTranscriptSliceLimits,
+  resolveTranscriptSliceLimits,
   emptyTranscriptEffects,
   hasPendingTranscriptWork,
   missedSessionAlert,
   publishTranscriptEffects,
   reconcileTranscriptSlots,
+  recordTranscriptSliceFailure,
+  TranscriptBuildSliceError,
   runTranscriptSlice,
   type DurableObjectTranscriptOptions,
   type DurableObjectTranscriptSliceLimits,
+  type TranscriptAlert,
   type TranscriptEffects,
   type TranscriptEventLog,
 } from "./durable-object-transcript-maintenance";
 import {
   makeTranscriptWindowSource,
+  readLogIncarnation,
   readOrMintLogIncarnation,
   readTranscriptSlots,
   transcriptVersionMetaOf,
@@ -47,17 +51,29 @@ import {
 /**
  * Maintenance state of one session's transcript, as a host backfill records it (§7).
  *
- * `converged` is the backfill's proof condition: the active version is `currentVersion`, healthy,
- * and no builder or cleanup work remains.
+ * - `Enabled`: the host maintains this session's transcript. `converged` is the backfill's proof
+ *   condition: the active version is `currentVersion`, healthy and at the head, and no builder or
+ *   cleanup work remains.
+ * - `Disabled`: the host has not enabled this session (a rollout ring). It is reported read-only:
+ *   any stored versions are listed as they are, nothing is maintained, and no incarnation is
+ *   minted, so `incarnation` is present only when one already exists or can be adopted.
  */
-export const TranscriptStorageStatus = Schema.Struct({
-  incarnation: TranscriptLogIncarnation,
-  headSeq: SequenceNumber,
-  currentVersion: TranscriptVersion,
-  versions: Schema.Array(TranscriptVersionMeta),
-  pending: Schema.Boolean,
-  converged: Schema.Boolean,
-});
+export const TranscriptStorageStatus = Schema.Union([
+  Schema.TaggedStruct("Enabled", {
+    incarnation: TranscriptLogIncarnation,
+    headSeq: SequenceNumber,
+    currentVersion: TranscriptVersion,
+    versions: Schema.Array(TranscriptVersionMeta),
+    pending: Schema.Boolean,
+    converged: Schema.Boolean,
+  }),
+  Schema.TaggedStruct("Disabled", {
+    incarnation: Schema.optionalKey(TranscriptLogIncarnation),
+    headSeq: SequenceNumber,
+    currentVersion: TranscriptVersion,
+    versions: Schema.Array(TranscriptVersionMeta),
+  }),
+]);
 export type TranscriptStorageStatus = typeof TranscriptStorageStatus.Type;
 
 /** Construction options for the runtime-free transcript store of one session. */
@@ -86,7 +102,7 @@ export class DurableObjectTranscriptStore {
     this.#storage = options.storage;
     this.#options = options.transcript;
     this.#log = makeDurableObjectEventLog(options.storage.sql, options.sessionId);
-    this.#limits = { ...defaultTranscriptSliceLimits, ...options.transcript.sliceLimits };
+    this.#limits = resolveTranscriptSliceLimits(options.transcript.sliceLimits);
   }
 
   /** The `EDATranscriptStore` port over this store. */
@@ -107,11 +123,19 @@ export class DurableObjectTranscriptStore {
     }
     const carried = carriedDefinition(this.#options.definitions, active.version) !== undefined;
     try {
-      return readTranscriptWindowFrom(
+      const window = readTranscriptWindowFrom(
         makeTranscriptWindowSource(this.#storage.sql, incarnation, active, carried),
         selector,
         limits,
       );
+      // An active version behind the head (re-enabled after its session was disabled, or caught
+      // up by the builder for any other reason) serves its consistent last cut, but never as
+      // current: it reads as updating history until the builder brings it to the head.
+      return Result.isSuccess(window) &&
+        window.success.readiness._tag === "Ready" &&
+        active.cursor < this.#log.head()
+        ? Result.succeed({ ...window.success, readiness: { _tag: "UpdatingHistory" } })
+        : window;
     } catch (error) {
       // Only a stored row this release cannot decode serves nothing rather than a wrong view (§7);
       // a storage failure is an error.
@@ -138,13 +162,14 @@ export class DurableObjectTranscriptStore {
   }
 
   /** Status for builders, backfill proofs and alerts. */
-  status(): TranscriptStorageStatus {
+  status(): Extract<TranscriptStorageStatus, { readonly _tag: "Enabled" }> {
     const { incarnation, slots } = this.#prepare();
     const headSeq = this.#log.head();
     const config = this.#options.definitions;
     const pending = hasPendingTranscriptWork(this.#storage, config, headSeq);
     const active = slots.find((slot) => slot.role === "active");
     return {
+      _tag: "Enabled",
       incarnation,
       headSeq,
       currentVersion: config.current.version,
@@ -152,6 +177,23 @@ export class DurableObjectTranscriptStore {
       pending,
       converged:
         !pending && active?.version === config.current.version && active.status._tag === "Ok",
+    };
+  }
+
+  /**
+   * Status of a session the host has not enabled, read without writing anything: no version is
+   * initialized or reconciled and no incarnation is minted.
+   */
+  disabledStatus(): Extract<TranscriptStorageStatus, { readonly _tag: "Disabled" }> {
+    const incarnation = readLogIncarnation(this.#storage.sql, this.#options.adoptIncarnation);
+    return {
+      _tag: "Disabled",
+      ...(incarnation === undefined ? {} : { incarnation }),
+      headSeq: this.#log.head(),
+      currentVersion: this.#options.definitions.current.version,
+      versions: readTranscriptSlots(this.#storage.sql).flatMap(
+        (slot) => transcriptVersionMetaOf(slot) ?? [],
+      ),
     };
   }
 
@@ -169,15 +211,49 @@ export class DurableObjectTranscriptStore {
 
   /** Run one bounded builder slice in its own transaction; returns whether work remains. */
   runSlice(): boolean {
-    return this.#transact((effects) =>
-      runTranscriptSlice(
-        this.#storage,
-        this.#options.definitions,
-        this.#log,
-        this.#limits,
-        effects,
-      ),
-    );
+    try {
+      return this.#transact((effects) =>
+        runTranscriptSlice(
+          this.#storage,
+          this.#options.definitions,
+          this.#log,
+          this.#limits,
+          effects,
+        ),
+      );
+    } catch (error) {
+      // The slice rolled back. A failure while advancing its build target counts against that
+      // target, which freezes at the limit; any other failure is bounded by the builder alarm.
+      if (!(error instanceof TranscriptBuildSliceError)) throw error;
+      if (this.#recordSliceFailure(error.cause)) return this.hasPendingWork();
+      throw error.cause;
+    }
+  }
+
+  /** Record a thrown slice in its own transaction; returns whether a version was frozen. */
+  #recordSliceFailure(cause: unknown): boolean {
+    try {
+      return this.#transact((effects) =>
+        recordTranscriptSliceFailure(
+          this.#storage,
+          this.#options.definitions,
+          this.#log,
+          this.#limits,
+          cause,
+          effects,
+        ),
+      );
+    } catch (error) {
+      // Storage refuses even the failure record; the caller still sees the original failure,
+      // and the builder alarm's own failure count bounds its retries.
+      console.error("EDA transcript could not record a failed builder slice", error);
+      return false;
+    }
+  }
+
+  /** Raise an alert through the host observer. */
+  alert(alert: TranscriptAlert): void {
+    publishTranscriptEffects(this.#options.observer, { alerts: [alert], pendingWork: false });
   }
 
   /** The `EDATranscriptStore` port: the same reads as Effects. */

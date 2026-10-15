@@ -44,6 +44,8 @@ interface Harness {
   readonly storage: SqliteDurableObjectStorage;
   readonly alerts: Array<{ readonly alert: TranscriptAlert; readonly depth: number }>;
   readonly activations: Array<string>;
+  /** Times what reads serve changed without a publication. */
+  readonly servedChanged: number;
   readonly transcript: DurableObjectTranscriptOptions;
   readonly store: EDASessionStoreShape;
   readonly service: DurableObjectTranscriptStore;
@@ -63,11 +65,15 @@ const makeHarness = (
 ): Harness => {
   const alerts: Harness["alerts"] = [];
   const activations: Array<string> = [];
+  const counts = { servedChanged: 0 };
   const transcript: DurableObjectTranscriptOptions = {
     definitions: definitions ?? { current: plain },
     observer: {
       onAlert: (alert) => alerts.push({ alert, depth: storage.depth }),
       onActivated: ({ version }) => activations.push(version),
+      onServedChanged: () => {
+        counts.servedChanged += 1;
+      },
     },
     ...(sliceLimits === undefined ? {} : { sliceLimits }),
   };
@@ -82,6 +88,9 @@ const makeHarness = (
     storage,
     alerts,
     activations,
+    get servedChanged() {
+      return counts.servedChanged;
+    },
     transcript,
     store,
     service: new DurableObjectTranscriptStore({ sessionId: testSessionId, storage, transcript }),
@@ -608,19 +617,196 @@ describe("Durable Object transcript upgrades and edge failures", () => {
     ]) {
       storage.rows(`DROP TABLE ${table}`);
     }
-    storage.rows("DELETE FROM _eda_schema_migrations WHERE id = 2");
+    storage.rows("DELETE FROM _eda_schema_migrations WHERE id IN (2, 3)");
     expect(storage.rows("SELECT id FROM _eda_schema_migrations")).toEqual([{ id: 1 }]);
 
     const upgraded = makeHarness({ current: gia }, undefined, storage);
     expect(storage.rows("SELECT id FROM _eda_schema_migrations ORDER BY id")).toEqual([
       { id: 1 },
       { id: 2 },
+      { id: 3 },
     ]);
     expect(eventCount(storage)).toBe(log.events.length);
     expect(upgraded.service.hasPendingWork()).toBe(true);
     expect(windowOf(upgraded.service).readiness).toEqual({ _tag: "Building" });
     runToCompletion(upgraded.service);
     expect(storedProjection(storage)).toEqual(referenceProjection(gia, log.events));
+  });
+
+  it("migrates a store written by the deployed v2 schema and keeps maintaining its transcript", () => {
+    // The v2 schema: transcript tables without the builder failure counts.
+    const storage = new SqliteDurableObjectStorage();
+    const v2 = makeHarness({ current: gia }, undefined, storage);
+    const log = conversation(4);
+    v2.append(log.events.slice(0, 20));
+    storage.rows("ALTER TABLE _eda_transcript_meta DROP COLUMN slice_failures");
+    storage.rows("ALTER TABLE _eda_alarm_wakeups DROP COLUMN failures");
+    storage.rows("DELETE FROM _eda_schema_migrations WHERE id = 3");
+
+    const upgraded = makeHarness({ current: gia }, undefined, storage);
+    expect(storage.rows("SELECT id FROM _eda_schema_migrations ORDER BY id")).toEqual([
+      { id: 1 },
+      { id: 2 },
+      { id: 3 },
+    ]);
+    upgraded.append(log.events.slice(20));
+    expect(storedProjection(storage)).toEqual(referenceProjection(gia, log.events));
+    expect(storage.rows("SELECT slice_failures FROM _eda_transcript_meta")).toEqual([
+      { slice_failures: 0 },
+    ]);
+  });
+
+  it("freezes a build that keeps throwing after the configured number of slices", () => {
+    // Without nesting (celld), a write failing after planning throws out of the slice.
+    const storage = new SqliteDurableObjectStorage({ nestedTransactions: false });
+    const legacy = makeHarness(undefined, undefined, storage);
+    const log = conversation(3);
+    legacy.append(log.events);
+    const harness = legacy.release(
+      { current: gia },
+      { maxEvents: 4, pageEvents: 2, maxSliceFailures: 3 },
+    );
+    const failures = () =>
+      storage.rows<{ slice_failures: number }>(
+        "SELECT slice_failures FROM _eda_transcript_meta WHERE role = 'building'",
+      )[0]?.slice_failures;
+
+    let failing = true;
+    storage.faults = (query) => {
+      if (failing && /^\s*INSERT INTO _eda_transcript_records/.test(query)) {
+        throw new Error("storage refused the row");
+      }
+    };
+    // A success in between resets the count.
+    expect(() => harness.service.runSlice()).toThrow(/storage refused the row/);
+    expect(failures()).toBe(1);
+    failing = false;
+    expect(harness.service.runSlice()).toBe(true);
+    expect(failures()).toBe(0);
+    failing = true;
+
+    expect(() => harness.service.runSlice()).toThrow(/storage refused the row/);
+    expect(() => harness.service.runSlice()).toThrow(/storage refused the row/);
+    expect(failures()).toBe(2);
+    // The third consecutive failure freezes the build: failed, alerted and never retried.
+    expect(harness.service.runSlice()).toBe(false);
+    expect(harness.service.readMeta()).toMatchObject([
+      { role: "building", cursor: 4, status: { _tag: "Failed", failedAtSeq: 5 } },
+    ]);
+    expect(harness.alerts.map(({ alert }) => alert)).toMatchObject([
+      { _tag: "ProjectionFailed", role: "building", error: "storage refused the row" },
+    ]);
+    expect(harness.service.hasPendingWork()).toBe(false);
+    failing = false;
+    expect(harness.service.runSlice()).toBe(false);
+    expect(harness.service.readMeta()[0]?.status._tag).toBe("Failed");
+  });
+
+  it("keeps the default for a slice limit given as undefined", () => {
+    const harness = makeHarness({ current: plain }, { maxEvents: undefined });
+    expect(harness.service.hasPendingWork()).toBe(false);
+  });
+
+  it("re-reads sockets when a re-enabled session's catch-up freezes its active version", () => {
+    const log = conversation(3);
+    const enabled = makeHarness({ current: gia });
+    enabled.append(log.events.slice(0, 10));
+    enabled.release(undefined).append(log.events.slice(10));
+    enabled.storage.rows("UPDATE _eda_event_log SET schema_version = 99 WHERE seq = 12");
+    const reenabled = enabled.release({ current: gia }, { maxEvents: 4, pageEvents: 2 });
+    expect(windowOf(reenabled.service).readiness).toEqual({ _tag: "UpdatingHistory" });
+    runToCompletion(reenabled.service);
+    expect(windowOf(reenabled.service).readiness).toMatchObject({
+      _tag: "Degraded",
+      failedAtSeq: 11,
+    });
+    expect(reenabled.servedChanged).toBe(1);
+  });
+
+  it("rejects slice limits below one", () => {
+    expect(() => makeHarness({ current: plain }, { maxSliceFailures: 0 }).service).toThrow(
+      /maxSliceFailures must be a positive integer/,
+    );
+  });
+
+  it("never charges a build for a failure outside advancing it", () => {
+    const log = conversation(4);
+    const base = makeHarness({ current: plain });
+    base.append(log.events);
+    // A retired version awaits cleanup while `gia` builds; the cleanup keeps failing.
+    const harness = base.release(
+      { current: gia, previous: plain },
+      { maxEvents: 4, pageEvents: 2, maxSliceFailures: 2 },
+    );
+    harness.storage.rows(
+      "INSERT INTO _eda_transcript_meta (version, role, cursor, status) VALUES (?, 'retired', 0, 'ok')",
+      "0".repeat(64),
+    );
+    harness.storage.faults = (query) => {
+      if (/^\s*DELETE FROM _eda_transcript_records/.test(query)) {
+        throw new Error("cleanup refused");
+      }
+    };
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      expect(() => harness.service.runSlice()).toThrow(/cleanup refused/);
+    }
+    // The build is still healthy and uncharged; only the alarm-level bound applies.
+    expect(harness.service.readMeta()).toMatchObject([
+      { role: "active", version: plain.version, status: { _tag: "Ok" } },
+      { role: "building", version: gia.version, status: { _tag: "Ok" } },
+    ]);
+    expect(
+      harness.storage.rows(
+        "SELECT slice_failures FROM _eda_transcript_meta WHERE role = 'building'",
+      ),
+    ).toEqual([{ slice_failures: 0 }]);
+    harness.storage.faults = undefined;
+    runToCompletion(harness.service);
+    expect(storedProjection(harness.storage)).toEqual(referenceProjection(gia, log.events));
+  });
+
+  it("catches a re-enabled session's active version up to the head before serving it as current", () => {
+    const log = conversation(6);
+    const enabled = makeHarness({ current: gia });
+    enabled.append(log.events.slice(0, 30));
+    const lastGood = windowOf(enabled.service);
+
+    // Disabled ring: appends commit with no transcript maintenance; rows stay untouched.
+    const disabled = enabled.release(undefined);
+    disabled.append(log.events.slice(30, 60));
+    expect(storedProjection(enabled.storage).meta.cursor).toBe(30);
+
+    // Re-enabled: the active version is behind the head.
+    const reenabled = enabled.release({ current: gia }, { maxEvents: 8, pageEvents: 4 });
+    const behind = windowOf(reenabled.service);
+    expect(behind.readiness).toEqual({ _tag: "UpdatingHistory" });
+    expect({ ...behind, readiness: lastGood.readiness }).toEqual(lastGood);
+    expect(reenabled.service.status()).toMatchObject({ pending: true, converged: false });
+
+    // Appends while behind are not maintained in the append; the builder catches up in slices.
+    reenabled.append(log.events.slice(60, 63));
+    expect(storedProjection(reenabled.storage).meta.cursor).toBe(30);
+    runToCompletion(reenabled.service);
+    expect(windowOf(reenabled.service).readiness).toEqual({ _tag: "Ready" });
+    reenabled.append(log.events.slice(63));
+    expect(storedProjection(reenabled.storage)).toEqual(referenceProjection(gia, log.events));
+    expect(reenabled.service.status()).toMatchObject({ pending: false, converged: true });
+    expect(reenabled.activations).toEqual([]);
+    expect(reenabled.servedChanged).toBe(1);
+  });
+
+  it("reports a disabled session read-only, without initializing or minting anything", () => {
+    const storage = new SqliteDurableObjectStorage();
+    const disabled = makeHarness(undefined, undefined, storage);
+    disabled.append(conversation(1).events);
+    expect(disabled.service.disabledStatus()).toEqual({
+      _tag: "Disabled",
+      headSeq: conversation(1).events.length,
+      currentVersion: plain.version,
+      versions: [],
+    });
+    expect(storage.rows("SELECT * FROM _eda_transcript_meta")).toEqual([]);
+    expect(storage.rows("SELECT * FROM _eda_log_incarnation")).toEqual([]);
   });
 
   it("freezes a build at a log event this release cannot decode instead of retrying forever", () => {

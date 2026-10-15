@@ -51,7 +51,10 @@ import {
   type DurableObjectTranscriptOptions,
   type TranscriptEventLog,
 } from "./durable-object-transcript-maintenance";
-import { transcriptTableStatements } from "./durable-object-transcript-tables";
+import {
+  builderFailureColumnStatements,
+  transcriptTableStatements,
+} from "./durable-object-transcript-tables";
 import type {
   DurableObjectSessionStorage,
   DurableObjectSessionStoreOptions,
@@ -119,6 +122,8 @@ interface DurableObjectReducerCheckpointRow {
 const durableObjectSessionStoreSchemaVersion = 1;
 /** Forward migration adding the transcript projection, log incarnation and alarm wakeups. */
 const durableObjectTranscriptSchemaVersion = 2;
+/** Forward migration adding the consecutive-failure counts that bound builder retries. */
+const durableObjectBuilderFailuresSchemaVersion = 3;
 
 /**
  * Bound one synchronous DO SQLite event-log read/decode to a small CPU and memory slice.
@@ -274,6 +279,14 @@ const migrateDurableObjectSessionStore = (storage: DurableObjectSessionStorage) 
           sql.exec(
             "INSERT INTO _eda_schema_migrations (id) VALUES (?)",
             durableObjectTranscriptSchemaVersion,
+          );
+        }
+
+        if (currentVersion < durableObjectBuilderFailuresSchemaVersion) {
+          for (const statement of builderFailureColumnStatements) sql.exec(statement);
+          sql.exec(
+            "INSERT INTO _eda_schema_migrations (id) VALUES (?)",
+            durableObjectBuilderFailuresSchemaVersion,
           );
         }
       }),
