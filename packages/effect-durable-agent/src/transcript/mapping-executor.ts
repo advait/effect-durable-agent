@@ -12,13 +12,13 @@ import {
 } from "./mapping";
 import { TranscriptProjectionError } from "./plan";
 import {
+  TranscriptDecorationEntryKey,
   transcriptDecorationBufferLimit,
   transcriptRecordId,
   type TranscriptBufferedDecoration,
   type TranscriptClassification,
   type TranscriptDecoration,
   type TranscriptDecorationBufferRecord,
-  type TranscriptDecorationEntryKey,
   type TranscriptDecorations,
   type TranscriptFieldPath,
   type TranscriptUserRecord,
@@ -145,7 +145,11 @@ const listEntryKey = (
   const value = extract(payload, key.path);
   switch (key._tag) {
     case "Id":
-      return typeof value === "string" && value.length > 0 ? value : undefined;
+      return typeof value === "string" &&
+        value.length > 0 &&
+        Schema.is(TranscriptDecorationEntryKey)(value)
+        ? value
+        : undefined;
     case "Ordinal":
       return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
         ? value
@@ -197,13 +201,20 @@ export const replayBufferedDecorations = (
       : [transcriptRecordId.decorationBuffer("idempotencyKey", user.idempotencyKey)]),
   ].flatMap((id) => {
     const buffer = batch.get(id);
-    return buffer?.kind === "decorationBuffer" ? buffer.operations : [];
+    if (buffer?.kind !== "decorationBuffer" || buffer.operations.length === 0) return [];
+    // Drained once applied: the user record now holds these decorations.
+    batch.put({ ...buffer, updatedSeq: seq, operations: [] });
+    return buffer.operations;
   });
   buffered.sort((left, right) => left.seq - right.seq);
   const decorated = decorateUser(batch.definition, user, buffered);
 
+  // Fallbacks describe ordinary submissions; a host-classified record (such as a subagent
+  // notice) keeps only the decorations its own mappings give it.
   const session = batch.get(transcriptRecordId.session);
-  if (session?.kind !== "sessionContext") return decorated;
+  if (session?.kind !== "sessionContext" || decorated.classification !== undefined) {
+    return decorated;
+  }
   let decorations = decorated.decorations;
   for (const fallback of batch.definition.mappings.userFallbacks) {
     const source = session.decorations[fallback.fromSession];
@@ -338,11 +349,19 @@ const extract = (value: unknown, path: TranscriptFieldPath): unknown =>
 
 const encoder = new TextEncoder();
 
+/**
+ * A payload value as the JSON a persisted log holds (so a live projection and a rebuild agree),
+ * within the value bound; otherwise nothing.
+ */
 const boundedJson = (value: unknown): Schema.Json | undefined => {
-  if (value === undefined || !Schema.is(Schema.Json)(value)) return undefined;
+  if (value === undefined) return undefined;
   try {
-    return encoder.encode(canonicalJson(value)).length <= transcriptMappingBounds.maxValueBytes
-      ? value
+    const json = JSON.stringify(value);
+    if (json === undefined) return undefined;
+    const normalized: unknown = JSON.parse(json);
+    return Schema.is(Schema.Json)(normalized) &&
+      encoder.encode(canonicalJson(normalized)).length <= transcriptMappingBounds.maxValueBytes
+      ? normalized
       : undefined;
   } catch {
     return undefined;

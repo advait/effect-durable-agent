@@ -186,9 +186,10 @@ Ownership and limits:
 - **Decorations may precede their target.** Hosts append decoration events before the command
   they describe (Gia submits `[author, attachments…, references…, SubmitMessage]` in one batch).
   The interpreter holds such operations in an internal, never-served
-  `decorations:<association>:<key>` record (bounded per key) and applies them in arrival order when the user record is created.
-  Host-declared **user fallbacks** then copy session decorations onto a user record created without
-  them, in declaration order, first present wins (Gia: the latest author, else the session owner).
+  `decorations:<association>:<key>` record (bounded per key), applies them in arrival order when
+  the user record is created, and drains the buffer. Host-declared **user fallbacks** then copy
+  session decorations onto a user record created without them, in declaration order, first present
+  wins (Gia: the latest author, else the session owner); a host-classified record takes none.
 
 The first host's coverage (Gia: author identity with its span-then-owner fallback, attachments,
 references, subagent notice classification) must be demonstrated against its historical fixtures

@@ -190,7 +190,9 @@ describe("transcript interpretation oracle", () => {
   it("projects every scenario identically under every batch partition", () => {
     for (const { name, events } of transcriptScenarios()) {
       const definition = name === "host-decorations" ? gia : plain;
-      const full = normalizedProjection(projectBatches(definition, [events]));
+      const projected = projectBatches(definition, [events]);
+      expect(projected.meta.status._tag).toBe("Ok");
+      const full = normalizedProjection(projected);
       expect(
         normalizedProjection(
           projectBatches(
@@ -229,8 +231,8 @@ describe("transcript interpretation oracle", () => {
       const rendered = renderedTranscriptHistory(projectBatches(gia, [events]));
       const reduced = reducedStateHistory(events);
       if (compacted) {
-        expect(reduced.filter((id) => !rendered.includes(id))).toEqual([]);
-        expect(rendered.length).toBeGreaterThanOrEqual(reduced.length);
+        // Everything the pruned state still shows is rendered, in the same order.
+        expect(rendered.filter((id) => reduced.includes(id))).toEqual(reduced);
       } else {
         expect(rendered).toEqual(reduced);
       }

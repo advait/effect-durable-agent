@@ -16,7 +16,8 @@ import {
   ProviderPartId,
   UnixEpochMillis,
   effectDurableAgentNamespace,
-  type FailurePayload,
+  FailurePayload,
+  ToolName,
   type ModelSelectionPayload,
 } from "../types/events/envelope";
 import {
@@ -95,7 +96,7 @@ import {
   type TranscriptFieldPath,
   type TranscriptCompactionRecord,
   type TranscriptPosition,
-  type TranscriptRecord,
+  TranscriptRecord,
   type TranscriptRecordId,
   type TranscriptRunGroupRecord,
   type TranscriptRunMember,
@@ -199,6 +200,15 @@ export class TranscriptBatch {
   }
 
   plan(throughSeq: SequenceNumber): TranscriptChangePlan {
+    // Every planned record must satisfy the strict stored-row schema: an invalid record fails
+    // this version's projection (freezing it) rather than becoming a row no reader can decode.
+    for (const record of this.records.values()) {
+      if (!isValidRecord(record)) {
+        throw new TranscriptProjectionError({
+          message: `planned record ${record.id} does not satisfy the transcript record schema`,
+        });
+      }
+    }
     return {
       records: Array.from(this.records.values()),
       aliases: Array.from(this.aliases.values()),
@@ -208,6 +218,11 @@ export class TranscriptBatch {
 }
 
 const aliasKey = (namespace: TranscriptAliasNamespace, key: string) => `${namespace}\u0000${key}`;
+
+const matchesRecordSchema = Schema.is(TranscriptRecord);
+
+/** Whether a record satisfies the stored-row schema, filters included. */
+const isValidRecord = (record: TranscriptRecord): boolean => matchesRecordSchema(record);
 
 const kindMismatch = (id: string, expected: string, actual: string) =>
   new TranscriptProjectionError({ message: `record ${id} is ${actual}, expected ${expected}` });
@@ -471,7 +486,7 @@ const interpretEvent = (
         ...assistant,
         updatedSeq: seq,
         ...terminalTiming(assistant.startedAtMs, at),
-        lifecycle: { _tag: "Failed", error: event.payload.error },
+        lifecycle: { _tag: "Failed", error: jsonFailure(event.payload.error) },
       });
       return;
     }
@@ -558,7 +573,7 @@ const interpretEvent = (
         ...terminalTiming(tool.startedAtMs, at),
         lifecycle: {
           _tag: "Failed",
-          error: event.payload.error ?? event.payload.promptPart.result,
+          error: jsonFailure(event.payload.error ?? event.payload.promptPart.result),
         },
       });
       return;
@@ -812,7 +827,9 @@ const assistantParts = (
       case "reasoning":
         return { _tag: "Reasoning", text: part.text };
       case "tool-call": {
-        if (!Schema.is(ProviderPartId)(part.id)) return { _tag: "Unknown", partType: part.type };
+        if (!Schema.is(ProviderPartId)(part.id) || !Schema.is(ToolName)(part.name)) {
+          return { _tag: "Unknown", partType: part.type };
+        }
         const toolAlias = batch.alias("toolPart", toolPartKey(inferenceId, part.id));
         const toolId = toolAlias === undefined ? undefined : batch.tool(toolAlias)?.id;
         return {
@@ -824,7 +841,9 @@ const assistantParts = (
         };
       }
       case "tool-result":
-        if (!Schema.is(ProviderPartId)(part.id)) return { _tag: "Unknown", partType: part.type };
+        if (!Schema.is(ProviderPartId)(part.id) || !Schema.is(ToolName)(part.name)) {
+          return { _tag: "Unknown", partType: part.type };
+        }
         return {
           _tag: "ToolResult",
           providerPartId: part.id,
@@ -975,7 +994,7 @@ const runMember = (batch: TranscriptBatch, runId: RunId) => {
 const runFailureOutcome = (error: FailurePayload): TranscriptRunOutcome =>
   error.code === "run.interrupted"
     ? { _tag: "Interrupted", reason: error.message }
-    : { _tag: "Failed", error };
+    : { _tag: "Failed", error: jsonFailure(error) };
 
 // ---------------------------------------------------------------------------------------------
 // Helpers
@@ -1024,6 +1043,18 @@ const inlineBody = (
   return byteLength <= transcriptStoredInlineBodyLimit
     ? { _tag: "Inline", value: normalized, source: { seq, path } }
     : { _tag: "Ref", source: { seq, path }, byteLength };
+};
+
+/** A failure as the JSON a persisted log holds; details with no JSON form are dropped. */
+const jsonFailure = (error: FailurePayload): FailurePayload => {
+  try {
+    const json = JSON.stringify(error);
+    const normalized: unknown = json === undefined ? undefined : JSON.parse(json);
+    if (Schema.is(FailurePayload)(normalized)) return normalized;
+  } catch {
+    // Fall through to the fields every failure has.
+  }
+  return { message: error.message, ...(error.code === undefined ? {} : { code: error.code }) };
 };
 
 const mapNonEmpty = <A>(

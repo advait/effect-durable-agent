@@ -8,7 +8,8 @@ import { reduceCommittedEvents } from "../domain/reduced-state";
 import type { CommittedDurableEvent } from "../services/session-store";
 import { SequenceNumber, durablePosition } from "../types/core";
 import type { TranscriptDefinition } from "./mapping";
-import { canonicalJson, sha256Hex, transcriptSemanticRevision } from "./version";
+import { sha256Hex } from "./hash";
+import { canonicalJson, transcriptSemanticRevision } from "./version";
 import {
   giaLikeTestMappings,
   transcriptScenarios,

@@ -232,10 +232,16 @@ describe("transcript interpreter", () => {
         ],
       },
     });
-    expect(user(version, 2)).toMatchObject({
-      classification: "subagentNotice",
-      decorations: { subagentChildren: { _tag: "Value" } },
-    });
+    // A classified notice keeps only its own decorations: no fallback author.
+    expect(user(version, 2)).toMatchObject({ classification: "subagentNotice" });
+    expect(Object.keys(user(version, 2).decorations)).toEqual(["subagentChildren"]);
+    // Parked decorations are drained once applied.
+    const buffers = Array.from(version.records.values()).filter(
+      (candidate) => candidate.kind === "decorationBuffer",
+    );
+    expect(
+      buffers.map((buffer) => buffer.kind === "decorationBuffer" && buffer.operations.length),
+    ).toEqual([0, 0, 1]);
     // No author event of its own: the latest author before it, by the declared fallback.
     expect(user(version, 3).decorations).toEqual({
       author: { _tag: "Value", value: "b@example.com" },
@@ -293,6 +299,98 @@ describe("transcript interpreter", () => {
       (candidate) => candidate.kind === "compaction",
     );
     expect(compaction).toMatchObject({ completedAtMs: expect.any(Number) });
+  });
+
+  it("bounds decorations: entry keys, list entries, buffered operations and record bytes", () => {
+    const attachments = (log: TestLog, prefix: string, count: number, blob = 0) => {
+      for (let index = 0; index < count; index += 1) {
+        log.appendForeign("gia-agent", "GiaFileAttachmentCreated", {
+          attachmentId: `${prefix}-${index}`,
+          relatedCommandIdempotencyKey: "k",
+          ...(blob === 0 ? {} : { blob: "x".repeat(blob) }),
+        });
+      }
+    };
+    const keysOf = (version: InMemoryTranscriptVersion) => {
+      const list = user(version, 1).decorations["attachments"];
+      return list?._tag === "List" ? list.entries.map((entry) => entry.key) : [];
+    };
+
+    // Parked before the command: an over-long key is skipped, and the buffer keeps 32.
+    const early = new TestLog();
+    early.appendForeign("gia-agent", "GiaFileAttachmentCreated", {
+      attachmentId: "a".repeat(300),
+      relatedCommandIdempotencyKey: "k",
+    });
+    attachments(early, "early", 40);
+    early.submit({ command: 1, message: 1, text: "many", idempotencyKey: "k" });
+    const parked = projectBatches(gia, [early.events]);
+    expect(parked.meta.status._tag).toBe("Ok");
+    expect(keysOf(parked)).toHaveLength(32);
+
+    // Applied live: small entries stop at the 64-entry list cap.
+    const small = new TestLog();
+    small.submit({ command: 1, message: 1, text: "many", idempotencyKey: "k" });
+    attachments(small, "small", 80);
+    expect(keysOf(projectBatches(gia, [small.events]))).toHaveLength(64);
+
+    // Applied live: large entries stop at the record's decoration byte budget first.
+    const large = new TestLog();
+    large.submit({ command: 1, message: 1, text: "many", idempotencyKey: "k" });
+    attachments(large, "large", 80, 7_900);
+    const budgeted = projectBatches(gia, [large.events]);
+    expect(keysOf(budgeted).length).toBeLessThan(64);
+    expect(
+      new TextEncoder().encode(JSON.stringify(user(budgeted, 1).decorations)).length,
+    ).toBeLessThanOrEqual(262_144);
+  });
+
+  it("normalizes decoration and body values to the JSON a stored log holds", () => {
+    const log = new TestLog().configure();
+    log.appendForeign("gia-agent", "GiaFileAttachmentCreated", {
+      attachmentId: "att",
+      relatedCommandIdempotencyKey: "k",
+      contentType: undefined,
+    });
+    log.submit({ command: 1, message: 1, text: "hi", idempotencyKey: "k" });
+    log.startRun({ run: 1, commands: [1] });
+    log.turn({ run: 1, turn: 1, inputs: [1] });
+    log.inferenceStarted({ run: 1, turn: 1, inference: 1 });
+    log.toolCreated({ run: 1, turn: 1, inference: 1, tool: 1, providerId: "call_1", name: "t" });
+    log.toolCompleted({
+      tool: 1,
+      providerId: "call_1",
+      name: "t",
+      result: { ok: true, missing: undefined },
+    });
+    const live = projectBatches(gia, [log.events]);
+    const stored = projectBatches(gia, [JSON.parse(JSON.stringify(log.events))]);
+    expect(live.meta.status._tag).toBe("Ok");
+    expect(normalizedProjection(live)).toEqual(normalizedProjection(stored));
+    expect(user(live, 1).decorations["attachments"]).toMatchObject({ _tag: "List" });
+  });
+
+  it("keeps an imported part with an invalid tool name as an unknown part", () => {
+    const log = new TestLog();
+    log.append("AssistantMessageImported", {
+      messageId: ids.message(1),
+      runId: ids.run(1),
+      turnId: ids.turn(1),
+      inferenceId: ids.inference(1),
+      promptParts: [
+        { type: "text", text: "imported" },
+        { type: "tool-call", id: "call_1", name: "", params: {}, providerExecuted: true },
+      ],
+    });
+    const version = projectBatches(plain, [log.events]);
+    expect(version.meta.status._tag).toBe("Ok");
+    const imported = Array.from(version.records.values()).find(
+      (candidate) => candidate.kind === "assistant",
+    );
+    expect(imported?.kind === "assistant" && imported.parts).toEqual([
+      { _tag: "Text", text: "imported" },
+      { _tag: "Unknown", partType: "tool-call" },
+    ]);
   });
 
   it("ignores events without transcript meaning", () => {

@@ -657,12 +657,16 @@ prompts are still built from `ReducedState`, which never reads transcript record
   - events with no transcript meaning in this revision are ignored deliberately, and events at or
     below the version's cursor are skipped.
 - **Mapping executor** (`src/transcript/mapping-executor.ts`): applies host mappings to `__foreign`
-  events of a mapped namespace, type and schema version; others are ignored. A missing, non-JSON or
-  oversize value skips only its operation (as does one that would take a record's decorations past
-  `maxDecorationBytes`), and an unresolvable target skips only its mapping.
-  Decorations whose user record does not exist yet are parked in a bounded
-  `decorations:<association>:<key>` record and applied in arrival order when the record is created,
-  followed by the declared user fallbacks.
+  events of a mapped namespace, type and schema version; others are ignored. Values are normalized
+  to the JSON a persisted log holds. A missing, non-JSON or oversize value, an invalid list-entry
+  key, or an operation that would take a record's decorations past `maxDecorationBytes` skips only
+  that operation; an unresolvable target skips only its mapping. Decorations whose user record does
+  not exist yet are parked in a bounded `decorations:<association>:<key>` record, applied in arrival
+  order when the record is created, and then drained. The declared user fallbacks follow, except
+  for host-classified records.
+- **Plan validation**: every record a plan writes must satisfy the strict stored-row schema;
+  anything else fails that version's projection (freezing it) instead of producing an unreadable
+  row. Failures and bodies are normalized to JSON the same way.
 - **In-memory store** (`EDASessionStore.InMemory` / `InMemorySeeded`, `src/transcript/in-memory.ts`):
   also provides `EDATranscriptStore`. It takes `{ transcript: TranscriptMaintenanceConfig }`
   (default: the definition with no mappings), builds `current` from the seeded log at construction,
