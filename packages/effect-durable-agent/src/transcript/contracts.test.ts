@@ -37,7 +37,8 @@ import {
   transcriptRecordId,
   type TranscriptRecordEnvelope,
 } from "./records";
-import { canonicalJson, sha256Hex, transcriptSemanticRevision } from "./version";
+import { sha256Hex } from "./hash";
+import { canonicalJson, transcriptSemanticRevision } from "./version";
 import { TranscriptWindow, TranscriptWindowSelector, transcriptCursorOf } from "./window";
 
 const uuid = (suffix: number) => `018f6bd5-2f2a-7b1e-8f1b-${suffix.toString(16).padStart(12, "0")}`;
@@ -194,6 +195,7 @@ describe("transcript records", () => {
       kind: "unknown",
       originalKind: "poll",
       format: 1,
+      body: { question: "?" },
       id: "poll:1",
       updatedSeq: 3,
       position: { anchorSeq: 3, ordinal: 1 },
@@ -315,13 +317,13 @@ describe("transcript records", () => {
         id: "poll:1",
         updatedSeq: 3,
         position: { anchorSeq: 3, ordinal: 0 },
-        body: {},
+        body: { question: "?", options: ["a", "b"] },
       },
-      { ...toEnvelope(nth(records, 1)), format: 2, body: {} },
+      { ...toEnvelope(nth(records, 1)), format: 2 },
     ]) {
       const decoded = Schema.decodeUnknownSync(codec)(envelope);
       expect(decoded.kind).toBe("unknown");
-      expect(Schema.decodeUnknownSync(codec)(Schema.encodeSync(codec)(decoded))).toEqual(decoded);
+      expect(Schema.encodeSync(codec)(decoded)).toEqual(envelope);
     }
   });
 
@@ -331,6 +333,8 @@ describe("transcript records", () => {
     expect(transcriptRecordId.decorationBuffer("idempotencyKey", "k".repeat(601))).not.toBe(long);
     expect(Schema.is(DecorationBufferRecordId)(long)).toBe(true);
     expect(transcriptRecordId.decorationBuffer("command", "abc")).toBe("decorations:command:abc");
+    const hashedForm = long.slice("decorations:idempotencyKey:".length);
+    expect(transcriptRecordId.decorationBuffer("idempotencyKey", hashedForm)).not.toBe(long);
   });
 
   it("rejects a newer envelope format instead of guessing", () => {

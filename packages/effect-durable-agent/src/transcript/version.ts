@@ -1,8 +1,6 @@
 import { sha256Hex } from "./hash";
 import { TranscriptVersion } from "./records";
 
-export { sha256Hex } from "./hash";
-
 /**
  * EDA's transcript semantic revision.
  *

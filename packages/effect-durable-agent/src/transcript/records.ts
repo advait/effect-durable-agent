@@ -110,12 +110,19 @@ export const transcriptRecordId = {
   tool: (toolCallId: ToolCallId): ToolRecordId => `tool:${toolCallId}`,
   runGroup: (rootRunId: RunId): RunGroupRecordId => `run:${rootRunId}`,
   session: "session",
-  /** Keys longer than 256 characters (caller-owned idempotency keys) are hashed to stay bounded. */
+  /**
+   * Keys longer than 256 characters (caller-owned idempotency keys) are hashed to stay bounded;
+   * keys starting with `#` are hashed too, so a literal key never collides with a hashed one.
+   */
   decorationBuffer: (
     association: "command" | "idempotencyKey",
     key: string,
   ): DecorationBufferRecordId =>
-    `decorations:${association}:${key.length > 0 && key.length <= 256 ? key : `#sha256:${sha256Hex(key)}`}`,
+    `decorations:${association}:${
+      key.length > 0 && key.length <= 256 && !key.startsWith("#")
+        ? key
+        : `#sha256:${sha256Hex(key)}`
+    }`,
 } as const;
 
 // ---------------------------------------------------------------------------------------------
@@ -634,6 +641,8 @@ export const TranscriptUnknownRecord = Schema.Struct({
   originalKind: Schema.NonEmptyString,
   /** The envelope format it arrived in, kept so it re-encodes exactly as it was read. */
   format: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  /** The uninterpreted body, kept so a relaying reader forwards it unchanged. */
+  body: Schema.Record(Schema.String, Schema.Unknown),
   id: Schema.NonEmptyString,
   updatedSeq: SequenceNumber,
   position: Schema.optionalKey(TranscriptPosition),
@@ -779,6 +788,7 @@ const TranscriptUnknownRecordFromEnvelope = TranscriptRecordEnvelope.check(
       kind: "unknown" as const,
       originalKind: envelope.kind,
       format: envelope.format,
+      body: envelope.body,
       id: envelope.id,
       updatedSeq: envelope.updatedSeq,
       ...(envelope.position === undefined ? {} : { position: envelope.position }),
@@ -791,7 +801,7 @@ const TranscriptUnknownRecordFromEnvelope = TranscriptRecordEnvelope.check(
         id: record.id,
         updatedSeq: record.updatedSeq,
         ...(record.position === undefined ? {} : { position: record.position }),
-        body: {},
+        body: record.body,
       }),
     ),
   }),
