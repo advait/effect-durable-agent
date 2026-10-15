@@ -41,7 +41,6 @@ adopt in production with transcripts enabled.
   unchanged; event-socket clients that import the new entry no longer bundle the transcript
   protocol, whose schemas cannot be tree-shaken.
 
-
 ## 0.1.0-alpha.24
 
 Transcript history, part 3: Durable Object storage. **Development release: do not adopt in
