@@ -39,6 +39,7 @@ interface TranscriptStatus {
   readonly incarnation: string;
   readonly headSeq: number;
   readonly converged: boolean;
+  readonly pending: boolean;
   readonly versions: ReadonlyArray<{ readonly cursor: number }>;
 }
 
@@ -610,6 +611,24 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         expect(cold).toEqual(status);
         expect(await get<TranscriptRead>(`/sessions/${sessionId}/transcript`)).toEqual(live);
         expect(await get(`/sessions/${sessionId}/runtime-builds`)).toEqual({ count: 0 });
+
+        // An alarm armed by an earlier release stays the runtime's even when the builder also
+        // wants the alarm: after the restart (a deploy), the builder's wakeup runs storage-only
+        // and the earlier alarm still builds the runtime when it fires.
+        await get(`/sessions/${sessionId}/arm-unrecorded-alarm?delayMs=4000`);
+        await host.restart({ hard: true });
+        const afterDeploy = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
+        expect(afterDeploy.pending).toBe(false);
+        expect(await get(`/sessions/${sessionId}/runtime-builds`)).toEqual({ count: 0 });
+        const deadline = Date.now() + 30_000;
+        let runtimeBuilds = 0;
+        while (runtimeBuilds === 0 && Date.now() < deadline) {
+          await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+          ({ count: runtimeBuilds } = await get<{ readonly count: number }>(
+            `/sessions/${sessionId}/runtime-builds`,
+          ));
+        }
+        expect(runtimeBuilds).toBeGreaterThan(0);
 
         // A wiped log is a new incarnation.
         const destroyed = await fetch(`${host.baseUrl}/sessions/${sessionId}/destroy`, {

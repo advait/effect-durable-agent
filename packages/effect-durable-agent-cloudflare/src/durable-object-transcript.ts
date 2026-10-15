@@ -26,6 +26,7 @@ import {
   defaultTranscriptSliceLimits,
   emptyTranscriptEffects,
   hasPendingTranscriptWork,
+  missedSessionAlert,
   publishTranscriptEffects,
   reconcileTranscriptSlots,
   runTranscriptSlice,
@@ -151,6 +152,13 @@ export class DurableObjectTranscriptStore {
     };
   }
 
+  /** Raise the missed-session alert if the active version is no longer carried. */
+  auditMissedSession(): void {
+    const alert = missedSessionAlert(this.#storage, this.#options.definitions);
+    if (alert !== undefined)
+      publishTranscriptEffects(this.#options.observer, { alerts: [alert], pendingWork: false });
+  }
+
   /** Whether a builder or cleanup slice has work to do. */
   hasPendingWork(): boolean {
     return hasPendingTranscriptWork(this.#storage, this.#options.definitions, this.#log.head());
@@ -232,6 +240,12 @@ export class DurableObjectTranscriptBuilder {
     /** Durably request a builder wakeup as soon as possible. */
     private readonly wake: () => Promise<void>,
   ) {}
+
+  /** At object start: raise standing alerts and schedule a slice if any work is pending. */
+  async start(): Promise<void> {
+    this.store.auditMissedSession();
+    await this.kick();
+  }
 
   /** Schedule a slice if any work is pending. */
   async kick(): Promise<void> {

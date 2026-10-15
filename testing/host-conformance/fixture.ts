@@ -20,6 +20,7 @@ declare const EDA_CONFORMANCE_BLOCK_MODEL: boolean;
 /** A conformance session object that also reports whether its model runtime was built. */
 type ConformanceSession = EDASessionDurableObject & {
   readonly runtimeBuilds: () => Promise<number>;
+  readonly armUnrecordedAlarm: (delayMs: number) => Promise<void>;
 };
 
 /** Storage-level transcript probe object; see `transcript-probe.ts`. */
@@ -97,7 +98,7 @@ export const conformanceWorker = {
     }
 
     const match =
-      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|runtime-builds)\/?$/.exec(
+      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|runtime-builds|arm-unrecorded-alarm)\/?$/.exec(
         url.pathname,
       );
     if (match === null) {
@@ -141,6 +142,10 @@ export const conformanceWorker = {
       return json(
         await session.readTranscriptWindow({ ...scoped, selector: { _tag: "Latest", count: 100 } }),
       );
+    }
+    if (operation === "arm-unrecorded-alarm") {
+      await session.armUnrecordedAlarm(Number(url.searchParams.get("delayMs") ?? "0"));
+      return json({ ok: true });
     }
     if (operation === "runtime-builds") {
       return json({ count: await session.runtimeBuilds() });

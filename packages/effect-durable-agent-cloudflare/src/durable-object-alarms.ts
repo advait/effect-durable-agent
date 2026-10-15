@@ -39,6 +39,17 @@ export class DurableObjectAlarmScheduler {
     };
   }
 
+  /**
+   * Adopt a platform alarm no owner recorded (one armed before wakeups were recorded) as the
+   * runtime's, so the first wakeup another owner requests cannot replace it. Call once at startup,
+   * before any owner writes a wakeup.
+   */
+  async adoptUnrecordedAlarm(): Promise<void> {
+    if (this.#rows().length > 0) return;
+    const armed = await this.storage.getAlarm();
+    if (armed !== null && this.#rows().length === 0) this.#write("runtime", armed);
+  }
+
   /** Wake `owner` no later than `atMs`; an earlier wakeup it already holds is kept. */
   request(owner: DurableObjectAlarmOwner, atMs: number): Promise<void> {
     const current = this.#wakeup(owner);

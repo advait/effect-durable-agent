@@ -1,5 +1,5 @@
 import type { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
-import type { SequenceNumber } from "effect-durable-agent/types/core";
+import { SequenceNumber } from "effect-durable-agent/types/core";
 import {
   planTranscriptBatch,
   type TranscriptDefinition,
@@ -179,17 +179,11 @@ export const reconcileTranscriptSlots = (
   if (active?.version !== current && !buildingCurrent) {
     insertTranscriptSlot(sql, current, "building");
     effects.pendingWork = true;
-    if (active !== undefined && carriedDefinition(config, active.version) === undefined) {
-      effects.alerts.push({
-        _tag: "MissedSession",
-        activeVersion: active.version,
-        currentVersion: current,
-      });
-    }
   }
 };
 
 const nestedTransactionSupport = new WeakMap<DurableObjectSessionStorage, boolean>();
+const nestedTransactionRejection = /cannot start a transaction within a transaction/i;
 
 /**
  * Whether this storage runs a `transactionSync` nested in another as an independent inner
@@ -203,7 +197,9 @@ const supportsNestedTransactions = (storage: DurableObjectSessionStorage): boole
   try {
     storage.transactionSync(() => storage.transactionSync(() => undefined));
     supported = true;
-  } catch {
+  } catch (error) {
+    // Only the platform's refusal to nest means "unsupported"; anything else is a real failure.
+    if (!(error instanceof Error && nestedTransactionRejection.test(error.message))) throw error;
     supported = false;
   }
   nestedTransactionSupport.set(storage, supported);
@@ -221,6 +217,28 @@ const supportsNestedTransactions = (storage: DurableObjectSessionStorage): boole
  * (celld), a write that fails after planning succeeded is a storage failure, which fails the
  * caller's whole transaction atomically, exactly as a failed event insert does.
  */
+/** Freeze a slot at its unchanged cursor and raise the alert. */
+const freezeSlot = (
+  storage: DurableObjectSessionStorage,
+  slot: TranscriptSlot,
+  failedAtSeq: SequenceNumber,
+  cause: unknown,
+  effects: TranscriptEffects,
+): TranscriptSlot => {
+  const error = cause instanceof Error ? cause.message : String(cause);
+  markTranscriptSlotFailed(storage.sql, slot.slot, failedAtSeq, error);
+  if (slot.role !== "retired") {
+    effects.alerts.push({
+      _tag: "ProjectionFailed",
+      version: slot.version,
+      role: slot.role,
+      failedAtSeq,
+      error,
+    });
+  }
+  return { ...slot, status: { _tag: "Failed", failedAtSeq, error } };
+};
+
 const advanceSlot = (
   storage: DurableObjectSessionStorage,
   slot: TranscriptSlot,
@@ -242,17 +260,7 @@ const advanceSlot = (
   try {
     plan = nested ? storage.transactionSync(project) : project();
   } catch (cause) {
-    const error = cause instanceof Error ? cause.message : String(cause);
-    const failedAtSeq = first.position.seq;
-    markTranscriptSlotFailed(storage.sql, slot.slot, failedAtSeq, error);
-    effects.alerts.push({
-      _tag: "ProjectionFailed",
-      version: slot.version,
-      role: slot.role,
-      failedAtSeq,
-      error,
-    });
-    return { ...slot, status: { _tag: "Failed", failedAtSeq, error } };
+    return freezeSlot(storage, slot, first.position.seq, cause, effects);
   }
   if (!nested) writeTranscriptPlan(storage.sql, slot.slot, plan);
   return { ...slot, cursor: plan.throughSeq };
@@ -284,6 +292,24 @@ export const maintainTranscriptsOnAppend = (
   }
 };
 
+/**
+ * The missed-session alert for a session whose active version this release no longer carries,
+ * raised whenever an object starts, so it does not depend on observing the build's creation.
+ */
+export const missedSessionAlert = (
+  storage: DurableObjectSessionStorage,
+  config: TranscriptMaintenanceConfig,
+): TranscriptAlert | undefined => {
+  const active = liveSlots(storage).find((slot) => slot.role === "active");
+  return active === undefined || carriedDefinition(config, active.version) !== undefined
+    ? undefined
+    : {
+        _tag: "MissedSession",
+        activeVersion: active.version,
+        currentVersion: config.current.version,
+      };
+};
+
 /** The one slot a builder slice advances: the building version, else an active one behind. */
 const buildTarget = (
   config: TranscriptMaintenanceConfig,
@@ -307,7 +333,8 @@ export const hasPendingTranscriptWork = (
   const slots = readTranscriptSlots(storage.sql);
   if (slots.some((slot) => slot.role === "retired")) return true;
   const live = slots.filter((slot) => slot.role !== "retired");
-  if (live.length === 0) return true;
+  // An empty log initializes on its first read or append; only an existing log needs a build.
+  if (live.length === 0) return head > 0;
   const current = config.current.version;
   if (live.some((slot) => slot.role === "building" && slot.version !== current)) return true;
   const active = live.find((slot) => slot.role === "active");
@@ -350,7 +377,15 @@ export const runTranscriptSlice = (
       slot.cursor < head &&
       remaining > 0
     ) {
-      const page = log.after(slot.cursor, Math.min(limits.pageEvents, remaining));
+      let page: ReadonlyArray<CommittedDurableEvent>;
+      try {
+        page = log.after(slot.cursor, Math.min(limits.pageEvents, remaining));
+      } catch (cause) {
+        // A log event this release cannot decode: the build cannot pass it, so freeze it
+        // rather than retry forever. A new definition (with a reader for it) repairs it.
+        slot = freezeSlot(storage, slot, SequenceNumber.make(slot.cursor + 1), cause, effects);
+        break;
+      }
       if (page.length === 0) break;
       remaining -= page.length;
       slot = advanceSlot(storage, slot, definition, page, effects);

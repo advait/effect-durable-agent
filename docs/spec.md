@@ -758,7 +758,8 @@ reuses), and live delivery over transcript-window sockets (§10). Hosts still re
     report `Building`; a build that is not `current` is retired; if the active version is not
     `current` and no build of `current` exists, one starts (a failed build of `current` counts, so
     it is never retried). An active version this release no longer carries is frozen, reads report
-    `UpdatingHistory` at its real cursor, and a `MissedSession` alert is raised.
+    `UpdatingHistory` at its real cursor, and every object start raises a `MissedSession` alert
+    until the rebuild activates. A log event the release cannot decode freezes the build at it.
   - _Builder._ `DurableObjectTranscriptStore.runSlice` reconciles, projects at most 512 log events
     into the building version in pages of 16 (each page's rows and cursor commit together), activates
     the build when its cursor equals the head re-read in the same transaction (the old slot becomes
@@ -906,8 +907,10 @@ Current production host:
 - the Durable Object alarm is shared through `DurableObjectAlarmScheduler`: each owner (`runtime`
   for keep-alive and run-scheduling redelivery, `transcript` for the builder) keeps a durable
   wakeup row and the platform alarm is set to the earliest, so neither owner deletes or postpones the
-  other's. The keep-alive uses its owner's view unchanged. `alarm()` runs builder slices for a
-  builder wakeup and the runtime only for its own wakeup or an alarm no owner recorded;
+  other's. The keep-alive uses its owner's view unchanged. At startup, a platform alarm no owner
+  recorded (armed by a release before wakeups were recorded) is adopted as the runtime's.
+  `alarm()` runs builder slices for a builder wakeup and the runtime only for its own wakeup or an
+  alarm no owner recorded; a runtime alarm that throws keeps its wakeup for the platform's retry;
 - session destruction shuts down in-memory keep-alive state and deletes the Durable Object alarm before deleting storage, then recreates the empty tables (a new log and incarnation);
 - WebSocket hibernation restores exact ACK-window state from an Effect Schema attachment.
 

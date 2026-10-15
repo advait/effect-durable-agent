@@ -506,6 +506,7 @@ export const runTranscriptProbe = (
       harness(storage, { current: plain }).append(log.events.slice(0, 30));
       const probe = harness(storage, { current: gia });
       probe.append(log.events.slice(30));
+      probe.service.auditMissedSession();
       checks.equal(
         "alert",
         probe.alerts.map((alert) => alert._tag),

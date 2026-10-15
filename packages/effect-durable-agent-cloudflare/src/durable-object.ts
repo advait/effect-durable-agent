@@ -201,8 +201,10 @@ export abstract class EDASessionDurableObject<
 
     this.ctx.blockConcurrencyWhile(async () => {
       await Effect.runPromise(EDASessionController.migrate(storage));
-      // Resume any builder work an earlier instance left (or a new release created).
-      await this.objectTranscript()?.builder.kick();
+      // Keep an alarm armed by an earlier release for the runtime, then resume any builder
+      // work an earlier instance left (or a new release created).
+      await this.#alarms.adoptUnrecordedAlarm();
+      await this.objectTranscript()?.builder.start();
     });
   }
 
@@ -383,8 +385,9 @@ export abstract class EDASessionDurableObject<
     });
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
-    // The wiped storage is a brand-new log: recreate the tables storage-only entry points read.
-    await Effect.runPromise(EDASessionController.migrate(toEDASessionStorage(this.ctx.storage)));
+    // The wiped storage is a brand-new log: recreate the tables storage-only entry points read,
+    // synchronously, so no other work observes the object without them.
+    Effect.runSync(EDASessionController.migrate(toEDASessionStorage(this.ctx.storage)));
   }
 
   /**
@@ -435,9 +438,15 @@ export abstract class EDASessionDurableObject<
     }
     if (due.has("runtime") || !due.has("transcript")) {
       const sessionId = this.sessionIdFromObjectName();
-      await this.#controller.alarm(
-        sessionId === undefined ? undefined : { sessionId, trace: makeRootEDATraceMetadata() },
-      );
+      try {
+        await this.#controller.alarm(
+          sessionId === undefined ? undefined : { sessionId, trace: makeRootEDATraceMetadata() },
+        );
+      } catch (error) {
+        // Keep the runtime's wakeup so the platform's retry still runs it.
+        await this.#alarms.request("runtime", Date.now());
+        throw error;
+      }
     }
     await this.#alarms.sync();
   }

@@ -263,6 +263,7 @@ describe("Durable Object transcript maintenance", () => {
     const window = windowOf(harness.service);
     expect(window.readiness).toEqual({ _tag: "Ready" });
     expect(window.throughSeq).toBe(0);
+    expect(harness.service.hasPendingWork()).toBe(false);
     expect(harness.service.readMeta()).toEqual([
       { version: plain.version, role: "active", cursor: 0, status: { _tag: "Ok" } },
     ]);
@@ -521,6 +522,9 @@ describe("Durable Object transcript maintenance", () => {
     const harness = old.release({ current: gia });
     expect(harness.service.hasPendingWork()).toBe(true);
     harness.append(log.events.slice(30));
+    // The object raises the alert when it starts.
+    expect(harness.alerts).toEqual([]);
+    harness.service.auditMissedSession();
     expect(harness.alerts.map(({ alert }) => alert)).toEqual([
       { _tag: "MissedSession", activeVersion: plain.version, currentVersion: gia.version },
     ]);
@@ -588,6 +592,78 @@ describe("Durable Object transcript maintenance", () => {
   });
 });
 
+describe("Durable Object transcript upgrades and edge failures", () => {
+  it("migrates a store written by the deployed v1 schema and builds its transcript", () => {
+    // The deployed schema: migration 1 only, with a log and no transcript tables.
+    const storage = new SqliteDurableObjectStorage();
+    const legacy = makeHarness(undefined, undefined, storage);
+    const log = conversation(4);
+    legacy.append(log.events);
+    for (const table of [
+      "_eda_transcript_meta",
+      "_eda_transcript_records",
+      "_eda_transcript_aliases",
+      "_eda_log_incarnation",
+      "_eda_alarm_wakeups",
+    ]) {
+      storage.rows(`DROP TABLE ${table}`);
+    }
+    storage.rows("DELETE FROM _eda_schema_migrations WHERE id = 2");
+    expect(storage.rows("SELECT id FROM _eda_schema_migrations")).toEqual([{ id: 1 }]);
+
+    const upgraded = makeHarness({ current: gia }, undefined, storage);
+    expect(storage.rows("SELECT id FROM _eda_schema_migrations ORDER BY id")).toEqual([
+      { id: 1 },
+      { id: 2 },
+    ]);
+    expect(eventCount(storage)).toBe(log.events.length);
+    expect(upgraded.service.hasPendingWork()).toBe(true);
+    expect(windowOf(upgraded.service).readiness).toEqual({ _tag: "Building" });
+    runToCompletion(upgraded.service);
+    expect(storedProjection(storage)).toEqual(referenceProjection(gia, log.events));
+  });
+
+  it("freezes a build at a log event this release cannot decode instead of retrying forever", () => {
+    const log = conversation(3);
+    const legacy = makeHarness(undefined);
+    legacy.append(log.events);
+    legacy.storage.rows("UPDATE _eda_event_log SET schema_version = 99 WHERE seq = 7");
+    const harness = legacy.release({ current: gia }, { maxEvents: 4, pageEvents: 2 });
+    runToCompletion(harness.service);
+    expect(harness.service.readMeta()).toMatchObject([
+      { role: "building", cursor: 6, status: { _tag: "Failed", failedAtSeq: 7 } },
+    ]);
+    expect(harness.alerts.map(({ alert }) => alert._tag)).toEqual(["ProjectionFailed"]);
+  });
+
+  it("treats only the platform's refusal to nest as unsupported nesting", () => {
+    const storage = new SqliteDurableObjectStorage();
+    const harness = makeHarness({ current: plain }, undefined, storage);
+    const original = storage.transactionSync;
+    let calls = 0;
+    storage.transactionSync = <A>(closure: () => A): A => {
+      calls += 1;
+      if (calls === 2) throw new Error("transient storage failure");
+      return original(closure);
+    };
+    expect(() => harness.append(conversation(1).events)).toThrow(/transient storage failure/);
+    storage.transactionSync = original;
+    expect(eventCount(storage)).toBe(0);
+    // The probe was not cached as "unsupported": a write failure still only freezes the version.
+    harness.append(conversation(1).events);
+    let failed = false;
+    storage.faults = (query) => {
+      if (!failed && storage.depth >= 2 && /^\s*INSERT/.test(query)) {
+        failed = true;
+        throw new Error("injected write failure");
+      }
+    };
+    harness.append(conversation(2).events.slice(conversation(1).events.length));
+    expect(eventCount(storage)).toBe(conversation(2).events.length);
+    expect(harness.service.readMeta()[0]?.status._tag).toBe("Failed");
+  });
+});
+
 describe("DurableObjectAlarmScheduler", () => {
   const scheduler = () => {
     const storage = new SqliteDurableObjectStorage();
@@ -610,6 +686,19 @@ describe("DurableObjectAlarmScheduler", () => {
     expect(alarms.takeDue(600)).toEqual(new Set(["transcript"]));
     await alarms.sync();
     expect(storage.alarm).toBeNull();
+  });
+
+  it("adopts an alarm armed before wakeups were recorded as the runtime's", async () => {
+    const { storage, alarms } = scheduler();
+    storage.alarm = 9_000;
+    await alarms.adoptUnrecordedAlarm();
+    await alarms.request("transcript", 1_000);
+    expect(storage.alarm).toBe(1_000);
+    expect(alarms.takeDue(1_000)).toEqual(new Set(["transcript"]));
+    await alarms.sync();
+    // The earlier release's runtime alarm is still armed and still the runtime's.
+    expect(storage.alarm).toBe(9_000);
+    expect(alarms.takeDue(9_000)).toEqual(new Set(["runtime"]));
   });
 
   it("keeps the earliest wakeup of every owner and reports which owners an alarm fired for", async () => {
