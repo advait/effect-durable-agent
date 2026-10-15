@@ -909,12 +909,20 @@ Current production host:
 - one Durable Object instance/database stores one session;
 - host startup runs EDA schema migrations via `ctx.blockConcurrencyWhile(...)`;
 - host entrypoints expose RPC methods for submit, submitBatch, submitAndBlock, blockOnCommand, snapshot, messages, backup/destroy, alarm, and WebSocket events;
-- two storage-only RPC methods never construct the model runtime, reducers or sinks:
+- four storage-only RPC methods never construct the model runtime, reducers or sinks:
   `transcriptStatus` advances pending transcript build work by up to 16 bounded slices and returns
   the status a host backfill records: `Enabled` (incarnation, head, current version, every
   version's meta, `pending`, `converged`) or, for a session outside the rollout ring, `Disabled`
-  (read-only: head, current version, stored versions, and the incarnation only if one exists); `readTranscriptWindow` serves SSR and CLI reads (`Window`,
-  `CursorMismatch` or `Disabled`). Hosts authorize callers;
+  (read-only: head, current version, stored versions, and the incarnation only if one exists);
+  `readTranscriptWindow` serves SSR and CLI reads (`Window`, `CursorMismatch` or `Disabled`);
+  `readTranscriptBody` resolves a body reference
+  (`{ seq, path }` plus the `incarnation` it was minted in) through the log to the JSON the
+  interpreter would have inlined (`Body`), and answers `NotFound` for any path that is not one of
+  the interpreter's body sites (tool parameters, tool results, provider-executed tool results), so
+  a reference never reaches a system prompt, command input or app event; `readTranscriptSummary`
+  returns a compaction summary's text and source span by `summaryId` (`Summary` or `NotFound`).
+  Both are pinned to the session the object's transcript serves, answer `IncarnationMismatch` for
+  a reference from a wiped log and `Disabled` outside the rollout. Hosts authorize callers;
 - transcript maintenance is **opt-in per session** (`transcript.enabled`: a boolean or a
   `(sessionId) => boolean` predicate, default off), resolved once per object instance. A disabled
   session's runtime store maintains nothing and the object schedules no builder work;

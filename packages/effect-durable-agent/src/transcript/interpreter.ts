@@ -75,6 +75,7 @@ import {
   userMessageSubmittedEventType,
   type AssistantPromptPart,
 } from "../types/events/durable";
+import { normalizeTranscriptBodyValue } from "./body";
 import { applyForeignEvent, replayBufferedDecorations } from "./mapping-executor";
 import type { TranscriptDefinition } from "./mapping";
 import {
@@ -1054,35 +1055,26 @@ const timingOf = (record: TranscriptToolRecord | undefined) => ({
   ...(record?.durationMs === undefined ? {} : { durationMs: record.durationMs }),
 });
 
-const bodyEncoder = new TextEncoder();
-
 /**
  * A body read from a committed event, normalized to the JSON a persisted log holds, so a live
- * projection and a rebuild from storage agree. A value with no JSON form (a bigint or a cycle) is
- * a projection failure.
+ * projection, a rebuild from storage and a reference resolved later all agree. A value with no
+ * JSON form (a bigint or a cycle) is a projection failure.
  */
 const inlineBody = (
   value: unknown,
   seq: SequenceNumber,
   path: TranscriptFieldPath,
 ): TranscriptBody => {
-  const notJson = () =>
-    new TranscriptProjectionError({
+  const normalized = normalizeTranscriptBodyValue(value);
+  if (normalized === undefined) {
+    throw new TranscriptProjectionError({
       message: `body at seq ${seq} ${JSON.stringify(path)} is not JSON`,
     });
-  let json: string | undefined;
-  try {
-    json = JSON.stringify(value);
-  } catch {
-    throw notJson();
   }
-  const normalized: unknown = json === undefined ? null : JSON.parse(json);
-  if (!Schema.is(Schema.Json)(normalized)) throw notJson();
   // Large bodies stay in the log; the stored row keeps only a reference to them.
-  const byteLength = json === undefined ? 4 : bodyEncoder.encode(json).length;
-  return byteLength <= transcriptStoredInlineBodyLimit
-    ? { _tag: "Inline", value: normalized, source: { seq, path } }
-    : { _tag: "Ref", source: { seq, path }, byteLength };
+  return normalized.byteLength <= transcriptStoredInlineBodyLimit
+    ? { _tag: "Inline", value: normalized.value, source: { seq, path } }
+    : { _tag: "Ref", source: { seq, path }, byteLength: normalized.byteLength };
 };
 
 /** A model selection as the JSON a persisted log holds; settings with no JSON form are dropped. */

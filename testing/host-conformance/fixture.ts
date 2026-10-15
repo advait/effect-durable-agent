@@ -6,6 +6,14 @@ import * as Layer from "effect/Layer";
 import { ModelResolver } from "effect-durable-agent/services/model-resolver";
 
 import { makeLanguageModelLayer } from "effect-durable-agent/testkit/layers";
+import * as Schema from "effect/Schema";
+import * as Tool from "effect/ai/Tool";
+import {
+  CompactionExecutor,
+  CompactionPolicy,
+  type CompactionPolicyInput,
+} from "effect-durable-agent/services/compaction";
+import { makeEDAToolkit } from "effect-durable-agent/services/tool-registry";
 import { CommandIdempotencyKey, SubmitMessageCommand } from "effect-durable-agent/types/commands";
 import { SessionId } from "effect-durable-agent/types/core";
 import { makeRootEDATraceMetadata } from "effect-durable-agent/types/tracing";
@@ -62,6 +70,57 @@ const finishedStream = (text: string) =>
     AIResponse.makePart("finish", { reason: "stop", usage: usage(), response: undefined }),
   );
 
+const EchoTool = Tool.make("echo", {
+  parameters: Schema.Struct({ text: Schema.String }),
+  success: Schema.Unknown,
+});
+const conformanceToolkit = Effect.runSync(
+  makeEDAToolkit([EchoTool], { echo: ({ text }) => Effect.succeed({ echoed: text }) }),
+);
+
+/**
+ * The conformance model: `pong` to everything, except a request to echo, which calls the `echo`
+ * tool once and then answers, so a session holds a tool body.
+ */
+const conformanceModel = ({ prompt }: { readonly prompt: Prompt.RawInput }) => {
+  const text = JSON.stringify(prompt);
+  return text.includes("please echo") && !text.includes("tool-result")
+    ? Stream.make(
+        AIResponse.makePart("tool-call", {
+          id: "conformance-echo",
+          name: "echo",
+          params: { text: "hello" },
+          providerExecuted: false,
+        }),
+        AIResponse.makePart("finish", {
+          reason: "tool-calls",
+          usage: usage(),
+          response: undefined,
+        }),
+      )
+    : finishedStream("pong");
+};
+
+/** A session that asks to compact compacts after its turn; every other session never does. */
+const compactsOnRequest = (state: CompactionPolicyInput["state"]): boolean =>
+  Array.from(state.messages.values()).some(
+    (message) =>
+      message._tag === "User" && JSON.stringify(message.content).includes("please compact"),
+  );
+const everyTurnPolicy = Effect.runSync(
+  Effect.service(CompactionPolicy).pipe(
+    Effect.provide(
+      CompactionPolicy.ApproximateTokenThreshold({
+        policyId: "conformance.every-turn",
+        thresholdTokens: 1,
+        retainTailTokens: 0,
+        minSummarizableTokens: 1,
+        charsPerToken: 1,
+      }),
+    ),
+  ),
+);
+
 /** Deterministic model and runtime configuration shared by both real-host fixtures. */
 export const conformanceHostOptions = (): EDASessionDurableObjectOptions => ({
   config: { modelSelection: { provider: "conformance", modelId: "fixed-pong" } },
@@ -72,10 +131,20 @@ export const conformanceHostOptions = (): EDASessionDurableObjectOptions => ({
   },
   // Transcript sockets read the object's own Durable Object transcript store.
   transcriptSockets: {},
+  toolkit: conformanceToolkit,
+  compactionPolicyLayer: CompactionPolicy.FromFunction("conformance.on-request", (input) =>
+    compactsOnRequest(input.state) ? everyTurnPolicy.plan(input) : Effect.succeed(undefined),
+  ),
+  compactionExecutorLayer: CompactionExecutor.LanguageModelSummary({
+    executorId: "conformance.summary",
+  }),
   modelResolverLayer: Layer.merge(
     ModelResolver.Fixed.pipe(
       Layer.provide(
-        makeLanguageModelLayer(EDA_CONFORMANCE_BLOCK_MODEL ? Stream.never : finishedStream("pong")),
+        makeLanguageModelLayer({
+          parts: EDA_CONFORMANCE_BLOCK_MODEL ? Stream.never : conformanceModel,
+          generateText: "Conformance summary",
+        }),
       ),
     ),
     Layer.effectDiscard(
@@ -111,7 +180,7 @@ export const conformanceWorker = {
     }
 
     const match =
-      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|runtime-builds|arm-unrecorded-alarm|kv-incarnation|transcript-upgrade)\/?$/.exec(
+      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|transcript-body|transcript-summary|runtime-builds|arm-unrecorded-alarm|kv-incarnation|transcript-upgrade)\/?$/.exec(
         url.pathname,
       );
     if (match === null) {
@@ -156,6 +225,27 @@ export const conformanceWorker = {
     if (operation === "transcript") {
       return json(
         await session.readTranscriptWindow({ ...scoped, selector: { _tag: "Latest", count: 100 } }),
+      );
+    }
+    if (operation === "transcript-body") {
+      return json(
+        await session.readTranscriptBody({
+          ...scoped,
+          source: {
+            seq: Number(url.searchParams.get("seq") ?? "0"),
+            path: JSON.parse(url.searchParams.get("path") ?? "[]"),
+          },
+          incarnation: url.searchParams.get("incarnation") ?? "",
+        }),
+      );
+    }
+    if (operation === "transcript-summary") {
+      return json(
+        await session.readTranscriptSummary({
+          ...scoped,
+          summaryId: url.searchParams.get("summaryId") ?? "",
+          incarnation: url.searchParams.get("incarnation") ?? "",
+        }),
       );
     }
     if (operation === "arm-unrecorded-alarm") {

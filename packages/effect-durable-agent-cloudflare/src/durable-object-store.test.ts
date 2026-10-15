@@ -1,5 +1,6 @@
 import { it as effectIt } from "@effect/vitest";
 import { durableEventEnvelope } from "effect-durable-agent/types/events";
+import { resolveTranscriptBody } from "effect-durable-agent/transcript";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
@@ -74,6 +75,8 @@ import {
 import {
   durableObjectSerializedJsonHardCapBytes,
   DurableObjectSessionStore,
+  readDurableObjectCommittedEvent,
+  readDurableObjectSummary,
 } from "./durable-object-store";
 import { sequentialUuidV7 } from "effect-durable-agent/services/id-generator";
 import type {
@@ -1325,6 +1328,42 @@ describe("EDASessionStore", () => {
     expect(Array.from(result)[0]?.event.payload).toMatchObject({
       summary: { summaryId: SUMMARY_ID, text: "Summary text" },
     });
+  });
+
+  it("serves single events and summaries storage-only, resolving only transcript body sites", () => {
+    const fakeSql = makeFakeDurableObjectSql();
+    const summary = summaryArtifact();
+    Effect.runSync(
+      Effect.gen(function* () {
+        const store = yield* DurableObjectSessionStore.make({
+          sessionId: SessionId.make(SESSION_ID),
+          storage: fakeSql.storage,
+        });
+        yield* appendOne(store, summaryCreatedFor(summary, 1));
+        yield* appendOne(store, toolCallCompletedWithResult({ rows: [1, 2] }));
+        yield* appendOne(store, systemMessageCommitted());
+      }),
+    );
+    const sql = fakeSql.storage.sql;
+    const sessionId = SessionId.make(SESSION_ID);
+    const at = (seq: number) => {
+      const committed = readDurableObjectCommittedEvent(sql, sessionId, seq);
+      if (committed === undefined) throw new Error(`no event at ${seq}`);
+      return committed.event;
+    };
+    expect(resolveTranscriptBody(at(2), ["promptPart", "result"])).toEqual({
+      _tag: "Found",
+      value: { rows: [1, 2] },
+    });
+    // Sidecarred payloads are restored, but nothing outside a body site is reachable.
+    expect(at(3).payload).toMatchObject({ content: expect.any(String) });
+    expect(resolveTranscriptBody(at(3), ["content"])._tag).toBe("Missing");
+    expect(resolveTranscriptBody(at(1), ["summary", "text"])._tag).toBe("Missing");
+    expect(readDurableObjectCommittedEvent(sql, sessionId, 4)).toBeUndefined();
+    expect(readDurableObjectSummary(sql, SummaryId.make(SUMMARY_ID))?.text).toBe("Summary text");
+    expect(
+      readDurableObjectSummary(sql, SummaryId.make("018f6bd5-2f2a-7b1e-8f1a-000000000000")),
+    ).toBeUndefined();
   });
 
   it("rejects oversized summary bodies in the sidecar column before committing", () => {

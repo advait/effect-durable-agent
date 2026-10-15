@@ -664,11 +664,15 @@ const readMessagePayloadByContextSeq = (
   return message;
 };
 
-const readCommittedBySeq = (
+/**
+ * One committed event by seq, or `undefined` when the log has none there. Storage-only: hosts
+ * resolve transcript body references through it without starting the runtime.
+ */
+export const readDurableObjectCommittedEvent = (
   sql: DurableObjectSqlStorage,
   sessionId: SessionId,
   seq: number,
-): CommittedDurableEvent => {
+): CommittedDurableEvent | undefined => {
   const row = sql
     .exec<DurableObjectEventRow>(
       `
@@ -678,8 +682,24 @@ const readCommittedBySeq = (
       `,
       seq,
     )
-    .one();
-  return rowToCommittedDurableEvent(sql, row, sessionId);
+    .toArray()[0];
+  return row === undefined ? undefined : rowToCommittedDurableEvent(sql, row, sessionId);
+};
+
+/** One compaction summary artifact by id, or `undefined`. Storage-only. */
+export const readDurableObjectSummary = (
+  sql: DurableObjectSqlStorage,
+  summaryId: SummaryId,
+): CompactionSummaryArtifact | undefined => readSummaryPayloadOptional(sql, summaryId);
+
+const readCommittedBySeq = (
+  sql: DurableObjectSqlStorage,
+  sessionId: SessionId,
+  seq: number,
+): CommittedDurableEvent => {
+  const committed = readDurableObjectCommittedEvent(sql, sessionId, seq);
+  if (committed === undefined) throw new Error(`no committed event at seq ${seq}`);
+  return committed;
 };
 
 const rowToCommittedDurableEvent = (

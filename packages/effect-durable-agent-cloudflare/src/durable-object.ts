@@ -3,6 +3,8 @@ import { durableEventEnvelope } from "effect-durable-agent/types/events/durable"
 import { encodeEdaRpcDurableEvent } from "./rpc-codec";
 import {
   SessionScopedInput,
+  SessionTranscriptBodyInput,
+  SessionTranscriptSummaryInput,
   SessionTranscriptWindowInput,
   SessionCommandInput,
   SessionGrantRunInput,
@@ -42,11 +44,14 @@ import {
   defaultTranscriptWindowLimits,
   emptyTranscriptMappings,
   makeTranscriptDefinition,
+  resolveTranscriptBody,
   type EDATranscriptStoreShape,
+  type TranscriptLogIncarnation,
   type TranscriptMaintenanceConfig,
 } from "effect-durable-agent/transcript";
 import { runEDASessionAlarm } from "./durable-object-alarm-handler";
 import { DurableObjectAlarmScheduler } from "./durable-object-alarms";
+import { readDurableObjectCommittedEvent, readDurableObjectSummary } from "./durable-object-store";
 import type { EDATranscriptSocketOptions } from "./websocket/transcript-sockets";
 import { EDASessionStoreError } from "effect-durable-agent/services/session-store";
 import {
@@ -116,6 +121,12 @@ export interface EDASessionRpcSurface {
   readonly readTranscriptWindow: (
     input: typeof SessionTranscriptWindowInput.Encoded,
   ) => Promise<typeof edaSessionRpc.readTranscriptWindow.output.Encoded>;
+  readonly readTranscriptBody: (
+    input: typeof SessionTranscriptBodyInput.Encoded,
+  ) => Promise<typeof edaSessionRpc.readTranscriptBody.output.Encoded>;
+  readonly readTranscriptSummary: (
+    input: typeof SessionTranscriptSummaryInput.Encoded,
+  ) => Promise<typeof edaSessionRpc.readTranscriptSummary.output.Encoded>;
 }
 
 /** Host transcript configuration of a session Durable Object. */
@@ -491,6 +502,64 @@ export abstract class EDASessionDurableObject<
   }
 
   /**
+   * Runtime-free read of the body a transcript `Ref` names, resolved through the immutable log
+   * (so it stays valid after projection rows are rebuilt). Hosts authorize the caller.
+   */
+  async readTranscriptBody(
+    raw: typeof SessionTranscriptBodyInput.Encoded,
+  ): Promise<typeof edaSessionRpc.readTranscriptBody.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionTranscriptBodyInput)(raw);
+    const scope = this.transcriptReadScope(input.sessionId, input.incarnation);
+    if (scope._tag !== "Scope") {
+      return Schema.encodeSync(edaSessionRpc.readTranscriptBody.output)(scope);
+    }
+    const sessionId = scope.sessionId;
+    const committed = readDurableObjectCommittedEvent(
+      toEDASessionStorage(this.ctx.storage).sql,
+      sessionId,
+      input.source.seq,
+    );
+    const resolved =
+      committed === undefined
+        ? ({ _tag: "Missing", message: `no event at seq ${input.source.seq}` } as const)
+        : resolveTranscriptBody(committed.event, input.source.path);
+    return Schema.encodeSync(edaSessionRpc.readTranscriptBody.output)(
+      resolved._tag === "Found"
+        ? { _tag: "Body", value: resolved.value }
+        : { _tag: "NotFound", message: resolved.message },
+    );
+  }
+
+  /** Runtime-free read of a compaction summary's text. Hosts authorize the caller. */
+  async readTranscriptSummary(
+    raw: typeof SessionTranscriptSummaryInput.Encoded,
+  ): Promise<typeof edaSessionRpc.readTranscriptSummary.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionTranscriptSummaryInput)(raw);
+    const scope = this.transcriptReadScope(input.sessionId, input.incarnation);
+    if (scope._tag !== "Scope") {
+      return Schema.encodeSync(edaSessionRpc.readTranscriptSummary.output)(scope);
+    }
+    const artifact = readDurableObjectSummary(
+      toEDASessionStorage(this.ctx.storage).sql,
+      input.summaryId,
+    );
+    return Schema.encodeSync(edaSessionRpc.readTranscriptSummary.output)(
+      artifact === undefined
+        ? { _tag: "NotFound", message: `no summary ${input.summaryId}` }
+        : {
+            _tag: "Summary",
+            summary: {
+              compactionId: artifact.compactionId,
+              summaryId: artifact.summaryId,
+              text: artifact.text,
+              sourceFromSeq: artifact.sourceFromSeq,
+              sourceToSeq: artifact.sourceToSeq,
+            },
+          },
+    );
+  }
+
+  /**
    * The alarm is shared by the runtime heartbeat and the transcript builder; see
    * `runEDASessionAlarm`.
    */
@@ -575,6 +644,26 @@ export abstract class EDASessionDurableObject<
         Effect.suspend(() => port()?.readTranscriptWindow(selector, limits) ?? unbound()),
       readTranscriptMeta: Effect.suspend(() => port()?.readTranscriptMeta ?? unbound()),
     };
+  }
+
+  /**
+   * The session and log a body or summary read may serve: pinned to the session this object's
+   * transcript serves, like window reads, and to the incarnation the caller's reference names.
+   */
+  private transcriptReadScope(
+    rawSessionId: string,
+    incarnation: TranscriptLogIncarnation,
+  ):
+    | { readonly _tag: "Scope"; readonly sessionId: SessionId }
+    | { readonly _tag: "Disabled" }
+    | { readonly _tag: "IncarnationMismatch"; readonly incarnation: TranscriptLogIncarnation } {
+    const transcript = this.transcriptFor(this.parseSessionId(rawSessionId));
+    // Outside the rollout nothing is initialized or minted, and no reference was ever served.
+    if (!transcript.enabled) return { _tag: "Disabled" };
+    const current = transcript.store.incarnation();
+    return incarnation === current
+      ? { _tag: "Scope", sessionId: transcript.sessionId }
+      : { _tag: "IncarnationMismatch", incarnation: current };
   }
 
   /** The transcript service of this object's session, created on first use. */
