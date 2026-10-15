@@ -350,6 +350,31 @@ describe("transcript window reads", () => {
     expect(Result.isFailure(window) && window.failure._tag).toBe("TranscriptCursorMismatch");
   });
 
+  it("serves the run group of an interrupt-path user whose run failed before inference", async () => {
+    const log = new TestLog().configure();
+    log.admitOnly({ command: 1, text: "stop and do this" });
+    log.append("CommandStarted", { commandId: ids.command(1) });
+    log.commitUser({ command: 1, message: 1, text: "stop and do this" });
+    log.runStarted({ run: 1, commands: [1] });
+    log.turn({ run: 1, turn: 1, inputs: [1] });
+    log.append("RunFailed", { runId: ids.run(1), error: { message: "provider down" } });
+    const window = await withStore(
+      [log.durableEnvelopes],
+      readWindow({ _tag: "Latest", count: 10 }),
+    );
+    expect(window.records.map((record) => record.kind)).toEqual(["user"]);
+    expect(window.dependencies).toContainEqual(
+      expect.objectContaining({
+        kind: "runGroup",
+        runs: [
+          expect.objectContaining({
+            outcome: { _tag: "Failed", error: { message: "provider down" } },
+          }),
+        ],
+      }),
+    );
+  });
+
   it("serves pending users as dependencies, never as history", async () => {
     const log = new TestLog().configure();
     log.submit({ command: 1, message: 1, text: "waiting" });

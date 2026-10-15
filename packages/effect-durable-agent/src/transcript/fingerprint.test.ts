@@ -106,10 +106,9 @@ describe("transcript fingerprint", () => {
         problems.push(`${name}: recorded but no longer in the corpus`);
     }
 
-    const updatable = problems.every(
-      (problem) =>
-        problem.endsWith("no recorded fingerprint") || problem.endsWith("no longer in the corpus"),
-    );
+    // Only new scenarios may be recorded without a bump; removing or renaming one could hide a
+    // changed fingerprint.
+    const updatable = problems.every((problem) => problem.endsWith("no recorded fingerprint"));
     if (process.env["UPDATE_TRANSCRIPT_FINGERPRINTS"] === "1" && (updatable || revisionBumped)) {
       const prompts = problems.filter((problem) => problem.includes("prompt changed"));
       expect(prompts).toEqual([]);

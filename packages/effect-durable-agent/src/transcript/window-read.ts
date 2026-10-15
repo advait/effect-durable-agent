@@ -258,8 +258,12 @@ const collectDependencies = (
         break;
       }
       case "user": {
+        // The consuming run's group, or, for a submission committed at its own run's start (the
+        // interrupt path, which records no run on the user), the group that owns its command.
         const runId = record.state._tag === "Consumed" ? record.state.runId : undefined;
-        const groupId = runId === undefined ? undefined : source.alias("runId", runId);
+        const groupId =
+          (runId === undefined ? undefined : source.alias("runId", runId)) ??
+          source.alias("runCommand", record.commandId);
         if (groupId !== undefined) add(source.record(groupId));
         break;
       }
