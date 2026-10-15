@@ -12,9 +12,11 @@ adapter, which celld reuses.
 This document defines the **transcript**: the user-visible history of a session. It replaces the
 earlier future-state `ui-projection.md` proposal (removed in the commit that added this document).
 **Everything here except §2 and statements marked "today" is planned and not yet implemented.**
-Today the record, window, cursor, mapping and store-port contracts of §14 step 1 ship as
-`core/transcript/` (subpath `effect-durable-agent/transcript`); socket update schemas and the
-negotiation envelope come with live delivery, and nothing maintains or serves a transcript yet.
+Today the record, window, cursor, mapping and store-port contracts of §14 step 1, and the core
+interpreter, mapping executor and oracle of §14 step 2, ship as `core/transcript/` (subpath
+`effect-durable-agent/transcript`); the in-memory store maintains and serves a transcript. The
+Cloudflare adapter (steps 3 and 4), socket update schemas and the negotiation envelope are still
+planned.
 As each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe the current behavior
 and this document keeps the design rationale.
 

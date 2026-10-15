@@ -1,0 +1,53 @@
+{
+  "semanticRevision": 1,
+  "scenarios": {
+    "queue-run-tools": {
+      "transcript": "9c647911bc28be232e3950a8eb2e7f021e7e26796de77e1ea93f933c07563ff4",
+      "prompt": "66ec533301f1c87d9c7dfeb9f77d2f584c37d2491b1c75bb4f6e1debe3880e34"
+    },
+    "legacy-committed-user": {
+      "transcript": "567d57e09b8adeac7f68657b09546eae04cf5157e39cf32f8071acca861f0630",
+      "prompt": "217114261dca08c7e1f83485cb21117e6b687ce4f67badae355c4b27190090a5"
+    },
+    "steering": {
+      "transcript": "5093162731f35b8495bbc883027a9cd9eda2e7b801cb908604501c5aa99640af",
+      "prompt": "012a2d7b58e02dd21b937239d0a959bcc14ce4ddc3d57e6f1c3b0ee4d753349d"
+    },
+    "promote-pause-cancel": {
+      "transcript": "2c20b2d91c56c3fa7d54a5c95487b4de8444c0549b660bf9c7e1a0842034f24e",
+      "prompt": "150803f2938f57d1a1cab44b73298af63b4529b8e1919a2a9f29ff0e7d290e0c"
+    },
+    "partial-failure-empty-success-import": {
+      "transcript": "cb0212181be43c9a1d2f1ccdef98b9def5f8a9708c811646afb1e6893a3825ec",
+      "prompt": "0b93fc1e91e7ed8c8c11edcb7790542396cc3f05f1dcc84bb098d70d20ff930b"
+    },
+    "rejected-tool-repeated-terminals": {
+      "transcript": "ca846b6421b9b4a532225e72d0a0c1e7a200a2c0b358141c0eddd857c4f19a2c",
+      "prompt": "5def8ed2fc5a5606ce51ef087536fd0aecbebc0c269f9dbc16d2232d1d2faa8a"
+    },
+    "recovery-continuation": {
+      "transcript": "6201e097b8ec965d0eef2a19118b7de8c180ead14f51db61312e5eadf2ce59f8",
+      "prompt": "de8ec272d04a4787f087352988df6b68114332e0135499ea65388a4b6223b577"
+    },
+    "mid-run-compaction": {
+      "transcript": "b8d58c6cc8b2474686d5232095bd48ee0e782e70cade9b4b44c32b26c2116b3b",
+      "prompt": "edfdaca9a225b1bf7a9b7583bfdd027770282053794ad087b831412be33e26a0"
+    },
+    "replacement-message-id": {
+      "transcript": "35432f7c30b8dca3935ef3e08696adc90c6e2db4bb4c588f470b0ce2fbe896f9",
+      "prompt": "ada9749cfd8f066e491210442e7b002d2a63e1923b5a884d817124dd4a63729f"
+    },
+    "host-decorations": {
+      "transcript": "0182b38fe0407db6a43c47e9fc1aead0cdf6ce4cb195df2fb25a2b7c7626fca2",
+      "prompt": "47a7fc59d15f05b189c4bc0acdb5a258916cafdcc49a53bf3ebe733e50930b86"
+    },
+    "events-without-transcript-meaning": {
+      "transcript": "114956bff094f5c433e74473e301c595cf42b0d376293b5dd06d2a666364d817",
+      "prompt": "c4194aa1182ad204e069aca706893eb82e6823a694435b44b09a534e4ac2070c"
+    },
+    "legacy-attempts": {
+      "transcript": "6a8f37a339d7b3c49207a04c725aaab222a50b5589bd85ff835386ea806c5b77",
+      "prompt": "72cb0698732bd7a2148f767dd03f0fcb905ad18d10cf918fc86c88ec4ef2e9b2"
+    }
+  }
+}

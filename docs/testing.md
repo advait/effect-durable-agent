@@ -21,6 +21,9 @@ Examples and documentation scenarios are not a seventh archetype. They should re
 - Service contracts own typed error, interruption, retry, and resource semantics.
 - `session-state-control.model.test.ts` owns generated command/control lifecycle invariants.
 - `session-state-crash-simulation.test.ts` owns recovery from every durable batch prefix. Do not replace these prefix sweeps with a few named regressions.
+- `src/transcript/transcript-scenarios.ts` is the transcript scenario corpus: one log per interpretation rule. Add a scenario for a new rule rather than a standalone regression.
+- `src/transcript/interpreter.property.test.ts` owns the transcript oracle (design gate 2): incremental plans equal a full rebuild for every batch partition of the corpus and of generated logs, and rendered history equals today's `ReducedState` history for uncompacted logs (a superset for compacted ones).
+- `src/transcript/fingerprint.test.ts` owns the semantic-revision guard and model-path parity: corpus fingerprints change only with `transcriptSemanticRevision` (re-record with `UPDATE_TRANSCRIPT_FINGERPRINTS=1` after a bump), and the `ReducedState` prompt and transcript fingerprints never change.
 - `packages/effect-durable-agent-cloudflare/src/session-controller.test.ts` owns the canned-model host journey through admission, streaming, SQLite persistence, reducer checkpoints, hibernation restoration, cold-start replay, and transcript hydration.
 - `packages/effect-durable-agent-cloudflare/src/durable-object-store.test.ts` owns the semantic store contract plus Durable Object SQLite paging, transaction, sidecar, and migration behavior.
 - `packages/effect-durable-agent/testing/offline-trace/offline-trace.test.ts` owns multi-turn prompt continuity, tool continuation, parallel tool ordering, and trace artifacts.

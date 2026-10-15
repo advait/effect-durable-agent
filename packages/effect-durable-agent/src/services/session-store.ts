@@ -3,6 +3,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
 import type * as SchemaAST from "effect/SchemaAST";
@@ -31,6 +32,20 @@ import {
   summaryCreatedEventType,
 } from "../types/events";
 import { decodeRetainingExcess } from "../types/events/internal";
+import {
+  initialTranscriptState,
+  inMemoryTranscriptWindowSource,
+  maintainTranscripts,
+  type InMemoryTranscriptState,
+} from "../transcript/in-memory";
+import { emptyTranscriptMappings, makeTranscriptDefinition } from "../transcript/mapping";
+import { TranscriptLogIncarnation } from "../transcript/records";
+import {
+  EDATranscriptStore,
+  type EDATranscriptStoreShape,
+  type TranscriptMaintenanceConfig,
+} from "../transcript/store";
+import { buildingTranscriptWindow, readTranscriptWindowFrom } from "../transcript/window-read";
 
 export type CommittedDurableEvent<E = DecodedDurableEvent> = {
   readonly position: typeof DurablePosition.Type;
@@ -179,46 +194,63 @@ export interface EDASessionStoreShape {
 export class EDASessionStore extends Context.Service<EDASessionStore, EDASessionStoreShape>()(
   "@effect-durable-agent/EDASessionStore",
 ) {
-  /** Deterministic in-memory implementation used by runtime and recovery tests. */
-  static readonly InMemory = (sessionId: SessionId) =>
-    Layer.effect(
-      EDASessionStore,
-      Effect.gen(function* () {
-        const data = yield* Ref.make<InMemoryStoreData>(emptyInMemoryStoreData());
-        return makeInMemoryStore(sessionId, data);
-      }),
-    );
+  /**
+   * Deterministic in-memory implementation used by runtime and recovery tests.
+   *
+   * It also provides `EDATranscriptStore`, maintaining the transcript inside the same append
+   * critical section. Without `options.transcript` it maintains the definition with no host
+   * mappings.
+   */
+  static readonly InMemory = (sessionId: SessionId, options?: InMemoryStoreOptions) =>
+    inMemoryStoreLayer(sessionId, () => [], options);
 
-  /** In-memory store seeded with a durable prefix; intended for recovery tests. */
+  /** In-memory store seeded with a durable prefix; its transcript is built from that prefix. */
   static readonly InMemorySeeded = (
     sessionId: SessionId,
     events: ReadonlyArray<DurableEventEnvelope>,
-  ) =>
-    Layer.effect(
-      EDASessionStore,
-      Effect.gen(function* () {
-        const committed = seedCommittedEvents(sessionId, events);
-        const data = yield* Ref.make<InMemoryStoreData>({
-          ...emptyInMemoryStoreData(),
-          committed,
-          summaries: summariesFromCommittedEvents(committed),
-        });
-        return makeInMemoryStore(sessionId, data);
-      }),
-    );
+    options?: InMemoryStoreOptions,
+  ) => inMemoryStoreLayer(sessionId, () => seedCommittedEvents(sessionId, events), options);
 }
+
+/** Construction options for the in-memory store. */
+export interface InMemoryStoreOptions {
+  /** Transcript definitions to maintain; defaults to the definition with no host mappings. */
+  readonly transcript?: TranscriptMaintenanceConfig;
+}
+
+const inMemoryStoreLayer = (
+  sessionId: SessionId,
+  seed: () => ReadonlyArray<CommittedDurableEvent>,
+  options: InMemoryStoreOptions | undefined,
+) =>
+  Layer.effectContext(
+    Effect.gen(function* () {
+      const committed = seed();
+      const config = options?.transcript ?? {
+        current: yield* makeTranscriptDefinition(emptyTranscriptMappings).pipe(Effect.orDie),
+      };
+      const data = yield* Ref.make<InMemoryStoreData>({
+        committed,
+        summaries: summariesFromCommittedEvents(committed),
+        reducerCheckpoints: new Map(),
+        transcript: initialTranscriptState(
+          TranscriptLogIncarnation.make(`memory:${sessionId}`),
+          config,
+          committed,
+        ),
+      });
+      return Context.make(EDASessionStore, makeInMemoryStore(sessionId, data)).pipe(
+        Context.add(EDATranscriptStore, makeInMemoryTranscriptStore(data)),
+      );
+    }),
+  );
 
 interface InMemoryStoreData {
   readonly committed: ReadonlyArray<CommittedDurableEvent>;
   readonly summaries: ReadonlyMap<SummaryId, CompactionSummaryArtifact>;
   readonly reducerCheckpoints: ReadonlyMap<string, EDAReducerCheckpoint>;
+  readonly transcript: InMemoryTranscriptState;
 }
-
-const emptyInMemoryStoreData = (): InMemoryStoreData => ({
-  committed: [],
-  summaries: new Map(),
-  reducerCheckpoints: new Map(),
-});
 
 const seedCommittedEvents = (
   sessionId: SessionId,
@@ -289,6 +321,7 @@ const makeInMemoryStore = (
         const nextEntries: Array<CommittedDurableEvent> = [...current.committed];
         const nextSummaries = new Map(current.summaries);
         const committedEvents: Array<CommittedDurableEvent> = [];
+        const appended: Array<CommittedDurableEvent> = [];
 
         for (const entry of batch.entries) {
           const { event } = entry;
@@ -304,6 +337,7 @@ const makeInMemoryStore = (
           };
           nextEntries.push(committed);
           committedEvents.push(committed);
+          appended.push(committed);
 
           if (committed.event.type === summaryCreatedEventType) {
             const payload = committed.event.payload;
@@ -333,6 +367,12 @@ const makeInMemoryStore = (
             committed: nextEntries,
             summaries: nextSummaries,
             reducerCheckpoints: current.reducerCheckpoints,
+            // Projection staging commits with the events; a projection failure freezes only
+            // the failed version and never fails the append.
+            transcript:
+              appended.length === 0
+                ? current.transcript
+                : maintainTranscripts(current.transcript, appended),
           },
         ];
       });
@@ -378,6 +418,25 @@ const makeInMemoryStore = (
       }),
   };
 };
+
+/** Transcript reads over the in-memory store's active version, at one `Ref` snapshot. */
+const makeInMemoryTranscriptStore = (
+  data: Ref.Ref<InMemoryStoreData>,
+): EDATranscriptStoreShape => ({
+  readTranscriptWindow: (selector, limits) =>
+    Effect.gen(function* () {
+      const { transcript } = yield* Ref.get(data);
+      const source = inMemoryTranscriptWindowSource(transcript);
+      if (source === undefined) {
+        return buildingTranscriptWindow(transcript.incarnation, transcript.config.current.version);
+      }
+      const window = readTranscriptWindowFrom(source, selector, limits);
+      return Result.isSuccess(window) ? window.success : yield* window.failure;
+    }),
+  readTranscriptMeta: Ref.get(data).pipe(
+    Effect.map(({ transcript }) => transcript.versions.map((version) => version.meta)),
+  ),
+});
 
 const commandAdmissionMatches = (
   entry: CommittedDurableEvent,
