@@ -502,6 +502,31 @@ const failuresAndRepeatedCompletion = () => {
   return log.runCompleted(1, [2]);
 };
 
+const oneTurnConsumesSeveral = () => {
+  // A queued message is promoted after steering arrives; the turn lists the steering first, but the
+  // prompt (and so the transcript) orders the submissions as they were submitted.
+  const log = new TestLog().configure();
+  log.submit({ command: 1, message: 1, text: "first" });
+  log.submit({ command: 2, message: 2, text: "queued" });
+  log.startRun({ run: 1, commands: [1] });
+  log.steer({ command: 3, message: 3, run: 1, text: "steering" });
+  log.append("UserMessagePromoted", {
+    commandId: ids.command(9),
+    messageId: ids.message(2),
+    from: "queue",
+    to: "steer",
+  });
+  log.assistantTurn({
+    run: 1,
+    turn: 1,
+    inference: 1,
+    message: 101,
+    text: "all three",
+    inputs: [1, 3, 2],
+  });
+  return log.runCompleted(1, [1]);
+};
+
 const scenario = (name: string, compacted: boolean, build: () => TestLog): TranscriptScenario => ({
   name,
   compacted,
@@ -523,4 +548,5 @@ export const transcriptScenarios = (): ReadonlyArray<TranscriptScenario> => [
   scenario("events-without-transcript-meaning", false, ignoredEvents),
   scenario("legacy-attempts", false, legacyAttempts),
   scenario("failed-interrupt-repeated-compaction-completion", true, failuresAndRepeatedCompletion),
+  scenario("one-turn-consumes-several", false, oneTurnConsumesSeveral),
 ];

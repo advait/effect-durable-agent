@@ -638,6 +638,7 @@ prompts are still built from `ReducedState`, which never reads transcript record
   - a user record is created at `SubmitMessage` admission (or the first message event) and moves
     through pending, paused, promoted, steering, consumed and cancelled; it is positioned once, at
     the event that makes it model context (`TurnStarted` input, or `UserMessageCommitted`);
+    submissions one turn reads are ordered by submission, as the prompt orders them;
   - a replacement message id for the same command joins the same record as an alias;
   - a cancelled user submission is withdrawn even after consumption and consumed steering is not,
     exactly as the prompt does; a command cancelled or failed before it ever became a message (an

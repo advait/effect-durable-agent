@@ -428,14 +428,23 @@ const interpretEvent = (
     }
     case turnStartedEventType: {
       const { runId, turnId, inputMessageIds } = event.payload;
+      const consumed = new Map<TranscriptRecordId, TranscriptUserRecord>();
       for (const messageId of inputMessageIds ?? []) {
         const user = userByMessage(batch, messageId);
         if (user === undefined || user.state._tag === "Consumed") continue;
         // The reduced state marks a cancelled submission consumed but keeps it out of the
         // prompt; cancelled steering re-enters it once consumed.
         if (user.state._tag === "Cancelled" && user.steering === undefined) continue;
-        batch.put(consume(batch, user, seq, at, { runId, turnId }));
+        consumed.set(user.id, user);
       }
+      // Submissions read by one turn share its seq; the prompt orders them by submission, not by
+      // their order in the turn's input list.
+      const ordered = [...consumed.values()].sort(
+        (left, right) =>
+          left.submittedSeq - right.submittedSeq ||
+          (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+      );
+      for (const user of ordered) batch.put(consume(batch, user, seq, at, { runId, turnId }));
       return;
     }
     case assistantMessageCommittedEventType:

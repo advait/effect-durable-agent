@@ -1,5 +1,5 @@
 {
-  "semanticRevision": 1,
+  "semanticRevision": 2,
   "scenarios": {
     "queue-run-tools": {
       "transcript": "ced73e576c6fb3ddc7d6814ca021c1b83ee4a6e1c7c4b268e12605c4907bbe51",
@@ -52,6 +52,10 @@
     "failed-interrupt-repeated-compaction-completion": {
       "transcript": "de14c5f87c2d1a72c518aac1dd67af809dab4ab8b8557d97dfce427f2f72c3c0",
       "prompt": "8b7fb2ee6c7d1497a79337d55090fe5bf8ce18333e94303e2b2a6d4ec554479b"
+    },
+    "one-turn-consumes-several": {
+      "transcript": "fe154e2b2aa1a51faf4f1f110ed4c61a3a27bb05b2f9ac6f88622e714f18ea89",
+      "prompt": "19aaf3cefc371d4e4a50d7316dd6a91b1d29e4afadc402865ab6acd0bb2eb148"
     }
   }
 }
