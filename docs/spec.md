@@ -446,7 +446,7 @@ serve the ordered transcript stream of `docs/transcript-history.md` §9 on the e
   every send. Window reads are scheduled off the append gate, so subscribers never backpressure
   appends. A socket that wakes from hibernation mid-transfer is closed with `4009`; an idle one
   resumes from its persisted subscription; destroying the session drops live content and
-  closes the transcript sockets the isolate holds with `4009`. Transcript sockets never prepare the model runtime.
+  closes every transcript socket, hibernated ones included, with `4009`. Transcript sockets never prepare the model runtime.
 - **Client reference store** (`src/websocket/transcript-client.ts`): pure helpers that assemble
   chunks, apply complete updates only, evict by coverage, produce ACKs, and build
   `subscribe`/`page`/`retain` requests (including the SSR handoff from a window).

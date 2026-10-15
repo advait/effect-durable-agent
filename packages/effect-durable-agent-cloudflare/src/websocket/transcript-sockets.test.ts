@@ -46,6 +46,7 @@ import {
 } from "effect-durable-agent/transcript";
 import { makeRootEDATraceMetadata } from "effect-durable-agent/types/tracing";
 import {
+  EDA_WS_CLOSE_PROTOCOL_ERROR,
   EDA_WS_CLOSE_TRANSCRIPT_RESUBSCRIBE,
   applyEDATranscriptServerMessage,
   defaultEDAWebSocketFlowControl,
@@ -756,5 +757,48 @@ describe("transcript-window sockets", () => {
     // The timed-out capture was served once; nothing keeps re-reading or re-arming the timer.
     expect(gated.reads).toBeLessThan(40);
     expect(isolate.timers).toEqual([]);
+  });
+  it("closes hibernated transcript sockets when a just-woken object destroys its session", async () => {
+    const gated = new GatedStore();
+    const sockets: TestSocket[] = [];
+    const first = new Isolate(() => sockets, defaultEDAWebSocketFlowControl, gated.store);
+    const transcript = new TestSocket();
+    const raw = new TestSocket();
+    sockets.push(transcript, raw);
+    first.manager.acceptTranscript({
+      sessionId: SESSION_ID,
+      trace: TRACE,
+      webSocket: transcript.asWebSocket(),
+    });
+    await transcript.request(first.manager, edaTranscriptSubscribeRequest(transcript.client));
+    await transcript.pump(first.manager);
+    await first.manager.accept({
+      afterSeq: SequenceNumber.make(0),
+      sessionId: SESSION_ID,
+      trace: TRACE,
+      webSocket: raw.asWebSocket(),
+    });
+
+    // The object hibernates; destroySession wakes a new isolate that has restored nothing.
+    const woken = new Isolate(() => sockets, defaultEDAWebSocketFlowControl, gated.store);
+    await woken.manager.resetTranscript();
+    expect(transcript.closeCode).toBe(EDA_WS_CLOSE_TRANSCRIPT_RESUBSCRIBE);
+    expect(raw.closeCode).toBeUndefined();
+  });
+
+  it("bounds client frames in UTF-8 bytes, not characters", async () => {
+    const gated = new GatedStore();
+    const socket = new TestSocket();
+    const isolate = new Isolate(() => [socket], defaultEDAWebSocketFlowControl, gated.store);
+    isolate.manager.acceptTranscript({
+      sessionId: SESSION_ID,
+      trace: TRACE,
+      webSocket: socket.asWebSocket(),
+    });
+    // Under 2,048 characters, over 2,048 bytes.
+    const frame = JSON.stringify({ _tag: "subscribe", note: "é".repeat(1_100) });
+    expect(frame.length).toBeLessThan(2_048);
+    await isolate.manager.message(socket.asWebSocket(), frame);
+    expect(socket.closeCode).toBe(EDA_WS_CLOSE_PROTOCOL_ERROR);
   });
 });

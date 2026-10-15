@@ -87,8 +87,8 @@ export interface EDATranscriptSocketOptions {
 
 export const defaultActiveContentCadenceMs = 50;
 
-/** Largest client frame accepted; requests are persisted, so this bounds the attachment too. */
-const maxClientFrameLength = 2_048;
+/** Largest client frame accepted, in UTF-8 bytes; requests are persisted, so this bounds the attachment too. */
+const maxClientFrameBytes = 2_048;
 
 /** Volatile and persisted state of one transcript socket. */
 interface TranscriptSocket {
@@ -284,11 +284,12 @@ export class EDATranscriptSockets {
 
   /**
    * The session's log was destroyed: live content belongs to a log that no longer exists and
-   * every subscription names its incarnation. Close transcript sockets so clients resubscribe.
+   * every subscription names its incarnation. Close the transcript sockets this isolate holds,
+   * and any listed still-hibernated socket, so clients resubscribe.
    */
-  reset(): void {
+  reset(hibernated: ReadonlyArray<WebSocket> = []): void {
     this.active = emptyTranscriptActiveContentState;
-    for (const webSocket of [...this.sockets.keys()]) {
+    for (const webSocket of new Set([...this.sockets.keys(), ...hibernated])) {
       this.close(webSocket, EDA_WS_CLOSE_TRANSCRIPT_RESUBSCRIBE, "session-reset");
     }
   }
@@ -304,7 +305,8 @@ export class EDATranscriptSockets {
       return;
     }
     // Requests are persisted in the attachment; bound them before decoding.
-    if (message.length > maxClientFrameLength) {
+    // A string's UTF-8 size is at least its length, so the cheap check rejects most oversize frames.
+    if (message.length > maxClientFrameBytes || utf8ByteLength(message) > maxClientFrameBytes) {
       this.protocolError(webSocket, "Client frame too large");
       return;
     }
