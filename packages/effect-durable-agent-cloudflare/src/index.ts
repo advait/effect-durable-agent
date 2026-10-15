@@ -11,3 +11,12 @@ export {
   defaultActiveContentCadenceMs,
   type EDATranscriptSocketOptions,
 } from "./websocket/transcript-sockets";
+export * from "./durable-object-alarms";
+export * from "./durable-object-transcript";
+export type {
+  DurableObjectTranscriptObserver,
+  DurableObjectTranscriptOptions,
+  DurableObjectTranscriptSliceLimits,
+  TranscriptAlert,
+} from "./durable-object-transcript-maintenance";
+export type { AdoptedLogIncarnation } from "./durable-object-transcript-tables";

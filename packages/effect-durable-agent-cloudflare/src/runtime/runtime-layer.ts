@@ -32,6 +32,7 @@ import {
 import { DurableObjectSinkCheckpointStore } from "../durable-object-sink-checkpoints";
 import type { DurableObjectSessionStorage } from "../durable-object-storage";
 import { DurableObjectSessionStore } from "../durable-object-store";
+import type { DurableObjectTranscriptOptions } from "../durable-object-transcript-maintenance";
 
 /** Storage capabilities used by one EDA session Durable Object. */
 export type EDASessionDurableObjectStorage = DurableObjectSessionStorage &
@@ -57,6 +58,8 @@ export interface EDADurableObjectRuntimeLayerOptions {
   readonly toolkit?: EDAModelToolkit;
   readonly toolRegistry?: EDAToolRegistryShape;
   readonly tracer?: Tracer.Tracer;
+  /** Transcript definitions the session store maintains in every append. */
+  readonly transcript?: DurableObjectTranscriptOptions;
 }
 
 /** Compose the platform-neutral runtime with Cloudflare persistence and lifecycle adapters. */
@@ -78,6 +81,7 @@ export const makeEDADurableObjectRuntimeLayer = ({
   toolkit,
   toolRegistry,
   tracer,
+  transcript,
 }: EDADurableObjectRuntimeLayerOptions): Layer.Layer<EDARuntime, SessionCommandAdmissionError> => {
   const lifecycle = keepAlive ?? new DurableObjectKeepAlive(storage);
   const keepAliveLayer = EDAKeepAlive.FromAcquire(() => lifecycle.acquire());
@@ -104,7 +108,11 @@ export const makeEDADurableObjectRuntimeLayer = ({
     reducerRegistryLayer: EDAReducerRegistry.Live(reducers ?? []),
     sessionEventObserverLayer,
     sessionId,
-    sessionStoreLayer: DurableObjectSessionStore.layer({ sessionId, storage }),
+    sessionStoreLayer: DurableObjectSessionStore.layer({
+      sessionId,
+      storage,
+      ...(transcript === undefined ? {} : { transcript }),
+    }),
     sinkCheckpointStoreLayer: DurableObjectSinkCheckpointStore.layer(storage),
     sinks,
     toolkit,

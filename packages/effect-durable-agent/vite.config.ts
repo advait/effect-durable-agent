@@ -34,6 +34,7 @@ const publicEntries = {
   "services/tool-registry": "src/services/tool-registry.ts",
   "services/tracing": "src/services/tracing.ts",
   "testkit/layers": "src/testkit/layers.ts",
+  "testkit/transcript": "src/testkit/transcript.ts",
   "types/commands": "src/types/commands.ts",
   "types/core": "src/types/core.ts",
   "types/events": "src/types/events.ts",

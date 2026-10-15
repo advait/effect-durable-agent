@@ -801,8 +801,8 @@ describe("EDASessionStore", () => {
     const head = Effect.runSync(program);
 
     expect(head).toBe(1);
-    expect(fakeSql.appliedMigrations).toEqual([1]);
-    expect(fakeSql.migrationInsertCount).toBe(1);
+    expect(fakeSql.appliedMigrations).toEqual([1, 2]);
+    expect(fakeSql.migrationInsertCount).toBe(2);
   });
 
   it("pages DurableObjectSessionStore event replay through bounded SQL reads", () => {

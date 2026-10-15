@@ -43,15 +43,22 @@ import {
   type SaveReducerCheckpointInput,
 } from "effect-durable-agent/services/session-store";
 import { annotateEdaSpan, committedBatchAttributes } from "effect-durable-agent/services/tracing";
+import { stringifyJsonForColumn } from "./durable-object-json";
+import {
+  emptyTranscriptEffects,
+  maintainTranscriptsOnAppend,
+  publishTranscriptEffects,
+  type DurableObjectTranscriptOptions,
+  type TranscriptEventLog,
+} from "./durable-object-transcript-maintenance";
+import { transcriptTableStatements } from "./durable-object-transcript-tables";
 import type {
   DurableObjectSessionStorage,
   DurableObjectSessionStoreOptions,
   DurableObjectSqlStorage,
 } from "./durable-object-storage";
 
-/** Safe payload ceiling below the Durable Object SQLite 2 MB value limit. */
-/** Conservative JSON limit below the Durable Object SQLite per-value ceiling. */
-export const durableObjectSerializedJsonHardCapBytes = 1_500_000;
+export { durableObjectSerializedJsonHardCapBytes } from "./durable-object-json";
 
 const ProjectionPayload = Schema.Record(Schema.String, Schema.Unknown);
 const AdmittedCommandProjection = Schema.Struct({
@@ -108,9 +115,10 @@ interface DurableObjectReducerCheckpointRow {
   readonly updated_at_ms: number;
 }
 
-/** Single squashed schema version for the current pre-release DO store. */
+/** Squashed pre-release framework schema. */
 const durableObjectSessionStoreSchemaVersion = 1;
-const jsonEncoder = new TextEncoder();
+/** Forward migration adding the transcript projection, log incarnation and alarm wakeups. */
+const durableObjectTranscriptSchemaVersion = 2;
 
 /**
  * Bound one synchronous DO SQLite event-log read/decode to a small CPU and memory slice.
@@ -138,10 +146,11 @@ export class DurableObjectSessionStore {
   static readonly make = ({
     sessionId,
     storage,
+    transcript,
   }: DurableObjectSessionStoreOptions): Effect.Effect<EDASessionStoreShape, EDASessionStoreError> =>
     Effect.gen(function* () {
       yield* DurableObjectSessionStore.migrate(storage);
-      return makeDurableObjectSessionStore(sessionId, storage);
+      return makeDurableObjectSessionStore(sessionId, storage, transcript);
     });
 
   /** Layer constructor used by the Durable Object host runtime graph. */
@@ -259,6 +268,14 @@ const migrateDurableObjectSessionStore = (storage: DurableObjectSessionStorage) 
             durableObjectSessionStoreSchemaVersion,
           );
         }
+
+        if (currentVersion < durableObjectTranscriptSchemaVersion) {
+          for (const statement of transcriptTableStatements) sql.exec(statement);
+          sql.exec(
+            "INSERT INTO _eda_schema_migrations (id) VALUES (?)",
+            durableObjectTranscriptSchemaVersion,
+          );
+        }
       }),
     catch: (error) => durableStoreError("migrating DurableObjectSessionStore", error),
   });
@@ -272,6 +289,7 @@ const migrateDurableObjectSessionStore = (storage: DurableObjectSessionStorage) 
 const makeDurableObjectSessionStore = (
   sessionId: SessionId,
   storage: DurableObjectSessionStorage,
+  transcript: DurableObjectTranscriptOptions | undefined,
 ): EDASessionStoreShape => {
   const { sql } = storage;
   const ensureSession = (event: DurableEventEnvelope) => {
@@ -287,9 +305,12 @@ const makeDurableObjectSessionStore = (
    *
    * The event row is the sequence allocator. Artifact/projection writes happen
    * only for newly inserted events, preventing duplicate appends from advancing
-   * body rows or metadata.
+   * body rows or metadata; only those are collected into `inserted`.
    */
-  const insertOrRead = (entry: DurableAppendEntry): CommittedDurableEvent => {
+  const insertOrRead = (
+    entry: DurableAppendEntry,
+    inserted: Array<CommittedDurableEvent>,
+  ): CommittedDurableEvent => {
     const { event } = entry;
     ensureSession(event);
     const existing = readCommittedByEventIdOptional(sql, sessionId, event.eventId);
@@ -320,13 +341,40 @@ const makeDurableObjectSessionStore = (
     );
     const row = readEventLogRowByEventId(sql, event.eventId);
     applySynchronousProjections(sql, entry, SequenceNumber.make(row.seq), encoded.factJson);
-    return rowToCommittedDurableEvent(sql, row, sessionId);
+    const committed = rowToCommittedDurableEvent(sql, row, sessionId);
+    inserted.push(committed);
+    return committed;
   };
 
-  /** Execute an entire append batch as one synchronous SQLite transaction. */
+  /**
+   * Execute an entire append batch as one synchronous SQLite transaction.
+   *
+   * Transcript maintenance is one batch-level hook inside the same transaction, after every
+   * entry. A projection failure freezes only the failing version and never fails the append;
+   * its alert is published only after the transaction commits.
+   */
   const append = (batch: DurableAppendBatch) =>
     Effect.try({
-      try: () => storage.transactionSync(() => batch.entries.map(insertOrRead)),
+      try: () => {
+        const effects = emptyTranscriptEffects();
+        const committed = storage.transactionSync(() => {
+          const headBeforeBatch = transcript === undefined ? undefined : readEventLogHead(sql);
+          const inserted: Array<CommittedDurableEvent> = [];
+          const entries = batch.entries.map((entry) => insertOrRead(entry, inserted));
+          if (transcript !== undefined && headBeforeBatch !== undefined) {
+            maintainTranscriptsOnAppend(
+              storage,
+              transcript.definitions,
+              headBeforeBatch,
+              inserted,
+              effects,
+            );
+          }
+          return entries;
+        });
+        publishTranscriptEffects(transcript?.observer, effects);
+        return committed;
+      },
       catch: (error) => durableStoreError("appending DurableObjectSessionStore batch", error),
     }).pipe(Effect.tap((committed) => annotateEdaSpan(committedBatchAttributes(committed))));
 
@@ -383,6 +431,29 @@ const makeDurableObjectSessionStore = (
       }),
   };
 };
+
+/** Synchronous committed-log reads for the transcript builder, decoded like every replay. */
+export const makeDurableObjectEventLog = (
+  sql: DurableObjectSqlStorage,
+  sessionId: SessionId,
+): TranscriptEventLog => ({
+  head: () => readEventLogHead(sql),
+  after: (afterSeq, limit) =>
+    sql
+      .exec<DurableObjectEventRow>(
+        `
+          SELECT seq, event_id, namespace, type, schema_version, created_at_ms, trace_json, fact_json
+          FROM _eda_event_log
+          WHERE seq > ?
+          ORDER BY seq ASC
+          LIMIT ?
+        `,
+        afterSeq,
+        limit,
+      )
+      .toArray()
+      .map((row) => rowToCommittedDurableEvent(sql, row, sessionId)),
+});
 
 const makeCommittedEventStream = (
   sql: DurableObjectSqlStorage,
@@ -1089,21 +1160,6 @@ const findCommandAdmissionRow = (
       commandId,
     )
     .toArray()[0];
-};
-
-/** Serialize and size-check one JSON column before it reaches DO SQLite. */
-const stringifyJsonForColumn = (value: unknown, column: string): string => {
-  const json = JSON.stringify(value);
-  if (json === undefined) {
-    throw new Error(`${column} value is not JSON serializable`);
-  }
-  const bytes = jsonEncoder.encode(json).byteLength;
-  if (bytes > durableObjectSerializedJsonHardCapBytes) {
-    throw new Error(
-      `${column} serialized JSON is ${bytes} bytes; hard cap is ${durableObjectSerializedJsonHardCapBytes} bytes`,
-    );
-  }
-  return json;
 };
 
 const durableStoreError = (operation: string, cause: unknown) =>

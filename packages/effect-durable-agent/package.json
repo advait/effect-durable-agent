@@ -143,6 +143,10 @@
       "types": "./dist/testkit/layers.d.ts",
       "import": "./dist/testkit/layers.js"
     },
+    "./testkit/transcript": {
+      "types": "./dist/testkit/transcript.d.ts",
+      "import": "./dist/testkit/transcript.js"
+    },
     "./tooling/oxlint": "./tooling/oxlint/index.mjs",
     "./types/commands": {
       "types": "./dist/types/commands.d.ts",
