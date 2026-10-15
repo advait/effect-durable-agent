@@ -11,6 +11,7 @@ import { ModelResolver } from "./model-resolver";
 import { SessionConfiguredEvent, type ModelSelectionPayload } from "../types/events";
 import * as Tool from "effect/ai/Tool";
 import { describe, expect, it } from "vite-plus/test";
+import { durableMessageTranscript } from "../domain/message-transcript";
 import { makeMethods } from "@effect/vitest";
 
 import { SubmitMessageCommand } from "../types/commands";
@@ -213,13 +214,12 @@ describe("EDARuntime", () => {
         );
         const admitted = yield* runtime.submit(command);
         const liveEvents = yield* Fiber.join(liveFiber);
-        const messages = yield* runtime.messages();
-        const snapshot = yield* runtime.snapshot();
-        return { admitted, liveEvents, messages, snapshot };
+        const messages = durableMessageTranscript((yield* runtime.snapshot()).state);
+        return { admitted, liveEvents, messages };
       }),
     ).pipe(Effect.provide(makeTestLayer(stream)));
 
-    const { admitted, liveEvents, messages, snapshot } = await Effect.runPromise(program);
+    const { admitted, liveEvents, messages } = await Effect.runPromise(program);
 
     expect(admitted.event).toMatchObject({
       type: "CommandAdmitted",
@@ -245,7 +245,6 @@ describe("EDARuntime", () => {
     expect(messages.map((message) => message._tag)).toEqual(["User", "Assistant"]);
     expect(messages[0]).toMatchObject({ _tag: "User", content: command.content });
     expect(messages[1]).toMatchObject({ _tag: "Assistant", content: { text: "hello" } });
-    expect(snapshot.messages).toEqual(messages);
   });
 
   it("continues a tool-producing inference as a new turn in the same run", async () => {
@@ -481,7 +480,7 @@ describe("EDARuntime", () => {
       Effect.gen(function* () {
         const runtime = yield* EDARuntime;
         const terminal = yield* runtime.submitAndBlock(command);
-        const messages = yield* runtime.messages();
+        const messages = durableMessageTranscript((yield* runtime.snapshot()).state);
         return { terminal, messages };
       }),
     ).pipe(Effect.provide(makeTestLayer(stream)));
@@ -578,7 +577,7 @@ describe("EDARuntime", () => {
       Effect.gen(function* () {
         const runtime = yield* EDARuntime;
         const terminal = yield* runtime.submitAndBlock(command);
-        const messages = yield* runtime.messages();
+        const messages = durableMessageTranscript((yield* runtime.snapshot()).state);
         return { terminal, messages };
       }),
     ).pipe(Effect.provide(makeTestLayer(stream, "sequential")));
@@ -625,7 +624,7 @@ describe("EDARuntime", () => {
           interruptCommand.commandId,
           interruptAdmitted.position.seq,
         );
-        const messages = yield* runtime.messages();
+        const messages = durableMessageTranscript((yield* runtime.snapshot()).state);
         return { originalTerminal, interruptTerminal, messages };
       }),
     ).pipe(Effect.provide(makeTestLayer([activeStream, replacementStream], "sequential")));

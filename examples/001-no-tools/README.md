@@ -14,7 +14,7 @@ POST /sessions/:sessionId/messages
   -> effect-durable-agent/AssistantMessageCommitted
 ```
 
-The app code does not save a final chat array by hand. It submits a command. EDA admits that command durably before execution starts, owns the run/turn/message lifecycle, and exposes durable messages afterward.
+The app code does not save a final chat array by hand. It submits a command. EDA admits that command durably before execution starts, owns the run/turn/message lifecycle, and maintains the session's transcript: the user-visible history a host renders.
 
 ## Files
 
@@ -29,7 +29,8 @@ This example intentionally stays free of custom reducers, app events, tools, and
   - body: `{ "text": "hello", "idempotencyKey": "optional-retry-key" }`
   - returns immediately after durable admission
 - `GET /sessions/:sessionId/messages`
-  - returns durable user/assistant messages in committed order
+  - returns the latest 50 records of the session's transcript (`readTranscriptWindow`), in history
+    order; the session object enables transcripts with `transcript: { enabled: true }`
 
 `sessionId` must be a UUID. EDA mints new lifecycle ids as UUIDv7 and accepts UUIDv4 session ids
 for migrated callers.

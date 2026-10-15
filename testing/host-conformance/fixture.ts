@@ -278,9 +278,6 @@ export const conformanceWorker = {
       return json(snapshotSummary(await session.snapshot(scoped)));
     }
 
-    if (request.method === "GET") {
-      return json(await session.messages(scoped));
-    }
     if (request.method !== "POST") {
       return json({ error: "Method not allowed" }, 405);
     }
@@ -309,10 +306,6 @@ export const conformanceWorker = {
       ),
     });
     const snapshot = await session.snapshot(scoped);
-    return json({
-      messages: await session.messages(scoped),
-      snapshot: snapshotSummary(snapshot),
-      terminal,
-    });
+    return json({ snapshot: snapshotSummary(snapshot), terminal });
   },
 } satisfies ExportedHandler<ConformanceEnv>;

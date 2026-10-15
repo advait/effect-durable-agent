@@ -19,7 +19,8 @@ export interface NoToolsEDAEnv extends ExampleOpenAiEnv {
 /** Concrete no-tools session object; register this subclass, never the EDA base class. */
 export class NoToolsEDASession extends EDASessionDurableObject<NoToolsEDAEnv> {
   constructor(ctx: DurableObjectState, env: NoToolsEDAEnv) {
-    super(ctx, env, makeExampleOpenAiOptions(env));
+    // Maintain this session's transcript: the user-visible history `GET` reads below.
+    super(ctx, env, { ...makeExampleOpenAiOptions(env), transcript: { enabled: true } });
   }
 }
 
@@ -27,7 +28,8 @@ export class NoToolsEDASession extends EDASessionDurableObject<NoToolsEDAEnv> {
  * Tiny HTTP facade for the baseline example.
  *
  * The important line is `session.submit(...)`: the user message becomes a
- * durable `CommandAdmitted` fact before model execution begins.
+ * durable `CommandAdmitted` fact before model execution begins. History is read
+ * back from the session's transcript, the projection hosts render.
  */
 export default {
   async fetch(request, env): Promise<Response> {
@@ -41,7 +43,13 @@ export default {
     const session = getEDASessionDurableObjectByName(env.NoToolsEDASession, sessionId);
 
     if (request.method === "GET") {
-      return json(await session.messages({ sessionId, trace: makeRootEDATraceMetadata() }));
+      return json(
+        await session.readTranscriptWindow({
+          sessionId,
+          trace: makeRootEDATraceMetadata(),
+          selector: { _tag: "Latest", count: 50 },
+        }),
+      );
     }
 
     if (request.method !== "POST") {
@@ -68,13 +76,7 @@ export default {
       trace: makeRootEDATraceMetadata(),
     });
 
-    return json(
-      {
-        admitted,
-        messages: await session.messages({ sessionId, trace: makeRootEDATraceMetadata() }),
-      },
-      202,
-    );
+    return json({ admitted }, 202);
   },
 } satisfies ExportedHandler<NoToolsEDAEnv>;
 

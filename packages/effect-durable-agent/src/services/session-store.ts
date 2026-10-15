@@ -45,7 +45,7 @@ import {
   type EDATranscriptStoreShape,
   type TranscriptMaintenanceConfig,
 } from "../transcript/store";
-import { buildingTranscriptWindow, readTranscriptWindowFrom } from "../transcript/window-read";
+import { inactiveTranscriptWindow, readTranscriptWindowFrom } from "../transcript/window-read";
 
 export type CommittedDurableEvent<E = DecodedDurableEvent> = {
   readonly position: typeof DurablePosition.Type;
@@ -428,7 +428,11 @@ const makeInMemoryTranscriptStore = (
       const { transcript } = yield* Ref.get(data);
       const source = inMemoryTranscriptWindowSource(transcript);
       if (source === undefined) {
-        return buildingTranscriptWindow(transcript.incarnation, transcript.config.current.version);
+        return inactiveTranscriptWindow(
+          transcript.incarnation,
+          transcript.config.current.version,
+          transcript.versions.find((version) => version.meta.role === "building")?.meta,
+        );
       }
       const window = readTranscriptWindowFrom(source, selector, limits);
       return Result.isSuccess(window) ? window.success : yield* window.failure;

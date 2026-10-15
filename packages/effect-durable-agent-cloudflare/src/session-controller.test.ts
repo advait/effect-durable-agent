@@ -43,6 +43,7 @@ import { EDAWebSocketAttachment } from "./websocket/attachment";
 import { EDAWebSocketProjectionId, type EDAWebSocketProjection } from "./websocket/projection";
 import { CompactionExecutor, CompactionPolicy } from "effect-durable-agent/services/compaction";
 import { frameworkReducedStateReducerName } from "effect-durable-agent/domain/reduced-state";
+import { durableMessageTranscript } from "effect-durable-agent/domain/message-transcript";
 import { EDAReducer } from "effect-durable-agent/services/reducer-registry";
 import type { DurableObjectSqlCursor } from "./durable-object-storage";
 import { makeLanguageModelLayer, type TestModelParts } from "effect-durable-agent/testkit/layers";
@@ -533,8 +534,8 @@ describe("EDASessionController", () => {
       sessionId: SessionId.make(SESSION_ID),
       trace: TRACE,
     });
-    const messages = await host.messages({ sessionId: SessionId.make(SESSION_ID), trace: TRACE });
     const snapshot = await host.snapshot({ sessionId: SessionId.make(SESSION_ID), trace: TRACE });
+    const messages = durableMessageTranscript(snapshot.state);
 
     expect(terminal.event.type).toBe("CommandCompleted");
     expect(messages.map((message) => message._tag)).toEqual(["User", "Assistant"]);
@@ -552,14 +553,11 @@ describe("EDASessionController", () => {
 
     await host.dispose();
     const recreated = makeHost(storage);
-    const replayedMessages = await recreated.messages({
-      sessionId: SessionId.make(SESSION_ID),
-      trace: TRACE,
-    });
     const replayedSnapshot = await recreated.snapshot({
       sessionId: SessionId.make(SESSION_ID),
       trace: TRACE,
     });
+    const replayedMessages = durableMessageTranscript(replayedSnapshot.state);
 
     expect(replayedMessages).toEqual(messages);
     expect(replayedSnapshot).toEqual(snapshot);

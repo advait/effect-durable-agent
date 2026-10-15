@@ -16,6 +16,7 @@ import {
 import { EDAWebSocketAckFrame, FrameId } from "effect-durable-agent/websocket";
 import { SubmitMessageCommand } from "effect-durable-agent/types/commands";
 import { CommandId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
+import { durableMessageTranscript } from "effect-durable-agent/domain/message-transcript";
 import { sequentialUuidV7 } from "effect-durable-agent/services/id-generator";
 import { makeEDAToolkit } from "effect-durable-agent/services/tool-registry";
 import type { PositionedEvent } from "effect-durable-agent/types/events";
@@ -206,7 +207,7 @@ describeRealIntegration("EDA Durable Object host real local integration", () => 
         results.push({ events, text: assistantText(events) });
       }
 
-      const messages = await host.messages({ sessionId });
+      const messages = durableMessageTranscript((await host.snapshot({ sessionId })).state);
       await context.waitUntilSettled();
 
       expect(results).toHaveLength(realPromptCases.length);

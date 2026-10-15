@@ -7,6 +7,7 @@ import * as Prompt from "effect/ai/Prompt";
 import * as Response from "effect/ai/Response";
 import * as Tool from "effect/ai/Tool";
 import { describe, expect, it } from "vite-plus/test";
+import { durableMessageTranscript } from "../domain/message-transcript";
 
 import { EDASessionQuery } from "./session-query";
 import type { SessionStateShape } from "./session-state";
@@ -129,7 +130,7 @@ describe("SessionState control loop - interruption ownership and partial persist
           store,
           (entries) => countEvents(entries, "InferenceStarted") >= 2,
         );
-        const messages = yield* query.messages();
+        const messages = durableMessageTranscript((yield* query.snapshot()).state);
         return { committed, messages };
       }),
     ).pipe(
@@ -207,7 +208,7 @@ describe("SessionState control loop - interruption ownership and partial persist
         yield* dispatcher.admitCommand(stopTurnCommand);
         const stopDrain = yield* dispatcher.drainReadyWork({ modelSelection });
         const committed = yield* waitForCommitted(store, hasEventType("StopTurnApplied"));
-        const messages = yield* query.messages();
+        const messages = durableMessageTranscript((yield* query.snapshot()).state);
         return { committed, messages, stopDrain };
       }),
     ).pipe(

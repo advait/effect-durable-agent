@@ -18,6 +18,12 @@ import {
 import { makeRootEDATraceMetadata } from "effect-durable-agent/types/tracing";
 import { edaSessionRpc } from "./rpc-spec";
 
+/** One message record as the snapshot's reduced state carries it over RPC. */
+type SnapshotMessageRecord =
+  EDASessionSnapshot["state"]["messages"] extends ReadonlyMap<unknown, infer Record>
+    ? Record
+    : never;
+
 const command = new SubmitMessageCommand({
   commandId: CommandId.make("018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a"),
   content: [Prompt.textPart({ text: "historical prompt" })],
@@ -65,13 +71,14 @@ describe("deployed EDA RPC formats", () => {
           data: "data:text/plain;base64,aGlzdG9yaWNhbA==",
         }),
       ];
+      const userId = MessageId.make("018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b71");
       const user = {
         _tag: "User",
-        messageId,
+        messageId: userId,
         commandId: command.commandId,
         content,
         seq: SequenceNumber.make(1),
-      } satisfies (typeof EDASessionSnapshot.Type.messages)[number];
+      } satisfies SnapshotMessageRecord;
       const steering = {
         _tag: "Steering",
         messageId,
@@ -80,7 +87,7 @@ describe("deployed EDA RPC formats", () => {
         content: files,
         seq: SequenceNumber.make(2),
         consumedSeq: SequenceNumber.make(3),
-      } satisfies (typeof EDASessionSnapshot.Type.messages)[number];
+      } satisfies SnapshotMessageRecord;
       const assistantId = MessageId.make("018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6d");
       const toolCallId = ToolCallId.make("018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6e");
       const toolResult = Prompt.toolResultPart({
@@ -100,7 +107,7 @@ describe("deployed EDA RPC formats", () => {
         seq: SequenceNumber.make(4),
         content: { text: "firstsecond", reasoning: "historical reasoning" },
         promptParts: [...files, Prompt.reasoningPart({ text: "historical reasoning" }), toolResult],
-      } satisfies (typeof EDASessionSnapshot.Type.messages)[number];
+      } satisfies SnapshotMessageRecord;
       const queued = {
         messageId,
         commandId: command.commandId,
@@ -114,6 +121,7 @@ describe("deployed EDA RPC formats", () => {
           ...initialReducedState,
           commands: new Map([[command.commandId, pending]]),
           messages: new Map([
+            [userId, user],
             [messageId, steering],
             [assistantId, assistant],
           ]),
@@ -156,7 +164,6 @@ describe("deployed EDA RPC formats", () => {
           },
         },
         reducerStates: new Map([["gia.persisted", { version: 1, facts: ["historical"] }]]),
-        messages: [user, steering, assistant],
       };
       const carrier = { ...pending, command: Schema.encodeSync(EDACommand)(command) };
       const oldWire = {
@@ -183,15 +190,10 @@ describe("deployed EDA RPC formats", () => {
         SubmitMessageCommand,
       );
       assert.deepEqual(decoded.reducerStates, snapshot.reducerStates);
-      assert.deepEqual(decoded.messages, snapshot.messages);
       assert.deepEqual(decoded.state.messages, snapshot.state.messages);
       assert.deepEqual(
         decoded.state.commandQueues.pendingQueue,
         snapshot.state.commandQueues.pendingQueue,
-      );
-      assert.deepEqual(
-        structuredClone(Schema.encodeSync(edaSessionRpc.messages.output)(snapshot.messages)),
-        structuredClone(snapshot.messages),
       );
       assert.throws(() =>
         Schema.decodeUnknownSync(edaSessionRpc.snapshot.output)({

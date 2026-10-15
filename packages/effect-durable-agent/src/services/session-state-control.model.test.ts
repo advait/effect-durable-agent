@@ -217,7 +217,7 @@ const runScenario = (actions: ReadonlyArray<ModelAction>) =>
         yield* finalFlush(dispatcher, gates, startedStreams, released);
         const committed = yield* collectCommitted(store);
         const snapshot = yield* dispatcher.snapshot();
-        const messages = yield* query.messages();
+        const messages = durableMessageTranscript((yield* query.snapshot()).state);
         return { admissions, committed, messages, snapshot };
       }).pipe(
         Effect.provide(

@@ -32,7 +32,7 @@ import {
   transcriptCursorOf,
   type TranscriptWindowSelector,
 } from "./window";
-import { readTranscriptWindowFrom } from "./window-read";
+import { inactiveTranscriptWindow, readTranscriptWindowFrom } from "./window-read";
 
 const gia = testDefinition(giaLikeTestMappings);
 const plain = testDefinition();
@@ -166,6 +166,66 @@ describe("in-memory transcript maintenance", () => {
     expect(window.dependencies.filter((record) => record.kind === "user")).toEqual([]);
   });
 
+  it("reads a first build that froze as failed as unreadable, naming the failure", async () => {
+    const log = new TestLog().configure();
+    log.submit({ command: 1, message: 1, text: "hi" });
+    log.startRun({ run: 1, commands: [1] });
+    log.turn({ run: 1, turn: 1, inputs: [1] });
+    log.inferenceStarted({ run: 1, turn: 1, inference: 1 });
+    // A body with no JSON form cannot be projected, so building `current` from the seeded log
+    // fails and no version ever becomes active. The build projects the seeded log as one batch,
+    // so it freezes at that batch's first seq.
+    const failedAtSeq = 1;
+    log.append("ToolCallCreated", {
+      runId: ids.run(1),
+      turnId: ids.turn(1),
+      inferenceId: ids.inference(1),
+      toolCallId: ids.tool(1),
+      promptPart: {
+        type: "tool-call",
+        id: "call_1",
+        name: "binary",
+        params: { count: 1n },
+        providerExecuted: false,
+      },
+    });
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const transcript = yield* EDATranscriptStore;
+        return {
+          meta: yield* transcript.readTranscriptMeta,
+          window: yield* transcript.readTranscriptWindow(
+            { _tag: "Latest", count: 10 },
+            defaultTranscriptWindowLimits,
+          ),
+        };
+      }).pipe(
+        Effect.provide(
+          EDASessionStore.InMemorySeeded(testSessionId, log.durableEnvelopes, {
+            transcript: { current: gia },
+          }),
+        ),
+      ),
+    );
+    const [build] = result.meta;
+    expect(build).toMatchObject({
+      role: "building",
+      version: gia.version,
+      status: { _tag: "Failed", failedAtSeq },
+    });
+    if (build?.status._tag !== "Failed") throw new Error("the build froze");
+    expect(roundTrip(result.window)).toMatchObject({
+      version: gia.version,
+      throughSeq: 0,
+      records: [],
+      dependencies: [],
+      readiness: {
+        _tag: "Unreadable",
+        error: `transcript version ${gia.version} failed to build at seq ${failedAtSeq}: ${build.status.error}`,
+      },
+    });
+  });
+
   it("stores large bodies as log references", () => {
     const log = new TestLog().configure();
     log.submit({ command: 1, message: 1, text: "hi" });
@@ -280,6 +340,45 @@ describe("transcript convergence", () => {
       ["building", "Failed"],
     ]);
     expect(inMemoryTranscriptWindowSource(converged)?.meta.version).toBe(plain.version);
+  });
+});
+
+describe("the window served while no version is active", () => {
+  const failed = {
+    _tag: "Failed" as const,
+    failedAtSeq: SequenceNumber.make(4),
+    error: "boom",
+  };
+
+  it("is building with no build, a healthy build, or a failed build of another version", () => {
+    for (const build of [
+      undefined,
+      { version: gia.version, status: { _tag: "Ok" as const } },
+      { version: plain.version, status: failed },
+    ]) {
+      expect(
+        roundTrip(inactiveTranscriptWindow(incarnation, gia.version, build)).readiness,
+      ).toEqual({ _tag: "Building" });
+    }
+  });
+
+  it("is unreadable, naming the failure, once the build of the current version has failed", () => {
+    const window = roundTrip(
+      inactiveTranscriptWindow(incarnation, gia.version, { version: gia.version, status: failed }),
+    );
+    expect(window).toEqual({
+      incarnation,
+      version: gia.version,
+      throughSeq: 0,
+      records: [],
+      dependencies: [],
+      hasOlder: false,
+      hasNewer: false,
+      readiness: {
+        _tag: "Unreadable",
+        error: `transcript version ${gia.version} failed to build at seq 4: boom`,
+      },
+    });
   });
 });
 

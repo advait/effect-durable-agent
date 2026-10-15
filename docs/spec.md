@@ -143,8 +143,9 @@ Current methods:
 - `submit(items)` — commit an ordered durable batch of commands and/or app durable events.
 - `submitAndBlock(command)` — admit a command and wait for its terminal command event.
 - `blockOnCommand(commandId, afterSeq?)` — wait for `CommandCompleted | CommandFailed | CommandCancelled`.
-- `snapshot()` — read current framework/app reducer snapshot.
-- `messages()` — read durable user/assistant transcript messages.
+- `snapshot()` — read current framework/app reducer snapshot (`{ state, reducerStates }`).
+  `state.messages` is the model's working set: `ContextRebased` prunes it, so it is not history.
+  Hosts read user-visible history from the transcript (`readTranscriptWindow`, transcript sockets).
 - `eventsAfter(afterSeq)` — return a reconnect-safe stream combining durable backfill, same-process active-turn ephemeral replay, buffered live prefix, and future live events.
 
 Normal long-running ingress should prefer `submit` then observe the event stream rather than blocking a request for model completion.
@@ -678,8 +679,10 @@ reuses), and live delivery over transcript-window sockets (§10). Hosts still re
 - **Windows** (`src/transcript/window.ts`): `Latest`, `Page` and `Range` selectors; limits on
   records, bytes and inline body size; a window response whose schema enforces the degraded-read
   rule (nothing newer than `throughSeq`, no live content unless readiness is `Ready`); readiness
-  `Ready`, `Degraded`, `UpdatingHistory`, `Building`, and `Unreadable` (a stored row this release
-  cannot decode: an empty window until a rebuild); per-version maintenance meta.
+  `Ready`, `Degraded`, `UpdatingHistory`, `Building`, and `Unreadable` (an empty window whose
+  `error` says why: a stored row this release cannot decode, until a rebuild; or no active version
+  and a build of `current` that froze as failed, which is never retried); per-version maintenance
+  meta.
 - **Mappings** (`src/transcript/mapping.ts`): declarative host decorations (copy, first-wins,
   replace a list entry by id, by ordinal, or by either, classify) targeting a user by command id
   or idempotency key, or the session. They are validated by `makeTranscriptDefinition`, which derives the version
@@ -733,7 +736,8 @@ reuses), and live delivery over transcript-window sockets (§10). Hosts still re
   A projection failure marks only that version failed at its unchanged cursor and never fails the
   append. `convergeTranscripts` models the adapter's convergence: discard a non-current build,
   build `current` from the log, activate it at the head and delete the old version, and keep the
-  active version serving when a build fails.
+  active version serving when a build fails. With no active version, a failed build of `current`
+  reads as `Unreadable`, as in the adapter.
 - **Window reads** (`src/transcript/window-read.ts`, `readTranscriptWindowFrom`): shared window
   assembly over a store's synchronous `TranscriptWindowSource`: paging in both directions and by
   range, dependencies (session context, run groups, tools in part order, pending users in submission
@@ -760,7 +764,9 @@ reuses), and live delivery over transcript-window sockets (§10). Hosts still re
     active at seq 0; a log written before transcripts existed starts a `current` build while reads
     report `Building`; a build that is not `current` is retired; if the active version is not
     `current` and no build of `current` exists, one starts (a failed build of `current` counts, so
-    it is never retried). An active version this release no longer carries is frozen, reads report
+    it is never retried). With no active version, reads report `Building` while the build of
+    `current` is healthy and `Unreadable` (naming its version, `failedAtSeq` and error) once it has
+    frozen as failed; a build freezing while nothing is active re-reads every transcript socket. An active version this release no longer carries is frozen, reads report
     `UpdatingHistory` at its real cursor, and every object start raises a `MissedSession` alert
     until the rebuild activates. A log event the release cannot decode freezes the build at it.
   - _Builder._ `DurableObjectTranscriptStore.runSlice` reconciles, projects at most 512 log events
@@ -787,7 +793,7 @@ reuses), and live delivery over transcript-window sockets (§10). Hosts still re
     slice that reaches the head re-reads every transcript socket (`onServedChanged`, also raised when the active version freezes).
   - _Reads._ `DurableObjectTranscriptStore` (also `.layer` for the `EDATranscriptStore` port) reads
     windows, meta and status synchronously from storage with no runtime. A stored row this release
-    cannot decode serves an empty `Unreadable` window.
+    cannot decode serves an empty `Unreadable` window, as does a failed first build (above).
   - _Incarnation._ Minted (UUIDv7) on first need into `_eda_log_incarnation`, or adopted from a
     host key/value (`adoptIncarnation`), whose key the adapter also writes when it mints, so host
     and adapter always agree. A storage wipe mints a new one.
@@ -908,7 +914,7 @@ Current production host:
 - concrete subclasses of `EDASessionDurableObject` are registered in Wrangler;
 - one Durable Object instance/database stores one session;
 - host startup runs EDA schema migrations via `ctx.blockConcurrencyWhile(...)`;
-- host entrypoints expose RPC methods for submit, submitBatch, submitAndBlock, blockOnCommand, snapshot, messages, backup/destroy, alarm, and WebSocket events;
+- host entrypoints expose RPC methods for submit, submitBatch, submitAndBlock, blockOnCommand, snapshot, backup/destroy, alarm, and WebSocket events;
 - four storage-only RPC methods never construct the model runtime, reducers or sinks:
   `transcriptStatus` advances pending transcript build work by up to 16 bounded slices and returns
   the status a host backfill records: `Enabled` (incarnation, head, current version, every

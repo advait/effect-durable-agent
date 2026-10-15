@@ -10,7 +10,7 @@ import {
   TranscriptLogIncarnation,
   TranscriptVersion,
   TranscriptVersionMeta,
-  buildingTranscriptWindow,
+  inactiveTranscriptWindow,
   readTranscriptWindowFrom,
   type EDATranscriptStoreShape,
   type TranscriptCursorMismatch,
@@ -117,8 +117,13 @@ export class DurableObjectTranscriptStore {
     const { incarnation, slots } = this.#prepare();
     const active = slots.find((slot) => slot.role === "active");
     if (active === undefined) {
+      // Nothing is servable yet: building, or unreadable if the build of `current` froze (§7).
       return Result.succeed(
-        buildingTranscriptWindow(incarnation, this.#options.definitions.current.version),
+        inactiveTranscriptWindow(
+          incarnation,
+          this.#options.definitions.current.version,
+          slots.find((slot) => slot.role === "building"),
+        ),
       );
     }
     const carried = carriedDefinition(this.#options.definitions, active.version) !== undefined;

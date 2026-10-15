@@ -30,11 +30,15 @@ interface HostProcess {
   stop(): Promise<void>;
 }
 
+/** One top-level transcript record reduced to its kind and visible text. */
+interface HistoryEntry {
+  readonly kind: string;
+  readonly text: string;
+}
+
 interface MessageResult {
-  readonly messages: ReadonlyArray<{
-    readonly _tag: string;
-    readonly content?: { readonly text?: string };
-  }>;
+  /** The session's history after the submission, read from its transcript window. */
+  readonly history: ReadonlyArray<HistoryEntry>;
   readonly snapshot: { readonly lastSeq: number };
   readonly terminal: {
     readonly event: { readonly type: string };
@@ -70,6 +74,8 @@ interface WireRecord {
   readonly kind: string;
   readonly updatedSeq: number;
   readonly body?: {
+    readonly content?: string | ReadonlyArray<{ readonly type: string; readonly text?: string }>;
+    readonly parts?: ReadonlyArray<{ readonly _tag: string; readonly text?: string }>;
     readonly summaryId?: string;
     readonly lifecycle?: { readonly _tag: string; readonly result?: WireBody };
   };
@@ -341,8 +347,8 @@ const submitMessage = async (
   host: HostProcess,
   sessionId: string,
   input: { readonly idempotencyKey: string; readonly text: string },
-): Promise<MessageResult> =>
-  await decodeJson<MessageResult>(
+): Promise<Omit<MessageResult, "history">> =>
+  await decodeJson<Omit<MessageResult, "history">>(
     await fetch(`${host.baseUrl}/sessions/${sessionId}/messages`, {
       body: JSON.stringify(input),
       headers: { "content-type": "application/json" },
@@ -351,15 +357,41 @@ const submitMessage = async (
     }),
   );
 
-const getMessages = async (
+/** Submit a message, then read the session's history from its (enabled) transcript. */
+const submitAndReadHistory = async (
   host: HostProcess,
   sessionId: string,
-): Promise<MessageResult["messages"]> =>
-  await decodeJson(
-    await fetch(`${host.baseUrl}/sessions/${sessionId}/messages`, {
+  input: { readonly idempotencyKey: string; readonly text: string },
+): Promise<MessageResult> => ({
+  ...(await submitMessage(host, sessionId, input)),
+  history: await readHistory(host, sessionId),
+});
+
+/** The visible text of one window record: user content, or assistant text parts. */
+const recordText = (record: WireRecord): string => {
+  const content = record.body?.content;
+  if (typeof content === "string") return content;
+  if (content !== undefined) return content.map((part) => part.text ?? "").join("");
+  return (record.body?.parts ?? [])
+    .map((part) => (part._tag === "Text" ? (part.text ?? "") : ""))
+    .join("");
+};
+
+/** Read the session's user-visible history from its transcript window, which must be ready. */
+const readHistory = async (
+  host: HostProcess,
+  sessionId: string,
+): Promise<ReadonlyArray<HistoryEntry>> => {
+  const read = await decodeJson<TranscriptRead>(
+    await fetch(`${host.baseUrl}/sessions/${sessionId}/transcript`, {
       signal: AbortSignal.timeout(30_000),
     }),
   );
+  if (read._tag !== "Window" || read.window.readiness._tag !== "Ready") {
+    throw new Error(`Expected a ready transcript window, got ${JSON.stringify(read)}`);
+  }
+  return read.window.records.map((record) => ({ kind: record.kind, text: recordText(record) }));
+};
 
 class EventSocket {
   readonly #messages: string[] = [];
@@ -503,7 +535,7 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
           : "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a";
       try {
         const initialSocket = await EventSocket.open(host, sessionId, 0);
-        const first = await submitMessage(host, sessionId, {
+        const first = await submitAndReadHistory(host, sessionId, {
           idempotencyKey: "conformance:first",
           text: "ping one",
         });
@@ -511,43 +543,44 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         initialSocket.close();
 
         expect(first.terminal.event.type).toBe("CommandCompleted");
-        expect(first.messages.map((message) => message._tag)).toEqual(["User", "Assistant"]);
-        expect(first.messages[1]?.content?.text).toBe("pong");
+        expect(first.history.map((entry) => entry.kind)).toEqual(["user", "assistant"]);
+        expect(first.history[0]?.text).toBe("ping one");
+        expect(first.history[1]?.text).toBe("pong");
         expect(first.snapshot.lastSeq).toBeGreaterThan(0);
         expect(firstEvents.some((event) => event.event.type === "CommandAdmitted")).toBe(true);
         expect(firstEvents.some((event) => event.event.type === "CommandCompleted")).toBe(true);
 
-        const duplicate = await submitMessage(host, sessionId, {
+        const duplicate = await submitAndReadHistory(host, sessionId, {
           idempotencyKey: "conformance:first",
           text: "this duplicate must not run",
         });
         expect(duplicate.terminal.position.seq).toBe(first.terminal.position.seq);
-        expect(duplicate.messages).toEqual(first.messages);
+        expect(duplicate.history).toEqual(first.history);
         expect(duplicate.snapshot.lastSeq).toBe(first.snapshot.lastSeq);
 
         await host.restart({ hard: true });
-        expect(await getMessages(host, sessionId)).toEqual(first.messages);
-        const durableDuplicate = await submitMessage(host, sessionId, {
+        expect(await readHistory(host, sessionId)).toEqual(first.history);
+        const durableDuplicate = await submitAndReadHistory(host, sessionId, {
           idempotencyKey: "conformance:first",
           text: "this post-restart duplicate must not run",
         });
         expect(durableDuplicate.terminal.position.seq).toBe(first.terminal.position.seq);
-        expect(durableDuplicate.messages).toEqual(first.messages);
+        expect(durableDuplicate.history).toEqual(first.history);
         expect(durableDuplicate.snapshot.lastSeq).toBe(first.snapshot.lastSeq);
 
         const resumedSocket = await EventSocket.open(host, sessionId, first.snapshot.lastSeq);
-        const second = await submitMessage(host, sessionId, {
+        const second = await submitAndReadHistory(host, sessionId, {
           idempotencyKey: "conformance:second",
           text: "ping two",
         });
         const resumedEvents = await resumedSocket.eventsUntil("CommandCompleted");
         resumedSocket.close();
 
-        expect(second.messages.map((message) => message._tag)).toEqual([
-          "User",
-          "Assistant",
-          "User",
-          "Assistant",
+        expect(second.history.map((entry) => entry.kind)).toEqual([
+          "user",
+          "assistant",
+          "user",
+          "assistant",
         ]);
         expect(second.snapshot.lastSeq).toBeGreaterThan(first.snapshot.lastSeq);
         expect(resumedEvents.every((event) => event.position.seq > first.snapshot.lastSeq)).toBe(
@@ -572,20 +605,20 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
             ? await EventSocket.open(host, sessionId, second.snapshot.lastSeq, { projected: true })
             : undefined;
         await interruptedSubmission;
-        const recovered = await submitMessage(host, sessionId, {
+        const recovered = await submitAndReadHistory(host, sessionId, {
           idempotencyKey: "conformance:crash-recovery",
           text: "this recovered duplicate must not run twice",
         });
         expect(recovered.terminal.event.type).toBe("CommandCompleted");
-        expect(recovered.messages.map((message) => message._tag)).toEqual([
-          "User",
-          "Assistant",
-          "User",
-          "Assistant",
-          "User",
-          "Assistant",
+        expect(recovered.history.map((entry) => entry.kind)).toEqual([
+          "user",
+          "assistant",
+          "user",
+          "assistant",
+          "user",
+          "assistant",
         ]);
-        expect(recovered.messages[5]?.content?.text).toBe("pong");
+        expect(recovered.history[5]?.text).toBe("pong");
         if (projectedRecoverySocket !== undefined) {
           const projectedRecoveryEvents =
             await projectedRecoverySocket.eventsUntil("CommandCompleted");
@@ -599,21 +632,21 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
           method: "DELETE",
         });
         expect(destroyResponse.status).toBe(204);
-        expect(await getMessages(host, sessionId)).toEqual([]);
+        expect(await readHistory(host, sessionId)).toEqual([]);
 
-        const recreated = await submitMessage(host, sessionId, {
+        const recreated = await submitAndReadHistory(host, sessionId, {
           idempotencyKey: "conformance:after-destroy",
           text: "ping after destroy",
         });
-        expect(recreated.messages.map((message) => message._tag)).toEqual(["User", "Assistant"]);
-        expect(recreated.messages[1]?.content?.text).toBe("pong");
+        expect(recreated.history.map((entry) => entry.kind)).toEqual(["user", "assistant"]);
+        expect(recreated.history[1]?.text).toBe("pong");
 
         const secondDestroyResponse = await fetch(`${host.baseUrl}/sessions/${sessionId}/destroy`, {
           method: "DELETE",
         });
         expect(secondDestroyResponse.status).toBe(204);
         await host.restart();
-        expect(await getMessages(host, sessionId)).toEqual([]);
+        expect(await readHistory(host, sessionId)).toEqual([]);
       } finally {
         await host.stop();
       }
@@ -657,7 +690,13 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
           );
         }
 
-        for (const step of ["activate", "discard-and-repair", "missed-session", "init"]) {
+        for (const step of [
+          "activate",
+          "discard-and-repair",
+          "failed-first-build",
+          "missed-session",
+          "init",
+        ]) {
           expect((await probe(step, step)).failures).toEqual([]);
         }
 

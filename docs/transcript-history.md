@@ -22,7 +22,9 @@ Cloudflare adapter's storage (§14 step 3: tables, maintenance, freezing, runtim
 builder, activation, the shared alarm and the log incarnation) ships too, and the session Durable
 Object serves its transcript sockets from it; `docs/spec.md` §9, §14 and §16 describe it.
 As each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe the current behavior
-and this document keeps the design rationale.
+and this document keeps the design rationale. Today the pruned host-facing transcript of §2 (the
+snapshot's `messages` field and the `messages()` query and RPC) is removed: hosts read history only
+from the transcript.
 
 Path abbreviations: `core/` = `packages/effect-durable-agent/src/`, `cf/` =
 `packages/effect-durable-agent-cloudflare/src/`. Paths that start with `gia:` are in the
@@ -63,8 +65,10 @@ Compaction erases user-visible history.
 
 - `ContextRebased` → `pruneForContextRebase` deletes records older than `retainedFromContextSeq`
   (`core/domain/reduced-state.ts:1301-1330, 1421-1488`).
-- The snapshot transcript is derived from that pruned state (`core/services/session-query.ts:84-90`).
-  Hosts that render it lose everything before the compaction point. Gia's live client also ignores
+- The snapshot transcript was derived from that pruned state (`EDASessionSnapshot.messages` and the
+  `messages()` query and session RPC, through `durableMessageTranscript`). Hosts that rendered it
+  lost everything before the compaction point. Today both are removed; `durableMessageTranscript`
+  remains as a model-facing helper only. Gia's live client also ignores
   `ContextRebased` (`gia:gia-cf/app/features/agent-session/eda-session-page-model.ts:1855`), so a
   reload disagrees with a live view.
 - **Diagnosis:** a read-boundary defect. The UI is derived from state shaped for the model. The
@@ -171,6 +175,8 @@ No whole-history collection is ever held in memory.
   - A failed **active** version serves that cut with an "unavailable" tail under the degraded-read
     rule (§8), and raises an alert.
   - A failed **building** version leaves the active version healthy; the backfill reports it.
+    With no active version (a first build), reads serve an empty "unreadable" window naming the
+    failure rather than "building" forever (§8).
   - The only repair is a new definition, which rebuilds from the log (§7).
 - **Memory.** In-memory caches are published only after the outer transaction commits.
 - **Limits.** Disk or resource failure can still fail an append. The guarantee covers recoverable
@@ -375,6 +381,10 @@ runtime (today's controller queries do: `cf/session-controller.ts:201, 294, 303`
   - active content captured at the same publication boundary, if a runtime is live;
   - `hasOlder`, `hasNewer`;
   - readiness or degradation.
+- **No active version.** Until a version activates, reads serve an empty window: "building" while
+  the build of `current` can finish, and "unreadable" (naming the build's version, `failedAtSeq`
+  and error) once that build has frozen as failed, since a failed build is never retried (§7).
+  Today the Cloudflare and in-memory stores both do this.
 - **The degraded-read rule.** Every degraded read (a failed active version, §5.2; a missed session
   on the safety net, §7; a stored row the reader cannot decode, which serves an empty "unreadable"
   window, §7) returns at most its last-good cut and contains **nothing newer than its
@@ -563,7 +573,8 @@ commit. A pending user record moves into the conversation in one update when it 
 5. **EDA release.**
 6. **Host:** bump, mappings, authorization, SSR, client window store, CLI, backfill and its proof.
 7. **Rollout:** deploy with the old reader serving; backfill in widening rings; shadow; switch;
-   delete superseded code.
+   delete superseded code. Today EDA's pruned host-facing transcript (`EDASessionSnapshot.messages`
+   and `messages()` on the runtime, query, controller and session RPC) is deleted.
 
 ## 15. Out of scope, later
 

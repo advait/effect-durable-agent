@@ -11,6 +11,7 @@ export * from "./version";
 export * from "./window";
 export {
   buildingTranscriptWindow,
+  inactiveTranscriptWindow,
   readTranscriptWindowFrom,
   transcriptReadiness,
   type TranscriptWindowSource,

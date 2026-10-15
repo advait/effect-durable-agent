@@ -109,9 +109,6 @@ export interface EDASessionRpcSurface {
   readonly snapshot: (
     input: EDASessionScopedRpcInput,
   ) => Promise<typeof edaSessionRpc.snapshot.output.Encoded>;
-  readonly messages: (
-    input: EDASessionScopedRpcInput,
-  ) => Promise<typeof edaSessionRpc.messages.output.Encoded>;
   readonly destroySession: (
     input: EDASessionScopedRpcInput,
   ) => Promise<typeof edaSessionRpc.destroySession.output.Encoded>;
@@ -416,17 +413,6 @@ export abstract class EDASessionDurableObject<
       trace: decodeTraceMetadata(input.trace),
     });
     return Schema.encodeSync(edaSessionRpc.snapshot.output)(snapshot);
-  }
-
-  async messages(
-    raw: typeof SessionScopedInput.Encoded,
-  ): Promise<typeof edaSessionRpc.messages.output.Encoded> {
-    const input = Schema.decodeUnknownSync(SessionScopedInput)(raw);
-    const result = await this.#controller.messages({
-      sessionId: this.parseSessionId(input.sessionId),
-      trace: decodeTraceMetadata(input.trace),
-    });
-    return Schema.encodeSync(edaSessionRpc.messages.output)(result);
   }
 
   async webSocketMessage(webSocket: WebSocket, message: string | ArrayBuffer): Promise<void> {

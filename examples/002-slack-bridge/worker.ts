@@ -35,6 +35,8 @@ export class SlackBridgeEDASession extends EDASessionDurableObject<SlackBridgeED
       ...makeExampleOpenAiOptions(env),
       reducers: [SlackBridgeReducer],
       sinks: [makeSlackReplySink(loggingSlackClient)],
+      // Maintain this session's transcript: the user-visible history the transcript route reads.
+      transcript: { enabled: true },
     });
   }
 }
@@ -87,19 +89,25 @@ export default {
         ]),
       });
 
-      return json({ committed, messages: await session.messages({ sessionId, trace }) }, 202);
+      return json({ committed }, 202);
     }
 
-    const rawMessagesSessionId = pathParam(url.pathname, /^\/sessions\/([^/]+)\/messages\/?$/);
-    if (request.method === "GET" && rawMessagesSessionId !== null) {
-      const sessionId = SessionId.make(rawMessagesSessionId);
+    const rawTranscriptSessionId = pathParam(url.pathname, /^\/sessions\/([^/]+)\/transcript\/?$/);
+    if (request.method === "GET" && rawTranscriptSessionId !== null) {
+      const sessionId = SessionId.make(rawTranscriptSessionId);
       const session = getEDASessionDurableObjectByName(env.SlackBridgeEDASession, sessionId);
-      return json(await session.messages({ sessionId, trace: makeRootEDATraceMetadata() }));
+      return json(
+        await session.readTranscriptWindow({
+          sessionId,
+          trace: makeRootEDATraceMetadata(),
+          selector: { _tag: "Latest", count: 50 },
+        }),
+      );
     }
 
     return json(
       {
-        error: "Use POST /sessions/:sessionId/slack/events or GET /sessions/:sessionId/messages",
+        error: "Use POST /sessions/:sessionId/slack/events or GET /sessions/:sessionId/transcript",
       },
       404,
     );
