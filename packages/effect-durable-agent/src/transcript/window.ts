@@ -10,6 +10,7 @@ import {
   TranscriptLogIncarnation,
   TranscriptOrder,
   TranscriptRecordViewFromEnvelope,
+  isPendingTranscriptUserRecord,
   isTopLevelTranscriptRecord,
   TranscriptVersion,
   type TranscriptOrderKey,
@@ -222,6 +223,12 @@ export const TranscriptWindow = Schema.Struct({
     (window) =>
       window.dependencies.every((record) => !isHistoryRecord(record)) ||
       "dependencies never contain history records",
+  ),
+  Schema.makeFilter(
+    (window) =>
+      window.dependencies.every(
+        (record) => record.kind !== "user" || isPendingTranscriptUserRecord(record),
+      ) || "the only user dependencies are pending users; cancelled users are never served",
   ),
   Schema.makeFilter(
     (window) =>

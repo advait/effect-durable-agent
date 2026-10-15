@@ -314,7 +314,8 @@ runtime (today's controller queries do: `cf/session-controller.ts:201, 294, 303`
   - `hasOlder`, `hasNewer`;
   - readiness or degradation.
 - **The degraded-read rule.** Every degraded read (a failed active version, §5.2; a missed session
-  on the safety net, §7) returns its last-good cut and contains **nothing newer than its
+  on the safety net, §7; a stored row the reader cannot decode, which serves an empty "unreadable"
+  window, §7) returns at most its last-good cut and contains **nothing newer than its
   `throughSeq`**: no newer pending users, session context or live content. Readiness says why the
   cut is behind, and the window contract makes active content absent whenever readiness is not
   ready.

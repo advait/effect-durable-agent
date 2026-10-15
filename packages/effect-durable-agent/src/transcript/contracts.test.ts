@@ -180,7 +180,7 @@ describe("transcript records", () => {
     }
   });
 
-  it("keeps id and position for kinds and bodies this reader cannot interpret", () => {
+  it("keeps id and position for kinds and formats this reader cannot interpret", () => {
     const newerKind = {
       format: 1,
       kind: "poll",
@@ -205,11 +205,10 @@ describe("transcript records", () => {
       ...newerLifecycle,
       body: { ...newerLifecycle.body, lifecycle: { _tag: "Paused" } },
     };
-    expect(Schema.decodeUnknownSync(TranscriptRecordViewFromEnvelope)(changed)).toMatchObject({
-      kind: "unknown",
-      originalKind: "tool",
-      id: nth(records, 3).id,
-    });
+    // A malformed record of a known kind is an error, never a placeholder.
+    expect(
+      Exit.isFailure(Schema.decodeUnknownExit(TranscriptRecordViewFromEnvelope)(changed)),
+    ).toBe(true);
   });
 
   it("assigns a user position exactly when the submission is consumed", () => {
@@ -444,6 +443,16 @@ describe("transcript windows", () => {
       ),
     ).toBe(true);
     expect(Exit.isFailure(decode(window({ readiness: { _tag: "Degraded" } })))).toBe(true);
+  });
+
+  it("never serves a cancelled user", () => {
+    const user = nth(records, 0);
+    if (user.kind !== "user") throw new Error("fixture 0 is a user record");
+    const { position: _position, consumedAtMs: _consumedAtMs, ...unconsumed } = user;
+    const cancelled = toEnvelope({ ...unconsumed, state: { _tag: "Cancelled", reason: "edit" } });
+    const pending = toEnvelope({ ...unconsumed, state: { _tag: "Pending" } });
+    expect(Exit.isFailure(decode(window({ records: [], dependencies: [cancelled] })))).toBe(true);
+    expect(Exit.isSuccess(decode(window({ records: [], dependencies: [pending] })))).toBe(true);
   });
 
   it("bounds degraded, unreadable and duplicated cuts", () => {

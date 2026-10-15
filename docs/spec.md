@@ -613,12 +613,14 @@ yet, and hosts still derive their UI from the pruned `ReducedState`.
   scoped to a log incarnation and a transcript version. Body ids must agree with the record id.
   Stored rows hold tool bodies inline only up to `transcriptStoredInlineBodyLimit` and as log
   references above it, and decorations are bounded, so rows stay far below storage value limits.
-  Stored and wire rows use a backward-readable envelope. A wire reader turns a kind or body it cannot interpret into an
-  explicit `unknown` record that keeps its id and position.
+  Stored and wire rows use a backward-readable envelope. A wire reader turns a record kind or
+  envelope format it does not know into an explicit `unknown` record that keeps its id and
+  position; a malformed record of a known kind fails to decode.
 - **Windows** (`src/transcript/window.ts`): `Latest`, `Page` and `Range` selectors; limits on
   records, bytes and inline body size; a window response whose schema enforces the degraded-read
-  rule (nothing newer than `throughSeq`, no live content unless readiness is `Ready`); per-version
-  maintenance meta.
+  rule (nothing newer than `throughSeq`, no live content unless readiness is `Ready`); readiness
+  `Ready`, `Degraded`, `UpdatingHistory`, `Building`, and `Unreadable` (a stored row this release
+  cannot decode: an empty window until a rebuild); per-version maintenance meta.
 - **Mappings** (`src/transcript/mapping.ts`): declarative host decorations (copy, first-wins,
   replace a list entry by id or ordinal, classify) targeting a user by command id or idempotency
   key, or the session. They are validated by `makeTranscriptDefinition`, which derives the version

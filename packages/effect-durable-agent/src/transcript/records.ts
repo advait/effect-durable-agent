@@ -84,7 +84,7 @@ export const DecorationBufferRecordId = Schema.TemplateLiteral([
   "decorations:",
   Schema.Literals(["command", "idempotencyKey"]),
   ":",
-  Schema.String,
+  Schema.NonEmptyString.check(Schema.isMaxLength(512)),
 ]);
 export type DecorationBufferRecordId = typeof DecorationBufferRecordId.Type;
 
@@ -638,10 +638,30 @@ export type TranscriptUnknownRecord = typeof TranscriptUnknownRecord.Type;
 /** What a wire reader sees for one record. */
 export type TranscriptRecordView = TranscriptRecord | TranscriptUnknownRecord;
 
+/** A user record the agent has read: positioned history. */
+export type ConsumedTranscriptUserRecord = TranscriptUserRecord & {
+  readonly state: Extract<TranscriptUserState, { readonly _tag: "Consumed" }>;
+  readonly position: TranscriptPosition;
+};
+
+/** A user record still waiting for the agent. */
+export type PendingTranscriptUserRecord = TranscriptUserRecord & {
+  readonly state: Extract<
+    TranscriptUserState,
+    { readonly _tag: "Pending" | "Paused" | "Promoted" | "Steering" }
+  >;
+};
+
+/** A positioned record that counts toward a window's record limit. */
+export type TranscriptTopLevelRecord =
+  | ConsumedTranscriptUserRecord
+  | TranscriptAssistantRecord
+  | TranscriptCompactionRecord;
+
 /** Top-level kinds count toward a window's record limit and carry a position. */
 export const isTopLevelTranscriptRecord = (
   record: TranscriptRecord,
-): record is TranscriptUserRecord | TranscriptAssistantRecord | TranscriptCompactionRecord =>
+): record is TranscriptTopLevelRecord =>
   record.kind === "assistant" ||
   record.kind === "compaction" ||
   (record.kind === "user" && record.state._tag === "Consumed" && record.position !== undefined);
@@ -649,7 +669,7 @@ export const isTopLevelTranscriptRecord = (
 /** A user record still waiting for the agent; served as a dependency, never twice. */
 export const isPendingTranscriptUserRecord = (
   record: TranscriptRecord,
-): record is TranscriptUserRecord =>
+): record is PendingTranscriptUserRecord =>
   record.kind === "user" &&
   (record.state._tag === "Pending" ||
     record.state._tag === "Paused" ||
@@ -721,7 +741,28 @@ export const TranscriptRecordFromEnvelope = TranscriptRecordEnvelope.check(
   Schema.decodeTo(TranscriptRecord, SchemaTransformation.passthroughSupertype()),
 );
 
-const TranscriptUnknownRecordFromEnvelope = TranscriptRecordEnvelope.pipe(
+const knownRecordKinds: ReadonlySet<string> = new Set([
+  "user",
+  "assistant",
+  "compaction",
+  "tool",
+  "runGroup",
+  "sessionContext",
+  "decorationBuffer",
+]);
+
+/**
+ * Only a kind this reader does not know, or a newer envelope format, becomes `unknown`; a
+ * malformed record of a known kind in a known format is a decode failure, never a placeholder.
+ */
+const TranscriptUnknownRecordFromEnvelope = TranscriptRecordEnvelope.check(
+  Schema.makeFilter(
+    (envelope) =>
+      !knownRecordKinds.has(envelope.kind) ||
+      envelope.format > transcriptRecordEnvelopeFormat ||
+      `a ${envelope.kind} record in format ${envelope.format} must decode as that kind`,
+  ),
+).pipe(
   Schema.decodeTo(TranscriptUnknownRecord, {
     decode: SchemaGetter.transform((envelope) => ({
       kind: "unknown" as const,
