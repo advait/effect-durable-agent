@@ -831,6 +831,20 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         const disabled = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
         expect(disabled).toMatchObject({ _tag: "Disabled", versions: [] });
         expect(await get(`/sessions/${sessionId}/transcript`)).toEqual({ _tag: "Disabled" });
+        // Body and summary reads answer Disabled too, and mint nothing (status is unchanged).
+        expect(
+          await get(
+            `/sessions/${sessionId}/transcript-body?seq=1&path=${encodeURIComponent(
+              JSON.stringify(["promptPart", "result"]),
+            )}&incarnation=any`,
+          ),
+        ).toEqual({ _tag: "Disabled" });
+        expect(
+          await get(
+            `/sessions/${sessionId}/transcript-summary?summaryId=018f6bd5-2f2a-7b1e-8f1a-000000000000&incarnation=any`,
+          ),
+        ).toEqual({ _tag: "Disabled" });
+        expect(await get(`/sessions/${sessionId}/transcript-status`)).toEqual(disabled);
         expect(await get(`/sessions/${sessionId}/transcript-upgrade`)).toEqual({ status: 409 });
         expect(
           await get(

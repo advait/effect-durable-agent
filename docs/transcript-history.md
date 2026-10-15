@@ -385,7 +385,8 @@ runtime (today's controller queries do: `cf/session-controller.ts:201, 294, 303`
   plus its byte length, resolvable through the log after old projection rows are deleted. Stored rows
   also hold large bodies as references, so no row approaches storage value limits.
   The host authorizes body fetches. Today the object's storage-only `readTranscriptBody` RPC resolves
-  a reference, and `readTranscriptSummary` serves a compaction marker's summary text.
+  a reference, and `readTranscriptSummary` serves a compaction marker's summary text; both take
+  the reference's log incarnation and refuse one from a wiped log.
 - **Log incarnation.** The adapter owns it (adopting a host's existing value, such as Gia's
   `gia.log_incarnation`). A wiped log invalidates every cursor.
 
