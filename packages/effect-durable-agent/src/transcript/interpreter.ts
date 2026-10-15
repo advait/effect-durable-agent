@@ -204,10 +204,9 @@ export class TranscriptBatch {
     // Every planned record must satisfy the strict stored-row schema: an invalid record fails
     // this version's projection (freezing it) rather than becoming a row no reader can decode.
     for (const record of this.records.values()) {
-      if (!isStorableRecord(record)) {
-        throw new TranscriptProjectionError({
-          message: `planned record ${record.id} does not satisfy the transcript record schema or is not JSON`,
-        });
+      const problem = storageProblem(record);
+      if (problem !== undefined) {
+        throw new TranscriptProjectionError({ message: `planned record ${record.id} ${problem}` });
       }
     }
     return {
@@ -224,16 +223,28 @@ const matchesRecordSchema = Schema.is(TranscriptRecord);
 
 const encodeRecord = Schema.encodeSync(TranscriptRecordFromEnvelope);
 
+const describeCause = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : String(cause);
+
 /**
- * Whether a record satisfies the stored-row schema, filters included, and its envelope is JSON:
- * exactly what a store can write and every reader can encode.
+ * Why a record could not be stored, if it could not: it must satisfy the stored-row schema,
+ * filters included, and its envelope must be JSON, which is exactly what a store can write and
+ * every reader can encode. The cause is kept so a frozen version can be diagnosed from its meta.
  */
-const isStorableRecord = (record: TranscriptRecord): boolean => {
-  if (!matchesRecordSchema(record)) return false;
+const storageProblem = (record: TranscriptRecord): string | undefined => {
+  let envelope: unknown;
   try {
-    return JSON.stringify(encodeRecord(record)) !== undefined;
-  } catch {
-    return false;
+    envelope = encodeRecord(record);
+  } catch (cause) {
+    return `does not satisfy the transcript record schema: ${describeCause(cause)}`;
+  }
+  if (!matchesRecordSchema(record)) {
+    return "does not satisfy the transcript record schema";
+  }
+  try {
+    return JSON.stringify(envelope) === undefined ? "has no JSON envelope" : undefined;
+  } catch (cause) {
+    return `is not JSON: ${describeCause(cause)}`;
   }
 };
 

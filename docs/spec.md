@@ -664,9 +664,11 @@ prompts are still built from `ReducedState`, which never reads transcript record
   not exist yet are parked in a bounded `decorations:<association>:<key>` record, applied in arrival
   order when the record is created, and then drained. The declared user fallbacks follow, within
   the byte budget, except for a record already classified when it is created.
-- **Plan validation**: every record a plan writes must satisfy the strict stored-row schema;
-  anything else fails that version's projection (freezing it) instead of producing an unreadable
-  row. Failures and bodies are normalized to JSON the same way.
+- **Plan validation**: every record a plan writes must satisfy the strict stored-row schema and
+  encode to a JSON envelope; anything else fails that version's projection (freezing it, with the
+  cause in its meta) instead of producing a row no reader can decode or encode. Bodies, failures
+  and model selections are normalized to the JSON a persisted log holds; model settings with no
+  JSON form are dropped.
 - **In-memory store** (`EDASessionStore.InMemory` / `InMemorySeeded`, `src/transcript/in-memory.ts`):
   also provides `EDATranscriptStore`. It takes `{ transcript: TranscriptMaintenanceConfig }`
   (default: the definition with no mappings), builds `current` from the seeded log at construction,

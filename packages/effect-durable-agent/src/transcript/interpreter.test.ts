@@ -449,6 +449,55 @@ describe("transcript interpreter", () => {
         plain,
       ),
     ).toThrow(/does not satisfy the transcript record schema/);
+
+    // A record that matches the schema but whose envelope has no JSON form is refused too,
+    // with the cause in the message.
+    const session = record(version, transcriptRecordId.session);
+    if (session.kind !== "sessionContext") throw new Error("expected the session record");
+    const unwritable = {
+      ...session,
+      modelSelection: { provider: "test", modelId: "m", settings: { seed: 7n } },
+    };
+    const configure = new TestLog().append("CompactionStarted", {
+      compactionId: ids.compaction(1),
+    }).events;
+    expect(() =>
+      planTranscriptBatch(
+        {
+          cursor: version.meta.cursor,
+          record: (id) => (id === session.id ? unwritable : version.records.get(id)),
+          alias: () => undefined,
+          nextOrdinal: () => 0,
+        },
+        configure.map((entry) => ({
+          ...entry,
+          position: { ...entry.position, seq: SequenceNumber.make(4) },
+        })),
+        plain,
+      ),
+    ).toThrow(/is not JSON: .*BigInt/);
+  });
+
+  it("keeps user fallbacks within the decoration byte budget", () => {
+    const log = new TestLog();
+    log.appendForeign("gia-agent", "GiaUserMessageAuthorCommitted", {
+      relatedCommandIdempotencyKey: "other",
+      userEmail: "x".repeat(8_000),
+    });
+    for (let index = 0; index < 32; index += 1) {
+      log.appendForeign("gia-agent", "GiaFileAttachmentCreated", {
+        attachmentId: `att-${index}`,
+        relatedCommandIdempotencyKey: "k",
+        blob: "y".repeat(7_900),
+      });
+    }
+    log.submit({ command: 1, message: 1, text: "full", idempotencyKey: "k" });
+    const version = projectBatches(gia, [log.events]);
+    const decorations = user(version, 1).decorations;
+    expect(decorations["author"]).toBeUndefined();
+    expect(new TextEncoder().encode(JSON.stringify(decorations)).length).toBeLessThanOrEqual(
+      262_144,
+    );
   });
 
   it("ignores events without transcript meaning", () => {
