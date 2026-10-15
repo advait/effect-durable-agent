@@ -12,13 +12,14 @@ import {
 } from "./mapping";
 import { TranscriptProjectionError } from "./plan";
 import {
-  TranscriptDecorationEntryKey,
+  TranscriptDecorationEntryId,
   transcriptDecorationBufferLimit,
   transcriptRecordId,
   type TranscriptBufferedDecoration,
   type TranscriptClassification,
   type TranscriptDecoration,
   type TranscriptDecorationBufferRecord,
+  type TranscriptDecorationEntryKey,
   type TranscriptDecorations,
   type TranscriptFieldPath,
   type TranscriptUserRecord,
@@ -130,30 +131,53 @@ const prepareOperation = (
     }
     case "ReplaceListEntry": {
       const value = boundedJson(extract(payload, operation.from));
-      const entryKey = listEntryKey(operation.key, payload);
-      return value === undefined || entryKey === undefined
+      const entry = listEntryKey(operation.key, payload);
+      return value === undefined || entry === undefined
         ? []
-        : [{ mapping, operation: index, value, entryKey }];
+        : [
+            {
+              mapping,
+              operation: index,
+              value,
+              entryKey: entry.key,
+              ...(entry.id === undefined ? {} : { entryId: entry.id }),
+            },
+          ];
     }
   }
 };
 
+const entryIdAt = (payload: unknown, path: TranscriptFieldPath): string | undefined => {
+  const value = extract(payload, path);
+  return typeof value === "string" && Schema.is(TranscriptDecorationEntryId)(value)
+    ? value
+    : undefined;
+};
+
+const ordinalAt = (payload: unknown, path: TranscriptFieldPath): number | undefined => {
+  const value = extract(payload, path);
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+};
+
+/** The entry's list key, and its id when the list is keyed by id or ordinal. */
 const listEntryKey = (
   key: Extract<TranscriptMappingOperation, { readonly _tag: "ReplaceListEntry" }>["key"],
   payload: unknown,
-): TranscriptDecorationEntryKey | undefined => {
-  const value = extract(payload, key.path);
+): { readonly key: TranscriptDecorationEntryKey; readonly id?: string } | undefined => {
   switch (key._tag) {
-    case "Id":
-      return typeof value === "string" &&
-        value.length > 0 &&
-        Schema.is(TranscriptDecorationEntryKey)(value)
-        ? value
-        : undefined;
-    case "Ordinal":
-      return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-        ? value
-        : undefined;
+    case "Id": {
+      const id = entryIdAt(payload, key.path);
+      return id === undefined ? undefined : { key: id };
+    }
+    case "Ordinal": {
+      const ordinal = ordinalAt(payload, key.path);
+      return ordinal === undefined ? undefined : { key: ordinal };
+    }
+    case "IdOrOrdinal": {
+      const id = entryIdAt(payload, key.id);
+      const ordinal = ordinalAt(payload, key.ordinal);
+      return id === undefined || ordinal === undefined ? undefined : { key: ordinal, id };
+    }
   }
 };
 
@@ -305,7 +329,8 @@ const applyOperation = (
         target.decorations[operation.to],
         prepared.entryKey,
         prepared.value,
-        operation.key._tag === "Ordinal",
+        operation.key._tag !== "Id",
+        operation.key._tag === "IdOrOrdinal" ? prepared.entryId : undefined,
       );
       return list === undefined ? target : withDecoration(target, operation.to, list);
     }
@@ -323,8 +348,25 @@ const replaceListEntry = (
   key: TranscriptDecorationEntryKey,
   value: Schema.Json,
   ordered: boolean,
+  id: string | undefined,
 ): TranscriptDecoration | undefined => {
   const entries = existing?._tag === "List" ? existing.entries : [];
+  if (id !== undefined) {
+    // Keyed by id or ordinal: drop every entry either one matches, then insert in ordinal order.
+    const kept = entries.filter((entry) => entry.key !== key && entry.id !== id);
+    if (
+      kept.length === entries.length &&
+      entries.length >= transcriptMappingBounds.maxListEntries
+    ) {
+      return undefined;
+    }
+    return {
+      _tag: "List",
+      entries: [...kept, { key, value, id }].sort(
+        (left, right) => Number(left.key) - Number(right.key),
+      ),
+    };
+  }
   const index = entries.findIndex((entry) => entry.key === key);
   if (index >= 0) {
     return {

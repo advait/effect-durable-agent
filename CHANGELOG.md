@@ -6,6 +6,11 @@
   the prompt orders them, instead of by the turn's input list (for example a promoted queued
   message and later steering read together). Every transcript version changes, so sessions rebuild
   and hosts run their backfill; no host maintains a transcript yet.
+- Transcript mappings: `ReplaceListEntry` accepts an `IdOrOrdinal` key. The list is kept in
+  ordinal order, and a new entry replaces every entry with the same id or the same ordinal, so a
+  retried input never leaves a stale duplicate (Gia's attachments and references). List entries
+  keyed this way record their `id`. Existing definitions, their versions and their output are
+  unchanged, so no semantic-revision bump; older readers ignore the extra entry field.
 
 ## 0.1.0-alpha.22
 

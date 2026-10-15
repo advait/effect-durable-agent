@@ -345,6 +345,52 @@ describe("transcript interpreter", () => {
     ).toBeLessThanOrEqual(262_144);
   });
 
+  it("replaces a list entry by id or ordinal, keeping ordinal order", () => {
+    const byIdOrOrdinal = testDefinition({
+      mappings: [
+        {
+          name: "attachments",
+          event: { namespace: "gia-agent", type: "GiaFileAttachmentCreated", schemaVersion: 1 },
+          target: { _tag: "UserByIdempotencyKey", path: ["relatedCommandIdempotencyKey"] },
+          operations: [
+            {
+              _tag: "ReplaceListEntry",
+              from: ["fileName"],
+              to: "attachments",
+              key: { _tag: "IdOrOrdinal", id: ["attachmentId"], ordinal: ["ordinal"] },
+            },
+          ],
+        },
+      ],
+      userFallbacks: [],
+    });
+    const attach = (log: TestLog, attachmentId: string, ordinal: number, fileName: string) =>
+      log.appendForeign("gia-agent", "GiaFileAttachmentCreated", {
+        attachmentId,
+        relatedCommandIdempotencyKey: "k",
+        ordinal,
+        fileName,
+      });
+    const log = new TestLog();
+    attach(log, "a", 1, "a.txt");
+    attach(log, "b", 0, "b.txt");
+    log.submit({ command: 1, message: 1, text: "files", idempotencyKey: "k" });
+    // A retry in a different order: same ids, swapped ordinals, renamed files.
+    attach(log, "a", 0, "a2.txt");
+    attach(log, "b", 1, "b2.txt");
+    // A retry with a new id at an existing ordinal replaces that ordinal.
+    attach(log, "c", 1, "c.txt");
+    const version = projectBatches(byIdOrOrdinal, [log.events]);
+    expect(version.meta.status._tag).toBe("Ok");
+    expect(user(version, 1).decorations["attachments"]).toEqual({
+      _tag: "List",
+      entries: [
+        { key: 0, value: "a2.txt", id: "a" },
+        { key: 1, value: "c.txt", id: "c" },
+      ],
+    });
+  });
+
   it("normalizes decoration and body values to the JSON a stored log holds", () => {
     const log = new TestLog().configure();
     log.appendForeign("gia-agent", "GiaFileAttachmentCreated", {

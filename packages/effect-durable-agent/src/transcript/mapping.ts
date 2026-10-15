@@ -67,6 +67,12 @@ export const TranscriptListEntryKey = Schema.TaggedUnion({
   Id: { path: MappingPath },
   /** A non-negative integer ordinal at this payload path; the list is kept in ordinal order. */
   Ordinal: { path: MappingPath },
+  /**
+   * An id and an ordinal; the list is kept in ordinal order. A new entry replaces every entry with
+   * the same id **or** the same ordinal, so an input retried with new ids, or in a different
+   * order, never leaves a stale duplicate (attachments and references keyed by both).
+   */
+  IdOrOrdinal: { id: MappingPath, ordinal: MappingPath },
 });
 export type TranscriptListEntryKey = typeof TranscriptListEntryKey.Type;
 
@@ -76,7 +82,7 @@ export const TranscriptMappingOperation = Schema.TaggedUnion({
   Copy: { from: MappingPath, to: TranscriptDecorationKey },
   /** Copy a payload value into a decoration only if the decoration is still absent. */
   FirstWins: { from: MappingPath, to: TranscriptDecorationKey },
-  /** Insert or replace one entry of a decoration list, keyed by id or by ordinal. */
+  /** Insert or replace one entry of a decoration list, keyed by id, ordinal, or either. */
   ReplaceListEntry: {
     from: MappingPath,
     to: TranscriptDecorationKey,
@@ -137,7 +143,7 @@ export class TranscriptDefinitionError extends Schema.TaggedError<TranscriptDefi
 ) {}
 
 /** How a decoration key is written; one key has exactly one shape across all mappings. */
-type DecorationShape = "copy" | "first-wins" | "list:Id" | "list:Ordinal";
+type DecorationShape = "copy" | "first-wins" | "list:Id" | "list:Ordinal" | "list:IdOrOrdinal";
 
 const validationProblems = (mappings: TranscriptMappings): ReadonlyArray<string> => {
   const problems: Array<string> = [];

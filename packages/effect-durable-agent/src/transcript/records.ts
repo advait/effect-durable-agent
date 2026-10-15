@@ -228,6 +228,10 @@ export const TranscriptDecorationKey = Schema.String.check(
 );
 export type TranscriptDecorationKey = typeof TranscriptDecorationKey.Type;
 
+/** Id of a decoration list entry that is keyed by its ordinal. */
+export const TranscriptDecorationEntryId = Schema.NonEmptyString.check(Schema.isMaxLength(256));
+export type TranscriptDecorationEntryId = typeof TranscriptDecorationEntryId.Type;
+
 /** Key of one decoration list entry: an entry id or a host-assigned ordinal. */
 export const TranscriptDecorationEntryKey = Schema.Union([
   Schema.String.check(Schema.isMaxLength(256)),
@@ -242,7 +246,14 @@ export type TranscriptDecorationEntryKey = typeof TranscriptDecorationEntryKey.T
 export const TranscriptDecoration = Schema.TaggedUnion({
   Value: { value: Schema.Json },
   List: {
-    entries: Schema.Array(Schema.Struct({ key: TranscriptDecorationEntryKey, value: Schema.Json })),
+    entries: Schema.Array(
+      Schema.Struct({
+        key: TranscriptDecorationEntryKey,
+        value: Schema.Json,
+        /** The entry's id when the list is keyed by id or ordinal (the key is then the ordinal). */
+        id: Schema.optionalKey(TranscriptDecorationEntryId),
+      }),
+    ),
   },
 });
 export type TranscriptDecoration = typeof TranscriptDecoration.Type;
@@ -487,6 +498,7 @@ export const TranscriptBufferedDecoration = Schema.Struct({
   operation: NonNegativeInt,
   value: Schema.Json,
   entryKey: Schema.optionalKey(TranscriptDecorationEntryKey),
+  entryId: Schema.optionalKey(TranscriptDecorationEntryId),
 });
 export type TranscriptBufferedDecoration = typeof TranscriptBufferedDecoration.Type;
 
