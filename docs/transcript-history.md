@@ -273,7 +273,8 @@ other's wakeup. Today `syncAlarm` deletes the alarm when no lease is held
 relied on. _As built:_ `cf/durable-object-alarms.ts` keeps one durable wakeup row per owner and
 sets the platform alarm to the earliest. The keep-alive is unchanged and uses its owner's view, so
 its "delete when idle" deletes only its own wakeup, and the alarm handler knows after an eviction
-whether it fired for the builder (storage-only slices) or the runtime.
+whether it fired for the builder (storage-only slices) or the runtime: an owner's wakeup is
+cleared only after its work succeeds, so a retry after a failure or an eviction is still attributed.
 
 **Backfill (host, once per definition change).** After the release fully rolls out:
 

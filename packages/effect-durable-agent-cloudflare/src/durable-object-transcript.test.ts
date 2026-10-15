@@ -672,12 +672,14 @@ describe("DurableObjectAlarmScheduler", () => {
     clock = 0;
     return { storage, alarms: new DurableObjectAlarmScheduler(storage, () => clock) };
   };
+  const owners = (due: ReadonlyMap<string, number>) => [...due.keys()].sort();
 
   it("never lets the idle keep-alive delete the builder's wakeup", async () => {
     const { storage, alarms } = scheduler();
+    clock = 1_000;
     const keepAlive = new DurableObjectKeepAlive(alarms.owner("runtime"), undefined, {
       intervalMs: 5_000,
-      now: () => 1_000,
+      now: () => clock,
     });
     await alarms.request("transcript", 500);
     const lease = await keepAlive.acquire();
@@ -685,40 +687,50 @@ describe("DurableObjectAlarmScheduler", () => {
     await lease.release();
     expect(storage.alarm).toBe(500);
 
-    expect(alarms.takeDue(600)).toEqual(new Set(["transcript"]));
+    const due = alarms.due(600);
+    expect(owners(due)).toEqual(["transcript"]);
     // The builder's wakeup stays until its work succeeds.
     await alarms.sync();
     expect(storage.alarm).toBe(500);
-    alarms.clear("transcript");
+    alarms.clearThrough("transcript", 500);
     await alarms.sync();
     expect(storage.alarm).toBeNull();
   });
 
-  it("re-arms the keep-alive after the platform gives up retrying a failed runtime alarm", async () => {
+  it("keeps every owner's claim on the platform retry when the handler dies mid-work", () => {
+    const { alarms } = scheduler();
+    void alarms.request("runtime", 1_000);
+    void alarms.request("transcript", 60_000);
+    expect(owners(alarms.due(1_000))).toEqual(["runtime"]);
+    // Evicted before the runtime's work succeeded: nothing was cleared, so the retry is its.
+    expect(owners(alarms.due(3_000))).toEqual(["runtime"]);
+  });
+
+  it("re-arms the keep-alive during its alarm and after the platform gives up retrying", async () => {
     const { storage, alarms } = scheduler();
     const keepAlive = new DurableObjectKeepAlive(alarms.owner("runtime"), undefined, {
       intervalMs: 5_000,
       now: () => clock,
     });
-    // A failed runtime alarm keeps its wakeup; the platform then exhausts its retries.
+    await alarms.request("runtime", 1_000);
+    // Inside alarm(): the platform reports no alarm, and a past wakeup reads as none.
     storage.alarm = null;
-    alarms.retain("runtime", 1_000);
+    clock = 1_000;
+    const fired = alarms.due(clock).get("runtime");
+    clock = 1_001;
+    await keepAlive.setRunSchedulingPending(true);
+    expect(alarms.owner("runtime").getAlarm()).toBe(6_001);
+    // The work succeeded: clearing the fired wakeup keeps the one re-armed during it.
+    alarms.clearThrough("runtime", fired ?? 0);
+    await alarms.sync();
+    expect(storage.alarm).toBe(6_001);
+
+    // A failed alarm keeps its wakeup; once the platform exhausts its retries, it reads as none.
+    storage.alarm = null;
     clock = 120_000;
     expect(alarms.owner("runtime").getAlarm()).toBeNull();
     await keepAlive.setRunSchedulingPending(true);
     expect(storage.alarm).toBe(125_000);
-  });
-
-  it("keeps a failed runtime alarm's claim on the platform retry without re-arming the alarm", async () => {
-    const { storage, alarms } = scheduler();
-    await alarms.request("runtime", 1_000);
-    // Inside alarm(): the platform reports no alarm while the handler runs.
-    storage.alarm = null;
-    expect(alarms.takeDue(1_000)).toEqual(new Set(["runtime"]));
-    alarms.retain("runtime", 1_000);
-    expect(storage.alarm).toBeNull();
-    // The platform's own retry (with its backoff) then still belongs to the runtime.
-    expect(alarms.takeDue(3_500)).toEqual(new Set(["runtime"]));
   });
 
   it("adopts an alarm armed before wakeups were recorded as the runtime's", async () => {
@@ -727,12 +739,12 @@ describe("DurableObjectAlarmScheduler", () => {
     await alarms.adoptUnrecordedAlarm();
     await alarms.request("transcript", 1_000);
     expect(storage.alarm).toBe(1_000);
-    expect(alarms.takeDue(1_000)).toEqual(new Set(["transcript"]));
-    alarms.clear("transcript");
+    expect(owners(alarms.due(1_000))).toEqual(["transcript"]);
+    alarms.clearThrough("transcript", 1_000);
     await alarms.sync();
     // The earlier release's runtime alarm is still armed and still the runtime's.
     expect(storage.alarm).toBe(9_000);
-    expect(alarms.takeDue(9_000)).toEqual(new Set(["runtime"]));
+    expect(owners(alarms.due(9_000))).toEqual(["runtime"]);
   });
 
   it("keeps the earliest wakeup of every owner and reports which owners an alarm fired for", async () => {
@@ -743,12 +755,14 @@ describe("DurableObjectAlarmScheduler", () => {
     await alarms.request("transcript", 4_000);
     expect(alarms.owner("transcript").getAlarm()).toBe(3_000);
 
-    expect(alarms.takeDue(2_000)).toEqual(new Set(["runtime"]));
+    expect(owners(alarms.due(2_000))).toEqual(["runtime"]);
+    alarms.clearThrough("runtime", 2_000);
     await alarms.sync();
     expect(storage.alarm).toBe(3_000);
     // An alarm that fires early still belongs to the earliest owner.
-    expect(alarms.takeDue(1_000)).toEqual(new Set(["transcript"]));
-    alarms.clear("transcript");
+    expect(owners(alarms.due(1_000))).toEqual(["transcript"]);
+    expect(owners(alarms.due(3_500))).toEqual(["transcript"]);
+    alarms.clearThrough("transcript", 3_000);
     await alarms.owner("runtime").deleteAlarm();
     expect(storage.alarm).toBeNull();
   });

@@ -260,11 +260,17 @@ export class DurableObjectTranscriptBuilder {
    * continuation if work remains. Returns whether work remains.
    */
   async run(maxSlices: number): Promise<boolean> {
+    const more = await this.runSlices(maxSlices);
+    if (more) await this.wake();
+    return more;
+  }
+
+  /** Run up to `maxSlices` slices without scheduling a continuation; returns whether work remains. */
+  async runSlices(maxSlices: number): Promise<boolean> {
     for (let slice = 0; slice < maxSlices; slice += 1) {
       if (slice > 0) await new Promise((resolve) => setTimeout(resolve, 0));
       if (!this.store.runSlice()) return false;
     }
-    await this.wake();
     return true;
   }
 }

@@ -3,6 +3,7 @@ import { EDASessionCell } from "../../dist/index.js";
 
 import {
   conformanceHostOptions,
+  conformanceIncarnationKey,
   conformanceRuntimeBuilds,
   conformanceWorker,
 } from "../../../../testing/host-conformance/fixture";
@@ -18,6 +19,10 @@ export class EDAConformanceSession extends EDASessionCell {
 
   async runtimeBuilds(): Promise<number> {
     return conformanceRuntimeBuilds.count;
+  }
+
+  async kvIncarnation(): Promise<unknown> {
+    return this.ctx.storage.kv.get(conformanceIncarnationKey) ?? null;
   }
 
   /**

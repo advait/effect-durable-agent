@@ -236,15 +236,15 @@ interface TranscriptRecordRow {
 const encodeEnvelope = Schema.encodeSync(TranscriptRecordFromEnvelope);
 const decodeEnvelope = Schema.decodeUnknownSync(TranscriptRecordFromEnvelope);
 
-/**
- * Decode one stored row. A row this release cannot decode throws; maintenance treats that as a
- * projection failure and reads as an unreadable window, never as a wrong view.
- */
 /** A stored record row this release cannot decode. */
 export class TranscriptRowDecodeError extends Error {
   override readonly name = "TranscriptRowDecodeError";
 }
 
+/**
+ * Decode one stored row. A row this release cannot decode throws; maintenance treats that as a
+ * projection failure and reads as an unreadable window, never as a wrong view.
+ */
 const decodeRecordRow = (row: TranscriptRecordRow): TranscriptRecord => {
   try {
     return decodeEnvelope(JSON.parse(row.envelope_json));

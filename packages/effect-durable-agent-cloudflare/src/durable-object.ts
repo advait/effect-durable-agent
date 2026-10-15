@@ -431,35 +431,36 @@ export abstract class EDASessionDurableObject<
    * owner recorded (one armed before wakeups were recorded).
    */
   async alarm(): Promise<void> {
-    const due = this.#alarms.takeDue(Date.now());
-    // The runtime runs first: if it throws, nothing has re-armed the platform alarm, so the
-    // platform's retry (with its backoff and cap) stays in force.
-    if (due.has("runtime") || !due.has("transcript")) {
+    const now = Date.now();
+    const due = this.#alarms.due(now);
+    let runtimeFailure: { readonly error: unknown } | undefined;
+    if (due.has("runtime") || due.size === 0) {
       const sessionId = this.sessionIdFromObjectName();
       try {
         await this.#controller.alarm(
           sessionId === undefined ? undefined : { sessionId, trace: makeRootEDATraceMetadata() },
         );
+        this.#alarms.clearThrough("runtime", due.get("runtime") ?? now);
       } catch (error) {
-        // Keep the runtime's claim on the platform's retry, without re-arming the alarm (which
-        // would replace the platform's backoff with an immediate retry loop).
-        this.#alarms.retain("runtime", Date.now());
-        throw error;
+        runtimeFailure = { error };
       }
     }
-    const transcript = this.objectTranscript();
-    if (due.has("transcript")) {
+    const builderWakeup = due.get("transcript");
+    if (builderWakeup !== undefined) {
       try {
-        // A builder that still has work re-requests now, keeping its wakeup.
+        const builder = this.objectTranscript()?.builder;
         const more =
-          transcript === undefined ? false : await transcript.builder.run(transcriptAlarmMaxSlices);
-        if (!more) this.#alarms.clear("transcript");
+          builder === undefined ? false : await builder.runSlices(transcriptAlarmMaxSlices);
+        if (more) this.#alarms.retain("transcript", Date.now());
+        else this.#alarms.clearThrough("transcript", builderWakeup);
       } catch (error) {
         console.error("EDA transcript builder slice failed", error);
-        this.#alarms.clear("transcript");
-        await this.#alarms.request("transcript", Date.now() + 30_000);
+        this.#alarms.retain("transcript", Date.now() + 30_000);
       }
     }
+    // A failed runtime alarm leaves the platform alarm alone: the platform's retry (with its
+    // backoff and cap) runs it again, with every wakeup it fired for still recorded.
+    if (runtimeFailure !== undefined) throw runtimeFailure.error;
     await this.#alarms.sync();
   }
 

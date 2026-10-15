@@ -206,17 +206,6 @@ const supportsNestedTransactions = (storage: DurableObjectSessionStorage): boole
   return supported;
 };
 
-/**
- * Project committed events into one slot, or freeze the slot (§5.2).
- *
- * Planning, row decoding and row encoding (serialization and the size cap) all run before any
- * write, so every recoverable projection error is raised before the slot is touched. Where the
- * platform nests transactions (workerd), the writes also run inside an inner `transactionSync`,
- * so even a failing write rolls back only that slot. Either way the failure is recorded in the
- * caller's transaction and the events the caller appended still commit. Where it does not
- * (celld), a write that fails after planning succeeded is a storage failure, which fails the
- * caller's whole transaction atomically, exactly as a failed event insert does.
- */
 /** Freeze a slot at its unchanged cursor and raise the alert. */
 const freezeSlot = (
   storage: DurableObjectSessionStorage,
@@ -239,6 +228,17 @@ const freezeSlot = (
   return { ...slot, status: { _tag: "Failed", failedAtSeq, error } };
 };
 
+/**
+ * Project committed events into one slot, or freeze the slot (§5.2).
+ *
+ * Planning, row decoding and row encoding (serialization and the size cap) all run before any
+ * write, so every recoverable projection error is raised before the slot is touched. Where the
+ * platform nests transactions (workerd), the writes also run inside an inner `transactionSync`,
+ * so even a failing write rolls back only that slot. Either way the failure is recorded in the
+ * caller's transaction and the events the caller appended still commit. Where it does not
+ * (celld), a write that fails after planning succeeded is a storage failure, which fails the
+ * caller's whole transaction atomically, exactly as a failed event insert does.
+ */
 const advanceSlot = (
   storage: DurableObjectSessionStorage,
   slot: TranscriptSlot,

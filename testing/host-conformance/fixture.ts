@@ -21,6 +21,7 @@ declare const EDA_CONFORMANCE_BLOCK_MODEL: boolean;
 type ConformanceSession = EDASessionDurableObject & {
   readonly runtimeBuilds: () => Promise<number>;
   readonly armUnrecordedAlarm: (delayMs: number) => Promise<void>;
+  readonly kvIncarnation: () => Promise<unknown>;
 };
 
 /** Storage-level transcript probe object; see `transcript-probe.ts`. */
@@ -44,6 +45,9 @@ interface ConformanceEnv {
  */
 export const conformanceRuntimeBuilds = { count: 0 };
 
+/** Host key/value the conformance hosts adopt their log incarnation from, as Gia does. */
+export const conformanceIncarnationKey = "conformance.log_incarnation";
+
 const usage = () =>
   new AIResponse.Usage({
     inputTokens: { total: 1, uncached: undefined, cacheRead: undefined, cacheWrite: undefined },
@@ -59,6 +63,7 @@ const finishedStream = (text: string) =>
 /** Deterministic model and runtime configuration shared by both real-host fixtures. */
 export const conformanceHostOptions = (): EDASessionDurableObjectOptions => ({
   config: { modelSelection: { provider: "conformance", modelId: "fixed-pong" } },
+  transcript: { adoptIncarnationKey: conformanceIncarnationKey },
   modelResolverLayer: Layer.merge(
     ModelResolver.Fixed.pipe(
       Layer.provide(
@@ -98,7 +103,7 @@ export const conformanceWorker = {
     }
 
     const match =
-      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|runtime-builds|arm-unrecorded-alarm)\/?$/.exec(
+      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|runtime-builds|arm-unrecorded-alarm|kv-incarnation)\/?$/.exec(
         url.pathname,
       );
     if (match === null) {
@@ -146,6 +151,9 @@ export const conformanceWorker = {
     if (operation === "arm-unrecorded-alarm") {
       await session.armUnrecordedAlarm(Number(url.searchParams.get("delayMs") ?? "0"));
       return json({ ok: true });
+    }
+    if (operation === "kv-incarnation") {
+      return json({ incarnation: await session.kvIncarnation() });
     }
     if (operation === "runtime-builds") {
       return json({ count: await session.runtimeBuilds() });

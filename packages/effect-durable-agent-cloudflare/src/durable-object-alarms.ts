@@ -61,9 +61,9 @@ export class DurableObjectAlarmScheduler {
   }
 
   /**
-   * Record `owner`'s wakeup without touching the platform alarm. Inside a failing `alarm()`, this
-   * keeps the owner's claim on the platform's own retry (with its backoff and retry cap); setting
-   * the platform alarm there would replace that retry with an immediate, unbounded one.
+   * Record `owner`'s wakeup without touching the platform alarm, for use inside `alarm()`: the
+   * caller syncs once at the end, or not at all when it rethrows, which leaves the platform's own
+   * retry (with its backoff and cap) in force.
    */
   retain(owner: DurableObjectAlarmOwner, atMs: number): void {
     this.#write(owner, atMs);
@@ -78,29 +78,34 @@ export class DurableObjectAlarmScheduler {
   }
 
   /**
-   * Called when the platform alarm fires: return the owners it fired for (every wakeup at or
-   * before now, and always the earliest one). The runtime's wakeup is consumed here, because its
-   * keep-alive re-arms through its view as it does with the platform alarm. Other owners' wakeups
-   * stay until they `clear` them after their work succeeds, so a handler that dies mid-work leaves
-   * the platform's retry attributed to them. Call `sync` afterwards.
+   * Called when the platform alarm fires: the owners it fired for (every wakeup at or before now,
+   * and always the earliest one) and the wakeup each held. Nothing is consumed here: each owner
+   * `clearThrough`s its wakeup only after its work succeeds, so a handler that throws, or dies
+   * mid-work (eviction, deploy, a resource limit), leaves the platform's retry attributed to every
+   * owner it fired for. An owner's view already reports a past wakeup as no alarm, so the runtime's
+   * keep-alive re-arms during its work as it did with the platform alarm.
    */
-  takeDue(nowMs: number): ReadonlySet<DurableObjectAlarmOwner> {
+  due(nowMs: number): ReadonlyMap<DurableObjectAlarmOwner, number> {
     const rows = this.#rows();
     const earliest = rows.reduce((min, row) => Math.min(min, row.at_ms), Number.POSITIVE_INFINITY);
     const threshold = Math.max(nowMs, earliest);
-    const due = new Set<DurableObjectAlarmOwner>();
+    const due = new Map<DurableObjectAlarmOwner, number>();
     for (const row of rows) {
-      if (row.at_ms <= threshold && isOwner(row.owner)) {
-        due.add(row.owner);
-        if (row.owner === "runtime") this.#write(row.owner, undefined);
-      }
+      if (row.at_ms <= threshold && isOwner(row.owner)) due.set(row.owner, row.at_ms);
     }
     return due;
   }
 
-  /** Remove `owner`'s wakeup once its work is done; call `sync` afterwards. */
-  clear(owner: DurableObjectAlarmOwner): void {
-    this.#write(owner, undefined);
+  /**
+   * Remove `owner`'s wakeup if it is still at or before `atMs`, once the work it fired for has
+   * succeeded. A later wakeup the owner re-armed during that work is kept.
+   */
+  clearThrough(owner: DurableObjectAlarmOwner, atMs: number): void {
+    this.storage.sql.exec(
+      "DELETE FROM _eda_alarm_wakeups WHERE owner = ? AND at_ms <= ?",
+      owner,
+      atMs,
+    );
   }
 
   /** Point the platform alarm at the earliest wakeup, or clear it when none remains. */

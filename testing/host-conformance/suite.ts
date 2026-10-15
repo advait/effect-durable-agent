@@ -600,6 +600,10 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         expect(status.converged).toBe(true);
         expect(status.versions).toHaveLength(1);
         expect(status.versions[0]?.cursor).toBe(status.headSeq);
+        // The adapter writes the incarnation it minted to the host's key, so both agree.
+        expect(await get(`/sessions/${sessionId}/kv-incarnation`)).toEqual({
+          incarnation: status.incarnation,
+        });
         const live = await get<TranscriptRead>(`/sessions/${sessionId}/transcript`);
         expect(live._tag).toBe("Window");
         expect(live.window.readiness._tag).toBe("Ready");
@@ -637,6 +641,9 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         expect(destroyed.status).toBe(204);
         const wiped = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
         expect(wiped.incarnation).not.toBe(status.incarnation);
+        expect(await get(`/sessions/${sessionId}/kv-incarnation`)).toEqual({
+          incarnation: wiped.incarnation,
+        });
         expect(wiped.headSeq).toBe(0);
         expect(wiped.converged).toBe(true);
       } finally {

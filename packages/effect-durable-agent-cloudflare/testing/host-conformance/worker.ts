@@ -11,6 +11,7 @@ import {
 
 import {
   conformanceHostOptions,
+  conformanceIncarnationKey,
   conformanceRuntimeBuilds,
   conformanceWorker,
 } from "../../../../testing/host-conformance/fixture";
@@ -64,6 +65,10 @@ export class EDAConformanceSession extends EDASessionDurableObject<object, Proje
 
   async runtimeBuilds(): Promise<number> {
     return conformanceRuntimeBuilds.count;
+  }
+
+  async kvIncarnation(): Promise<unknown> {
+    return this.ctx.storage.kv.get(conformanceIncarnationKey) ?? null;
   }
 
   /**
