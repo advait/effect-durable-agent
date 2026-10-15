@@ -134,7 +134,8 @@ _As built:_ the adapter's tables use its `_eda_` prefix (`_eda_transcript_record
 `_eda_transcript_aliases`, `_eda_transcript_meta`), and rows are keyed by a **slot**, one stored
 instance of one version, rather than by the version string. A slot's role is `active`, `building`
 or `retired` (discarded or replaced, awaiting bounded deletion), so a retired slot still being
-deleted never collides with a later build of the same version.
+deleted never collides with a later build of the same version. A slot also counts its consecutive
+failed builder slices (`slice_failures`, forward migration 3), which bounds retries (§7).
 
 | Table | Purpose |
 | --- | --- |

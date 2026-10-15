@@ -30,9 +30,10 @@ import {
  *   active version keeps serving and the backfill reports it.
  * - `MissedSession`: the active version is one this release no longer carries, so its history is
  *   frozen behind the log and `current` is being built at once (§7 safety net).
- * - `BuilderStopped`: builder slices failed `consecutiveFailures` times in a row for a reason
- *   that froze no version (cleanup or reconciliation), so the builder stopped scheduling itself
- *   until the object next starts.
+ * - `BuilderStopped`: the builder alarm failed `consecutiveFailures` times in a row, typically
+ *   for a reason no build is charged for (cleanup or reconciliation, or a failure record storage
+ *   refused), so the builder stopped scheduling itself. A later object start, `transcriptStatus`
+ *   call or pending-work kick tries again, bounded the same way, and may raise it again.
  */
 export type TranscriptAlert =
   | {
@@ -95,6 +96,19 @@ export const defaultTranscriptSliceLimits: DurableObjectTranscriptSliceLimits = 
   pageEvents: 16,
   maxDeletedRows: 2_000,
   maxSliceFailures: 5,
+};
+
+/** Merge host limits over the defaults; every limit must be a positive integer. */
+export const resolveTranscriptSliceLimits = (
+  limits: Partial<DurableObjectTranscriptSliceLimits> | undefined,
+): DurableObjectTranscriptSliceLimits => {
+  const resolved = { ...defaultTranscriptSliceLimits, ...limits };
+  for (const [name, value] of Object.entries(resolved)) {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error(`transcript slice limit ${name} must be a positive integer; got ${value}`);
+    }
+  }
+  return resolved;
 };
 
 /** Transcript maintenance configuration of one session store. */

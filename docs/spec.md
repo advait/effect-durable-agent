@@ -338,13 +338,15 @@ Foundational tables:
 Transcript tables (forward migration 2; see "Transcript history" in §14):
 
 - `_eda_transcript_meta` — one row per stored transcript **slot** (one built instance of one
-  version): version, role (`active`, `building` or `retired`), cursor, status and failure.
+  version): version, role (`active`, `building` or `retired`), cursor, status and failure, and
+  `slice_failures` (consecutive failed builder slices; migration 3).
 - `_eda_transcript_records` — `(slot, id)` → kind, position, `updatedSeq`, flags and the stored
   record envelope. Indexes: transcript order, ordinal allocation per anchor, `updatedSeq`, pending
   users, and tools by assistant.
 - `_eda_transcript_aliases` — `(slot, namespace, key)` → record id; inserts only.
 - `_eda_log_incarnation` — the adapter-owned identity of this physical log.
-- `_eda_alarm_wakeups` — each alarm owner's durable wakeup (`runtime`, `transcript`).
+- `_eda_alarm_wakeups` — each alarm owner's durable wakeup (`runtime`, `transcript`) and its
+  consecutive `failures` (migration 3).
 
 Logical durable events are canonical. The DO store may physically normalize large framework fields into sidecar tables, but `eventsAfter` reconstructs full logical events before returning them to reducers, sinks, query APIs, and live catch-up.
 
@@ -925,7 +927,8 @@ Current production host:
 - host transcript options (`EDASessionDurableObjectOptions.transcript`): `enabled` (default off),
   `definitions`
   (default: no host mappings), `adoptIncarnationKey` (Gia: `gia.log_incarnation` in
-  `ctx.storage.kv`), `onAlert` (default `console.error`) and `onActivated`;
+  `ctx.storage.kv`), `sliceLimits` (positive integers, validated at construction; includes
+  `maxSliceFailures`, default 5), `onAlert` (default `console.error`) and `onActivated`;
 - `EDASessionDurableObject` owns only Cloudflare callbacks, upgrade wiring, and object identity;
 - `EDASessionController` coordinates public session use cases without owning platform state;
 - `EDASessionRuntime` owns lazy `ManagedRuntime` construction, disposal, and keep-alive;

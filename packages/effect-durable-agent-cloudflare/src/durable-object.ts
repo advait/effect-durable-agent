@@ -54,7 +54,7 @@ import {
   DurableObjectTranscriptStore,
 } from "./durable-object-transcript";
 import {
-  defaultTranscriptSliceLimits,
+  resolveTranscriptSliceLimits,
   type DurableObjectTranscriptObserver,
   type DurableObjectTranscriptOptions,
   type DurableObjectTranscriptSliceLimits,
@@ -122,7 +122,7 @@ export interface EDASessionTranscriptOptions {
   /**
    * Which sessions maintain a transcript; default **off**. A disabled session gets no transcript
    * writes, builder slices or wakeups: `readTranscriptWindow` answers `Disabled`,
-   * `transcriptStatus` reports `enabled: false` without writing, and transcript sockets are
+   * `transcriptStatus` reports `Disabled` without writing, and transcript sockets are
    * refused. Enabling a session takes the first-introduction path (a build from the log, then
    * activation). Rollout rings use a deterministic predicate (for example a hash of the session
    * id under a percentage); disabling leaves a session's rows untouched, and re-enabling catches
@@ -508,9 +508,8 @@ export abstract class EDASessionDurableObject<
         transcript === undefined
           ? undefined
           : () => transcript.builder.runSlices(transcriptAlarmMaxSlices),
-      maxBuilderFailures:
-        this.#transcriptOptions.sliceLimits?.maxSliceFailures ??
-        defaultTranscriptSliceLimits.maxSliceFailures,
+      maxBuilderFailures: resolveTranscriptSliceLimits(this.#transcriptOptions.sliceLimits)
+        .maxSliceFailures,
       builderRetryDelayMs: transcriptBuilderRetryDelayMs,
       onBuilderFailure: ({ error, consecutiveFailures, stopped }) => {
         console.error("EDA transcript builder slice failed", error);
@@ -534,7 +533,8 @@ export abstract class EDASessionDurableObject<
         current: Effect.runSync(makeTranscriptDefinition(emptyTranscriptMappings)),
       },
       ...(key === undefined ? {} : { adoptIncarnation: { key, kv: this.ctx.storage.kv } }),
-      ...(options?.sliceLimits === undefined ? {} : { sliceLimits: options.sliceLimits }),
+      // Validated here so a misconfigured host fails at construction, not on a failing slice.
+      sliceLimits: resolveTranscriptSliceLimits(options?.sliceLimits),
       observer: {
         onAlert:
           options?.onAlert ??

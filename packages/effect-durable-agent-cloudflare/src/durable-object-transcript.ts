@@ -23,7 +23,7 @@ import type { DurableObjectSessionStorage } from "./durable-object-storage";
 import { makeDurableObjectEventLog } from "./durable-object-store";
 import {
   carriedDefinition,
-  defaultTranscriptSliceLimits,
+  resolveTranscriptSliceLimits,
   emptyTranscriptEffects,
   hasPendingTranscriptWork,
   missedSessionAlert,
@@ -102,7 +102,7 @@ export class DurableObjectTranscriptStore {
     this.#storage = options.storage;
     this.#options = options.transcript;
     this.#log = makeDurableObjectEventLog(options.storage.sql, options.sessionId);
-    this.#limits = { ...defaultTranscriptSliceLimits, ...options.transcript.sliceLimits };
+    this.#limits = resolveTranscriptSliceLimits(options.transcript.sliceLimits);
   }
 
   /** The `EDATranscriptStore` port over this store. */

@@ -702,6 +702,12 @@ describe("Durable Object transcript upgrades and edge failures", () => {
     expect(harness.service.readMeta()[0]?.status._tag).toBe("Failed");
   });
 
+  it("rejects slice limits below one", () => {
+    expect(() => makeHarness({ current: plain }, { maxSliceFailures: 0 }).service).toThrow(
+      /maxSliceFailures must be a positive integer/,
+    );
+  });
+
   it("never charges a build for a failure outside advancing it", () => {
     const log = conversation(4);
     const base = makeHarness({ current: plain });
