@@ -5,7 +5,8 @@
 Transcript history, part 4: production rollout controls. This is the first release a host may
 adopt in production with transcripts enabled.
 
-- **Breaking:** the Durable Object base maintains no transcript unless the host sets
+- **Breaking:** the Durable Object base (`EDASessionDurableObject`, and so celld's `EDASessionCell`)
+  maintains no transcript unless the host sets
   `EDASessionTranscriptOptions.enabled` (`boolean | (sessionId) => boolean`, default off; resolved
   once per object instance). alpha.24 maintained every session.
   - A disabled session gets no transcript writes, builder slices or wakeups; `transcriptStatus`
@@ -21,6 +22,10 @@ adopt in production with transcripts enabled.
   builder alarm backs off exponentially (30 s doubling, capped at 1 h); its failure count survives
   eviction (`_eda_alarm_wakeups.failures`), and after the limit the builder stops scheduling itself
   and raises the new `TranscriptAlert` `BuilderStopped`.
+- **Breaking (unions and limits):** `SessionTranscriptWindowResult` gains `Disabled` and
+  `TranscriptAlert` gains `BuilderStopped` (exhaustive matches must handle them);
+  `DurableObjectTranscriptSliceLimits` gains a required `maxSliceFailures`, and slice limits that
+  are not positive integers now throw at construction.
 - `alarm()` logic is extracted into `runEDASessionAlarm` and unit-tested.
 - A WebSocket upgrade naming another session gets 400 instead of 500.
 - `effect-durable-agent-cloudflare`: storage-only RPCs `readTranscriptBody`
