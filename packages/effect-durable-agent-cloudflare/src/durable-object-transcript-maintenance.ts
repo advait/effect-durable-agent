@@ -14,6 +14,7 @@ import {
   makeTranscriptLookup,
   markTranscriptSlotFailed,
   readTranscriptSlots,
+  setTranscriptSliceFailures,
   setTranscriptSlotRole,
   writeTranscriptPlan,
   type AdoptedLogIncarnation,
@@ -29,6 +30,9 @@ import {
  *   active version keeps serving and the backfill reports it.
  * - `MissedSession`: the active version is one this release no longer carries, so its history is
  *   frozen behind the log and `current` is being built at once (§7 safety net).
+ * - `BuilderStopped`: builder slices failed `consecutiveFailures` times in a row for a reason
+ *   that froze no version (cleanup or reconciliation), so the builder stopped scheduling itself
+ *   until the object next starts.
  */
 export type TranscriptAlert =
   | {
@@ -42,6 +46,11 @@ export type TranscriptAlert =
       readonly _tag: "MissedSession";
       readonly activeVersion: TranscriptVersion;
       readonly currentVersion: TranscriptVersion;
+    }
+  | {
+      readonly _tag: "BuilderStopped";
+      readonly consecutiveFailures: number;
+      readonly error: string;
     };
 
 /**
@@ -67,12 +76,19 @@ export interface DurableObjectTranscriptSliceLimits {
   readonly pageEvents: number;
   /** Rows of retired versions deleted per slice. */
   readonly maxDeletedRows: number;
+  /**
+   * Consecutive slices that may throw while targeting one build before it is frozen as failed
+   * (and so never retried), and consecutive builder alarms that may fail before the builder stops
+   * scheduling itself.
+   */
+  readonly maxSliceFailures: number;
 }
 
 export const defaultTranscriptSliceLimits: DurableObjectTranscriptSliceLimits = {
   maxEvents: 512,
   pageEvents: 16,
   maxDeletedRows: 2_000,
+  maxSliceFailures: 5,
 };
 
 /** Transcript maintenance configuration of one session store. */
@@ -390,6 +406,8 @@ export const runTranscriptSlice = (
       remaining -= page.length;
       slot = advanceSlot(storage, slot, definition, page, effects);
     }
+    // A slice that completes resets its target's consecutive failures.
+    if (target.sliceFailures > 0) setTranscriptSliceFailures(sql, target.slot, 0);
     if (slot.role === "building" && slot.status._tag === "Ok" && slot.cursor === log.head()) {
       const previous = slots.find((candidate) => candidate.role === "active");
       if (previous !== undefined) setTranscriptSlotRole(sql, previous.slot, "retired");
@@ -405,4 +423,34 @@ export const runTranscriptSlice = (
     }
   }
   return hasPendingTranscriptWork(storage, config, log.head());
+};
+
+/**
+ * Record a builder slice that threw (its own transaction rolled back), in a new transaction.
+ *
+ * The slice's build target counts the failure; at `maxSliceFailures` consecutive failures it is
+ * frozen as failed at its cursor and alerted, so it is never retried, as the design requires of a
+ * failed build. Returns whether a version was frozen.
+ */
+export const recordTranscriptSliceFailure = (
+  storage: DurableObjectSessionStorage,
+  config: TranscriptMaintenanceConfig,
+  log: TranscriptEventLog,
+  limits: DurableObjectTranscriptSliceLimits,
+  cause: unknown,
+  effects: TranscriptEffects,
+): boolean => {
+  // The failed slice's own reconciliation rolled back with it; redo it so its target exists.
+  const head = log.head();
+  reconcileTranscriptSlots(storage, config, head, effects);
+  const target = buildTarget(config, liveSlots(storage), head);
+  if (target === undefined) return false;
+  const failures = target.sliceFailures + 1;
+  if (failures < limits.maxSliceFailures) {
+    setTranscriptSliceFailures(storage.sql, target.slot, failures);
+    return false;
+  }
+  setTranscriptSliceFailures(storage.sql, target.slot, failures);
+  freezeSlot(storage, target, SequenceNumber.make(target.cursor + 1), cause, effects);
+  return true;
 };

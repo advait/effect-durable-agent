@@ -56,10 +56,15 @@ export const SessionTranscriptWindowInput = Schema.Struct({
   selector: TranscriptWindowSelector,
   limits: Schema.optionalKey(TranscriptWindowLimits),
 });
-/** A window, or a cursor minted for another incarnation or version (the client takes `Latest`). */
+/**
+ * A window; a cursor minted for another incarnation or version (the client takes `Latest`); or a
+ * session the host has not enabled for transcripts.
+ */
 export const SessionTranscriptWindowResult = Schema.Union([
   Schema.TaggedStruct("Window", { window: TranscriptWindow }),
   Schema.TaggedStruct("CursorMismatch", { message: Schema.String }),
+  /** The host has not enabled transcript maintenance for this session. */
+  Schema.TaggedStruct("Disabled", {}),
 ]);
 /** Private session RPC contracts retain the deployed structured-clone shapes, including snapshot Maps. */
 export const edaSessionRpc = {

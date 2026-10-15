@@ -45,6 +45,7 @@ import {
   type EDATranscriptStoreShape,
   type TranscriptMaintenanceConfig,
 } from "effect-durable-agent/transcript";
+import { runEDASessionAlarm } from "./durable-object-alarm-handler";
 import { DurableObjectAlarmScheduler } from "./durable-object-alarms";
 import type { EDATranscriptSocketOptions } from "./websocket/transcript-sockets";
 import { EDASessionStoreError } from "effect-durable-agent/services/session-store";
@@ -117,6 +118,17 @@ export interface EDASessionRpcSurface {
 /** Host transcript configuration of a session Durable Object. */
 export interface EDASessionTranscriptOptions {
   /**
+   * Which sessions maintain a transcript; default **off**. A disabled session gets no transcript
+   * writes, builder slices or wakeups: `readTranscriptWindow` answers `Disabled`,
+   * `transcriptStatus` reports `enabled: false` without writing, and transcript sockets are
+   * refused. Enabling a session takes the first-introduction path (a build from the log, then
+   * activation). Rollout rings use a deterministic predicate (for example a hash of the session
+   * id under a percentage); disabling leaves a session's rows untouched, and re-enabling catches
+   * an active version up to the head before it is served as current. Evaluated once per object
+   * instance, so a change takes effect when the object next starts.
+   */
+  readonly enabled?: boolean | ((sessionId: SessionId) => boolean);
+  /**
    * The transcript definitions this release carries. Defaults to the definition with no host
    * mappings. A host changing its mappings ships `current` = new, `previous` = old, then runs
    * its backfill through `transcriptStatus` (see `docs/transcript-history.md` §7).
@@ -153,6 +165,10 @@ const transcriptStatusMaxSlices = 16;
 /** Server bounds on one `readTranscriptWindow` RPC, whatever limits the caller asks for. */
 const transcriptWindowMaxRecords = 500;
 const transcriptWindowMaxBytes = 8 * 1_048_576;
+/** Consecutive failed builder alarms before the builder stops scheduling itself. */
+const transcriptMaxBuilderFailures = 5;
+/** First retry delay after a failed builder alarm; doubled per consecutive failure. */
+const transcriptBuilderRetryDelayMs = 30_000;
 /** Slices one builder alarm runs before rescheduling itself. */
 const transcriptAlarmMaxSlices = 4;
 
@@ -183,10 +199,13 @@ export abstract class EDASessionDurableObject<
   #transcript:
     | {
         readonly sessionId: SessionId;
+        /** Whether the host enabled transcript maintenance for this session. */
+        readonly enabled: boolean;
         readonly store: DurableObjectTranscriptStore;
         readonly builder: DurableObjectTranscriptBuilder;
       }
     | undefined;
+  readonly #transcriptEnabled: (sessionId: SessionId) => boolean;
 
   protected constructor(
     ctx: DurableObjectState,
@@ -200,13 +219,17 @@ export abstract class EDASessionDurableObject<
     const { transcript: transcriptHostOptions, transcriptSockets, ...controllerOptions } = options;
     const transcript = this.transcriptOptions(transcriptHostOptions);
     this.#transcriptOptions = transcript;
+    const enabled = transcriptHostOptions?.enabled ?? false;
+    this.#transcriptEnabled = typeof enabled === "function" ? enabled : () => enabled;
     this.#controller = new EDASessionController({
       ...controllerOptions,
       alarmStorage: this.#alarms.owner("runtime"),
       background: this.ctx,
       getWebSockets: () => this.ctx.getWebSockets(),
       storage,
-      transcript,
+      // The runtime's store maintains the transcript only for an enabled session.
+      transcript: ({ sessionId }) =>
+        this.transcriptFor(sessionId).enabled ? transcript : undefined,
       ...(transcriptSockets === undefined
         ? {}
         : {
@@ -228,7 +251,7 @@ export abstract class EDASessionDurableObject<
       // Keep an alarm armed by an earlier release for the runtime, then resume any builder
       // work an earlier instance left (or a new release created).
       await this.#alarms.adoptUnrecordedAlarm();
-      await this.objectTranscript()?.builder.start();
+      await this.maintainedTranscript()?.builder.start();
     });
   }
 
@@ -253,14 +276,19 @@ export abstract class EDASessionDurableObject<
       return new Response("Unsupported WebSocket projection.", { status: 400 });
     }
 
-    const sessionId = this.parseSessionId(sessionIdRaw);
+    const sessionId = this.parseSessionIdOrUndefined(sessionIdRaw);
+    if (sessionId === undefined) {
+      return new Response("This object does not serve that session.", { status: 400 });
+    }
     const trace = traceMetadataFromRequest(request);
 
     if (url.searchParams.get(EDA_WEB_SOCKET_STREAM_PARAM) === "transcript") {
       if (projectionId !== undefined || !this.#controller.supportsTranscriptWebSocket) {
         return new Response("Unsupported transcript stream.", { status: 400 });
       }
-      this.transcriptFor(sessionId);
+      if (!this.transcriptFor(sessionId).enabled) {
+        return new Response("Transcript is not enabled for this session.", { status: 409 });
+      }
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1]);
       this.#controller.acceptTranscriptWebSocket({ sessionId, trace, webSocket: pair[1] });
@@ -424,6 +452,11 @@ export abstract class EDASessionDurableObject<
   ): Promise<typeof edaSessionRpc.transcriptStatus.output.Encoded> {
     const input = Schema.decodeUnknownSync(SessionScopedInput)(raw);
     const transcript = this.transcriptFor(this.parseSessionId(input.sessionId));
+    if (!transcript.enabled) {
+      return Schema.encodeSync(edaSessionRpc.transcriptStatus.output)(
+        transcript.store.disabledStatus(),
+      );
+    }
     await transcript.builder.run(transcriptStatusMaxSlices);
     return Schema.encodeSync(edaSessionRpc.transcriptStatus.output)(transcript.store.status());
   }
@@ -434,6 +467,9 @@ export abstract class EDASessionDurableObject<
   ): Promise<typeof edaSessionRpc.readTranscriptWindow.output.Encoded> {
     const input = Schema.decodeUnknownSync(SessionTranscriptWindowInput)(raw);
     const transcript = this.transcriptFor(this.parseSessionId(input.sessionId));
+    if (!transcript.enabled) {
+      return Schema.encodeSync(edaSessionRpc.readTranscriptWindow.output)({ _tag: "Disabled" });
+    }
     const limits = input.limits ?? defaultTranscriptWindowLimits;
     const window = transcript.store.readWindow(input.selector, {
       ...limits,
@@ -452,38 +488,35 @@ export abstract class EDASessionDurableObject<
    * runs storage-only slices; the runtime runs only for its own wakeup, or for an alarm neither
    * owner recorded (one armed before wakeups were recorded).
    */
+  /** The alarm is shared by the runtime heartbeat and the transcript builder. */
   async alarm(): Promise<void> {
-    const now = Date.now();
-    const due = this.#alarms.due(now);
-    let runtimeFailure: { readonly error: unknown } | undefined;
-    if (due.has("runtime") || due.size === 0) {
-      const sessionId = this.sessionIdFromObjectName();
-      try {
+    const transcript = this.maintainedTranscript();
+    await runEDASessionAlarm({
+      alarms: this.#alarms,
+      now: () => Date.now(),
+      runRuntime: async () => {
+        const sessionId = this.sessionIdFromObjectName();
         await this.#controller.alarm(
           sessionId === undefined ? undefined : { sessionId, trace: makeRootEDATraceMetadata() },
         );
-        this.#alarms.clearThrough("runtime", due.get("runtime") ?? now);
-      } catch (error) {
-        runtimeFailure = { error };
-      }
-    }
-    const builderWakeup = due.get("transcript");
-    if (builderWakeup !== undefined) {
-      try {
-        const builder = this.objectTranscript()?.builder;
-        const more =
-          builder === undefined ? false : await builder.runSlices(transcriptAlarmMaxSlices);
-        if (more) this.#alarms.retain("transcript", Date.now());
-        else this.#alarms.clearThrough("transcript", builderWakeup);
-      } catch (error) {
+      },
+      runBuilderSlices:
+        transcript === undefined
+          ? undefined
+          : () => transcript.builder.runSlices(transcriptAlarmMaxSlices),
+      maxBuilderFailures: transcriptMaxBuilderFailures,
+      builderRetryDelayMs: transcriptBuilderRetryDelayMs,
+      onBuilderFailure: ({ error, consecutiveFailures, stopped }) => {
         console.error("EDA transcript builder slice failed", error);
-        this.#alarms.retain("transcript", Date.now() + 30_000);
-      }
-    }
-    // A failed runtime alarm leaves the platform alarm alone: the platform's retry (with its
-    // backoff and cap) runs it again, with every wakeup it fired for still recorded.
-    if (runtimeFailure !== undefined) throw runtimeFailure.error;
-    await this.#alarms.sync();
+        if (stopped) {
+          transcript?.store.alert({
+            _tag: "BuilderStopped",
+            consecutiveFailures,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+    });
   }
 
   private transcriptOptions(
@@ -500,7 +533,7 @@ export abstract class EDASessionDurableObject<
           options?.onAlert ??
           ((alert) => console.error("EDA transcript alert", JSON.stringify(alert))),
         onPendingWork: () => {
-          const builder = this.objectTranscript()?.builder;
+          const builder = this.maintainedTranscript()?.builder;
           if (builder !== undefined) this.ctx.waitUntil(builder.kick());
         },
         onActivated: (activation) => {
@@ -514,7 +547,7 @@ export abstract class EDASessionDurableObject<
 
   /** This object's transcript store as the port transcript sockets read, resolved per call. */
   private transcriptPort(): EDATranscriptStoreShape {
-    const port = () => this.objectTranscript()?.store.port;
+    const port = () => this.maintainedTranscript()?.store.port;
     const unbound = () =>
       Effect.fail(
         new EDASessionStoreError({ message: "EDA transcript read before the session was named" }),
@@ -544,8 +577,14 @@ export abstract class EDASessionDurableObject<
     const builder = new DurableObjectTranscriptBuilder(store, () =>
       this.#alarms.request("transcript", Date.now()),
     );
-    this.#transcript = { sessionId, store, builder };
+    this.#transcript = { sessionId, enabled: this.#transcriptEnabled(sessionId), store, builder };
     return this.#transcript;
+  }
+
+  /** The transcript service when this object's session is enabled for maintenance. */
+  private maintainedTranscript() {
+    const transcript = this.objectTranscript();
+    return transcript?.enabled === true ? transcript : undefined;
   }
 
   /** The transcript service when the object is named by a valid session id. */
@@ -555,6 +594,15 @@ export abstract class EDASessionDurableObject<
     return name !== undefined && Schema.is(SessionId)(name)
       ? this.transcriptFor(SessionId.make(name))
       : undefined;
+  }
+
+  /** `parseSessionId` for request paths that answer a foreign session with a 400. */
+  private parseSessionIdOrUndefined(input: string): SessionId | undefined {
+    if (!Schema.is(SessionId)(input)) return undefined;
+    const name = this.ctx.id.name;
+    if (name !== undefined && name !== input) return undefined;
+    const bound = this.#transcript?.sessionId;
+    return bound === undefined || bound === input ? SessionId.make(input) : undefined;
   }
 
   private parseSessionId(input: string): SessionId {

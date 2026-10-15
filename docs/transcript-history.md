@@ -308,6 +308,30 @@ show "unavailable" until the rebuild finishes, never a wrong view.
 **First introduction.** "No transcript" is the previous version: a host ships the writers, builder
 and readers with its old reader still serving, runs the backfill, and only then switches its reader.
 
+**Rollout rings (as built).** Maintenance is opt-in per session and off by default
+(`EDASessionTranscriptOptions.enabled`, a boolean or a `(sessionId) => boolean` predicate,
+evaluated once per object instance). A host widens concentric rings with a deterministic predicate,
+for example `hash(sessionId) < percentage`, so a session's membership changes only when the host
+widens or narrows the ring.
+
+- A disabled session gets no transcript writes, builder slices or wakeups. Reads answer
+  `Disabled`, the status reports `enabled: false` without writing, and transcript sockets are
+  refused (409).
+- Enabling a session takes the first-introduction path: a build from the log in bounded slices,
+  then activation. A session enabled from its first event starts `current` at seq 0.
+- Disabling a session leaves its rows exactly as they are; nothing maintains them.
+- Re-enabling a session whose active version is behind the head never serves that version as
+  current. Appends do not maintain it (its cursor is not the head), builder slices catch it up from
+  its cursor, and until they reach the head reads report `UpdatingHistory` at its real cursor.
+  Narrowing a ring is therefore safe, though the host normally only widens.
+- The backfill's proof covers only enabled sessions; `transcriptStatus.enabled` says which.
+
+**Bounded retries (as built).** A builder slice that throws counts against its build target. After
+a configured number of consecutive failures (default 5) the build is frozen as `failed`, which is
+never retried, and alerted. A failing builder alarm backs off exponentially and stops scheduling
+itself after the same number of persisted consecutive failures, so no session can loop on its
+alarm.
+
 ### 7.1 Forward-only formats
 
 For a host that deploys all Workers and DOs together with no rollback (Gia: a single

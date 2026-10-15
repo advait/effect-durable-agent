@@ -21,7 +21,12 @@ export type HostKind = "celld" | "cloudflare";
 
 interface HostProcess {
   readonly baseUrl: string;
-  restart(options?: { readonly blockModel?: boolean; readonly hard?: boolean }): Promise<void>;
+  restart(options?: {
+    readonly blockModel?: boolean;
+    readonly hard?: boolean;
+    /** A session left out of the transcript rollout ring by this launch. */
+    readonly transcriptDisabled?: string;
+  }): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -43,6 +48,7 @@ interface TranscriptProbeResult {
 }
 
 interface TranscriptStatus {
+  readonly enabled: boolean;
   readonly incarnation: string;
   readonly headSeq: number;
   readonly converged: boolean;
@@ -169,7 +175,10 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
     }
   }
 
-  const launch = async (options: { readonly blockModel?: boolean } = {}): Promise<void> => {
+  const launch = async (
+    options: { readonly blockModel?: boolean; readonly transcriptDisabled?: string } = {},
+  ): Promise<void> => {
+    const transcriptDisabled = JSON.stringify(options.transcriptDisabled ?? "");
     logs = "";
     const blockModel = options.blockModel === true;
     let launchedChild: ChildProcess;
@@ -193,6 +202,8 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
           String(port),
           "--define",
           `EDA_CONFORMANCE_BLOCK_MODEL:${String(blockModel)}`,
+          "--define",
+          `EDA_CONFORMANCE_TRANSCRIPT_DISABLED:${transcriptDisabled}`,
           "--persist-to",
           dataDirectory,
           "--log-level",
@@ -210,7 +221,10 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
       await build({
         bundle: true,
         conditions: ["workerd", "worker", "browser"],
-        define: { EDA_CONFORMANCE_BLOCK_MODEL: String(blockModel) },
+        define: {
+          EDA_CONFORMANCE_BLOCK_MODEL: String(blockModel),
+          EDA_CONFORMANCE_TRANSCRIPT_DISABLED: transcriptDisabled,
+        },
         entryPoints: [
           resolve(
             repositoryRoot,
@@ -695,6 +709,63 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         });
         expect(wiped.headSeq).toBe(0);
         expect(wiped.converged).toBe(true);
+      } finally {
+        await host.stop();
+      }
+    }, 600_000);
+
+    it("rolls transcripts out per session and converges a session re-enabled behind the head", async () => {
+      const host = await startHost(kind);
+      const sessionId =
+        kind === "cloudflare"
+          ? "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b8a"
+          : "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b8a";
+      const get = async <A>(path: string): Promise<A> =>
+        await decodeJson<A>(
+          await fetch(`${host.baseUrl}${path}`, { signal: AbortSignal.timeout(60_000) }),
+        );
+      try {
+        // Outside the ring: no transcript writes, explicit answers, a clear socket refusal.
+        await host.restart({ transcriptDisabled: sessionId });
+        await submitMessage(host, sessionId, { idempotencyKey: "ring:first", text: "ping" });
+        const disabled = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
+        expect(disabled).toMatchObject({ enabled: false, versions: [], converged: false });
+        expect(await get(`/sessions/${sessionId}/transcript`)).toEqual({ _tag: "Disabled" });
+        expect(await get(`/sessions/${sessionId}/transcript-upgrade`)).toEqual({ status: 409 });
+        expect(
+          await get(
+            `/sessions/${sessionId}/transcript-upgrade?as=018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b9a`,
+          ),
+        ).toEqual({ status: 400 });
+
+        // Enabled: the first-introduction path builds from the log and activates.
+        await host.restart();
+        const enabled = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
+        expect(enabled).toMatchObject({ enabled: true, converged: true });
+        expect(enabled.versions[0]?.cursor).toBe(enabled.headSeq);
+        const firstCursor = enabled.headSeq;
+
+        // Disabled again: appends commit, the rows are left exactly as they were.
+        await host.restart({ transcriptDisabled: sessionId });
+        await submitMessage(host, sessionId, { idempotencyKey: "ring:second", text: "ping two" });
+        const frozen = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
+        expect(frozen.enabled).toBe(false);
+        expect(frozen.versions[0]?.cursor).toBe(firstCursor);
+        expect(frozen.headSeq).toBeGreaterThan(firstCursor);
+
+        // Re-enabled: the active version catches up to the head before it is current.
+        await host.restart();
+        const caughtUp = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
+        expect(caughtUp).toMatchObject({ enabled: true, converged: true });
+        expect(caughtUp.versions[0]?.cursor).toBe(caughtUp.headSeq);
+        const read = await get<TranscriptRead>(`/sessions/${sessionId}/transcript`);
+        expect(read.window.readiness._tag).toBe("Ready");
+        expect(read.window.records.map((record) => record.kind)).toEqual([
+          "user",
+          "assistant",
+          "user",
+          "assistant",
+        ]);
       } finally {
         await host.stop();
       }

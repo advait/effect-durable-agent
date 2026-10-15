@@ -71,8 +71,13 @@ export interface EDASessionRuntimeOptions {
   readonly toolkit?: EDAModelToolkit | EDAToolkitFactory;
   readonly toolRegistry?: EDAToolRegistryShape | EDAToolRegistryFactory;
   readonly tracer?: Tracer.Tracer | EDATracerFactory;
-  /** Transcript definitions the session store maintains in every append. */
-  readonly transcript?: DurableObjectTranscriptOptions;
+  /**
+   * Transcript definitions the session store maintains in every append, or a factory that
+   * returns none for a session whose transcript is not enabled.
+   */
+  readonly transcript?:
+    | DurableObjectTranscriptOptions
+    | ((input: { readonly sessionId: SessionId }) => DurableObjectTranscriptOptions | undefined);
 }
 
 interface RuntimeState {
@@ -183,7 +188,7 @@ export class EDASessionRuntime {
         toolkit: resolveFactory(this.options.toolkit, sessionId),
         toolRegistry: resolveFactory(this.options.toolRegistry, sessionId),
         tracer: resolveFactory(this.options.tracer, sessionId),
-        transcript: this.options.transcript,
+        transcript: resolveFactory(this.options.transcript, sessionId),
       }),
     );
     const state = { runtime, sessionId } satisfies RuntimeState;

@@ -29,14 +29,17 @@ import {
   missedSessionAlert,
   publishTranscriptEffects,
   reconcileTranscriptSlots,
+  recordTranscriptSliceFailure,
   runTranscriptSlice,
   type DurableObjectTranscriptOptions,
   type DurableObjectTranscriptSliceLimits,
+  type TranscriptAlert,
   type TranscriptEffects,
   type TranscriptEventLog,
 } from "./durable-object-transcript-maintenance";
 import {
   makeTranscriptWindowSource,
+  readLogIncarnation,
   readOrMintLogIncarnation,
   readTranscriptSlots,
   transcriptVersionMetaOf,
@@ -51,7 +54,13 @@ import {
  * and no builder or cleanup work remains.
  */
 export const TranscriptStorageStatus = Schema.Struct({
-  incarnation: TranscriptLogIncarnation,
+  /**
+   * Whether the host enabled transcript maintenance for this session. A disabled session is
+   * reported read-only: its rows (if any) are listed as they are and nothing is maintained.
+   */
+  enabled: Schema.Boolean,
+  /** Absent only for a disabled session whose log has no incarnation yet; reads never mint one. */
+  incarnation: Schema.optionalKey(TranscriptLogIncarnation),
   headSeq: SequenceNumber,
   currentVersion: TranscriptVersion,
   versions: Schema.Array(TranscriptVersionMeta),
@@ -107,11 +116,19 @@ export class DurableObjectTranscriptStore {
     }
     const carried = carriedDefinition(this.#options.definitions, active.version) !== undefined;
     try {
-      return readTranscriptWindowFrom(
+      const window = readTranscriptWindowFrom(
         makeTranscriptWindowSource(this.#storage.sql, incarnation, active, carried),
         selector,
         limits,
       );
+      // An active version behind the head (re-enabled after its session was disabled, or caught
+      // up by the builder for any other reason) serves its consistent last cut, but never as
+      // current: it reads as updating history until the builder brings it to the head.
+      return Result.isSuccess(window) &&
+        window.success.readiness._tag === "Ready" &&
+        active.cursor < this.#log.head()
+        ? Result.succeed({ ...window.success, readiness: { _tag: "UpdatingHistory" } })
+        : window;
     } catch (error) {
       // Only a stored row this release cannot decode serves nothing rather than a wrong view (§7);
       // a storage failure is an error.
@@ -145,6 +162,7 @@ export class DurableObjectTranscriptStore {
     const pending = hasPendingTranscriptWork(this.#storage, config, headSeq);
     const active = slots.find((slot) => slot.role === "active");
     return {
+      enabled: true,
       incarnation,
       headSeq,
       currentVersion: config.current.version,
@@ -152,6 +170,25 @@ export class DurableObjectTranscriptStore {
       pending,
       converged:
         !pending && active?.version === config.current.version && active.status._tag === "Ok",
+    };
+  }
+
+  /**
+   * Status of a session the host has not enabled, read without writing anything: no version is
+   * initialized or reconciled and no incarnation is minted.
+   */
+  disabledStatus(): TranscriptStorageStatus {
+    const incarnation = readLogIncarnation(this.#storage.sql, this.#options.adoptIncarnation);
+    return {
+      enabled: false,
+      ...(incarnation === undefined ? {} : { incarnation }),
+      headSeq: this.#log.head(),
+      currentVersion: this.#options.definitions.current.version,
+      versions: readTranscriptSlots(this.#storage.sql).flatMap(
+        (slot) => transcriptVersionMetaOf(slot) ?? [],
+      ),
+      pending: false,
+      converged: false,
     };
   }
 
@@ -169,15 +206,47 @@ export class DurableObjectTranscriptStore {
 
   /** Run one bounded builder slice in its own transaction; returns whether work remains. */
   runSlice(): boolean {
-    return this.#transact((effects) =>
-      runTranscriptSlice(
-        this.#storage,
-        this.#options.definitions,
-        this.#log,
-        this.#limits,
-        effects,
-      ),
-    );
+    try {
+      return this.#transact((effects) =>
+        runTranscriptSlice(
+          this.#storage,
+          this.#options.definitions,
+          this.#log,
+          this.#limits,
+          effects,
+        ),
+      );
+    } catch (error) {
+      // The slice rolled back. Count it against its build target, which freezes at the limit.
+      if (this.#recordSliceFailure(error)) return this.hasPendingWork();
+      throw error;
+    }
+  }
+
+  /** Record a thrown slice in its own transaction; returns whether a version was frozen. */
+  #recordSliceFailure(cause: unknown): boolean {
+    try {
+      return this.#transact((effects) =>
+        recordTranscriptSliceFailure(
+          this.#storage,
+          this.#options.definitions,
+          this.#log,
+          this.#limits,
+          cause,
+          effects,
+        ),
+      );
+    } catch (error) {
+      // Storage refuses even the failure record; the caller still sees the original failure,
+      // and the builder alarm's own failure count bounds its retries.
+      console.error("EDA transcript could not record a failed builder slice", error);
+      return false;
+    }
+  }
+
+  /** Raise an alert through the host observer. */
+  alert(alert: TranscriptAlert): void {
+    publishTranscriptEffects(this.#options.observer, { alerts: [alert], pendingWork: false });
   }
 
   /** The `EDATranscriptStore` port: the same reads as Effects. */

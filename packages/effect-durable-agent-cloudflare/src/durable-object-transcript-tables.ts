@@ -92,6 +92,15 @@ export const transcriptTableStatements: ReadonlyArray<string> = [
   )`,
 ];
 
+/**
+ * Migration 3: consecutive failed builder slices of a slot (a build freezes after the configured
+ * limit), and consecutive failures of an alarm owner's work (an owner stops after the limit).
+ */
+export const builderFailureColumnStatements: ReadonlyArray<string> = [
+  "ALTER TABLE _eda_transcript_meta ADD COLUMN slice_failures INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE _eda_alarm_wakeups ADD COLUMN failures INTEGER NOT NULL DEFAULT 0",
+];
+
 /** Role of a stored slot. Only `active` and `building` are visible through the port. */
 export type TranscriptSlotRole = "active" | "building" | "retired";
 
@@ -102,6 +111,8 @@ export interface TranscriptSlot {
   readonly role: TranscriptSlotRole;
   readonly cursor: SequenceNumber;
   readonly status: TranscriptVersionStatus;
+  /** Consecutive builder slices that threw while this slot was their target. */
+  readonly sliceFailures: number;
 }
 
 interface TranscriptMetaRow {
@@ -112,6 +123,7 @@ interface TranscriptMetaRow {
   readonly status: string;
   readonly failed_at_seq: number | null;
   readonly error: string | null;
+  readonly slice_failures: number;
 }
 
 const decodeVersion = Schema.decodeUnknownSync(TranscriptVersion);
@@ -128,6 +140,7 @@ const decodeSlot = (row: TranscriptMetaRow): TranscriptSlot => {
     version: decodeVersion(row.version),
     role: row.role,
     cursor: SequenceNumber.make(row.cursor),
+    sliceFailures: row.slice_failures,
     status:
       row.status === "failed"
         ? {
@@ -143,7 +156,7 @@ const decodeSlot = (row: TranscriptMetaRow): TranscriptSlot => {
 export const readTranscriptSlots = (sql: DurableObjectSqlStorage): ReadonlyArray<TranscriptSlot> =>
   sql
     .exec<TranscriptMetaRow>(
-      "SELECT slot, version, role, cursor, status, failed_at_seq, error FROM _eda_transcript_meta ORDER BY slot",
+      "SELECT slot, version, role, cursor, status, failed_at_seq, error, slice_failures FROM _eda_transcript_meta ORDER BY slot",
     )
     .toArray()
     .map(decodeSlot);
@@ -172,6 +185,15 @@ export const setTranscriptSlotRole = (
   role: TranscriptSlotRole,
 ): void => {
   sql.exec("UPDATE _eda_transcript_meta SET role = ? WHERE slot = ?", role, slot);
+};
+
+/** Record how many consecutive builder slices threw while targeting a slot. */
+export const setTranscriptSliceFailures = (
+  sql: DurableObjectSqlStorage,
+  slot: number,
+  failures: number,
+): void => {
+  sql.exec("UPDATE _eda_transcript_meta SET slice_failures = ? WHERE slot = ?", failures, slot);
 };
 
 /** Freeze a slot at its unchanged cursor. A failed slot is never written again. */
@@ -483,6 +505,23 @@ const mintUuidV7 = (): string =>
       return yield* ids.makeCorrelationId();
     }).pipe(Effect.provide(IdGenerator.Live)),
   );
+
+/** Read this log's incarnation (or the host's adoptable value) without minting one. */
+export const readLogIncarnation = (
+  sql: DurableObjectSqlStorage,
+  adopt: AdoptedLogIncarnation | undefined,
+): TranscriptLogIncarnation | undefined => {
+  const row = sql
+    .exec<{ readonly incarnation: string }>(
+      "SELECT incarnation FROM _eda_log_incarnation WHERE id = 1",
+    )
+    .toArray()[0];
+  if (row !== undefined) return TranscriptLogIncarnation.make(row.incarnation);
+  const adopted = adopt?.kv.get(adopt.key);
+  return typeof adopted === "string" && adopted.length > 0
+    ? TranscriptLogIncarnation.make(adopted)
+    : undefined;
+};
 
 /**
  * Read this log's incarnation, minting one on first need. The caller runs it inside a

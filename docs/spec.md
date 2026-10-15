@@ -767,6 +767,18 @@ reuses), and live delivery over transcript-window sockets (§10). Hosts still re
     `retired`), and deletes at most 2,000 retired rows. All builder state is in
     `_eda_transcript_meta`; the session object kicks the builder from its constructor and runs it
     from its alarm and from `transcriptStatus`, never through the model runtime.
+  - _Bounded retries._ A slice that throws (its transaction rolls back; for example a storage error,
+    or on celld a write failing after planning) counts against its build target
+    (`_eda_transcript_meta.slice_failures`, migration 3, reset by a slice that completes). At
+    `maxSliceFailures` consecutive failures (default 5) the target is frozen as failed, alerted
+    (`ProjectionFailed`) and never retried. A failed builder alarm retries with exponential backoff
+    from 30 s; its consecutive failures persist with its wakeup (`_eda_alarm_wakeups.failures`), so
+    eviction cannot reset them, and after 5 the builder stops scheduling itself and raises
+    `BuilderStopped` until the object next starts. No failure re-arms the alarm sooner than its
+    backoff.
+  - _Active but behind._ An active version whose cursor is behind the head (a session re-enabled
+    after it was disabled) is not maintained in appends; builder slices catch it up, and until they
+    reach the head its reads report `UpdatingHistory` at its real cursor rather than `Ready`.
   - _Reads._ `DurableObjectTranscriptStore` (also `.layer` for the `EDATranscriptStore` port) reads
     windows, meta and status synchronously from storage with no runtime. A stored row this release
     cannot decode serves an empty `Unreadable` window.
@@ -893,12 +905,20 @@ Current production host:
 - host entrypoints expose RPC methods for submit, submitBatch, submitAndBlock, blockOnCommand, snapshot, messages, backup/destroy, alarm, and WebSocket events;
 - two storage-only RPC methods never construct the model runtime, reducers or sinks:
   `transcriptStatus` advances pending transcript build work by up to 16 bounded slices and returns
-  the status (incarnation, head, current version, every version's meta, `pending`, `converged`) a
-  host backfill records; `readTranscriptWindow` serves SSR and CLI reads. Hosts authorize callers;
+  the status (`enabled`, incarnation, head, current version, every version's meta, `pending`,
+  `converged`) a host backfill records; `readTranscriptWindow` serves SSR and CLI reads (`Window`,
+  `CursorMismatch` or `Disabled`). Hosts authorize callers;
+- transcript maintenance is **opt-in per session** (`transcript.enabled`: a boolean or a
+  `(sessionId) => boolean` predicate, default off), resolved once per object instance. A disabled
+  session's runtime store maintains nothing and the object schedules no builder work;
+  `transcriptStatus` reports `enabled: false` read-only (no version initialized, no incarnation
+  minted) and `readTranscriptWindow` answers `Disabled`; a `?stream=transcript` upgrade is refused
+  with 409. An upgrade naming a session other than the object's is refused with 400;
 - on activation of a rebuilt version, the object re-reads every transcript socket (held or
   hibernated) through `EDASessionController.refreshTranscriptWebSockets`, so each receives one
   complete replacement although no event was published;
-- host transcript options (`EDASessionDurableObjectOptions.transcript`): `definitions`
+- host transcript options (`EDASessionDurableObjectOptions.transcript`): `enabled` (default off),
+  `definitions`
   (default: no host mappings), `adoptIncarnationKey` (Gia: `gia.log_incarnation` in
   `ctx.storage.kv`), `onAlert` (default `console.error`) and `onActivated`;
 - `EDASessionDurableObject` owns only Cloudflare callbacks, upgrade wiring, and object identity;
@@ -908,6 +928,8 @@ Current production host:
   and interpretation of core delivery actions;
 - runtime construction retries after a failed hydration/build instead of pinning the warm isolate to a rejected promise;
 - `EDAKeepAlive` integrates with Durable Object alarms/leases so active control/model/sink work can keep the object awake enough to finish or reschedule;
+- `alarm()` is `runEDASessionAlarm` (`cf/durable-object-alarm-handler.ts`), unit-tested over real
+  SQLite;
 - the Durable Object alarm is shared through `DurableObjectAlarmScheduler`: each owner (`runtime`
   for keep-alive and run-scheduling redelivery, `transcript` for the builder) keeps a durable
   wakeup row and the platform alarm is set to the earliest, so neither owner deletes or postpones the

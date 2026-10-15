@@ -801,8 +801,8 @@ describe("EDASessionStore", () => {
     const head = Effect.runSync(program);
 
     expect(head).toBe(1);
-    expect(fakeSql.appliedMigrations).toEqual([1, 2]);
-    expect(fakeSql.migrationInsertCount).toBe(2);
+    expect(fakeSql.appliedMigrations).toEqual([1, 2, 3]);
+    expect(fakeSql.migrationInsertCount).toBe(3);
   });
 
   it("pages DurableObjectSessionStore event replay through bounded SQL reads", () => {
@@ -1530,6 +1530,7 @@ const makeFakeDurableObjectSql = () => {
 
       if (
         normalized.startsWith("CREATE TABLE") ||
+        normalized.startsWith("ALTER TABLE") ||
         normalized.startsWith("CREATE INDEX") ||
         normalized.startsWith("CREATE UNIQUE INDEX") ||
         normalized.startsWith("DROP TABLE") ||

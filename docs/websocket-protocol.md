@@ -228,7 +228,9 @@ ACK receipts and their 16-frame window, the lazy ACK timeout (`lagged` + `4008`)
 ping and auto-response, and per-socket attachments. A host enables it by passing
 `transcriptSockets: { transcriptStore }` (on `EDASessionDurableObject`, `transcriptSockets: {}`
 suffices: `transcriptStore` defaults to the object's own Durable Object transcript store); without
-it the upgrade is rejected with 400. When a rebuilt transcript version activates, every transcript
+it the upgrade is rejected with 400. On `EDASessionDurableObject`, a session the host has not
+enabled for transcripts (`transcript.enabled`) is refused with 409, and an upgrade naming a session
+other than the object's with 400. When a rebuilt transcript version activates, every transcript
 socket, held or hibernated, is re-read and receives one complete replacement in the new version. Any other
 `stream` value keeps the raw event stream. The
 projection header cannot be combined with it. Accepting a transcript socket never prepares the
