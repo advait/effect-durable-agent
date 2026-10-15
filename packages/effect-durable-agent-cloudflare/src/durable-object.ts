@@ -54,6 +54,7 @@ import {
   DurableObjectTranscriptStore,
 } from "./durable-object-transcript";
 import {
+  defaultTranscriptSliceLimits,
   resolveTranscriptSliceLimits,
   type DurableObjectTranscriptObserver,
   type DurableObjectTranscriptOptions,
@@ -508,8 +509,9 @@ export abstract class EDASessionDurableObject<
         transcript === undefined
           ? undefined
           : () => transcript.builder.runSlices(transcriptAlarmMaxSlices),
-      maxBuilderFailures: resolveTranscriptSliceLimits(this.#transcriptOptions.sliceLimits)
-        .maxSliceFailures,
+      maxBuilderFailures:
+        this.#transcriptOptions.sliceLimits?.maxSliceFailures ??
+        defaultTranscriptSliceLimits.maxSliceFailures,
       builderRetryDelayMs: transcriptBuilderRetryDelayMs,
       onBuilderFailure: ({ error, consecutiveFailures, stopped }) => {
         console.error("EDA transcript builder slice failed", error);
@@ -543,8 +545,8 @@ export abstract class EDASessionDurableObject<
           const builder = this.maintainedTranscript()?.builder;
           if (builder !== undefined) this.ctx.waitUntil(builder.kick());
         },
-        onCaughtUp: () => {
-          // A re-enabled session's active version reached the head: sockets re-read it as Ready.
+        onServedChanged: () => {
+          // A behind active version reached the head, or the active version froze: sockets re-read.
           this.ctx.waitUntil(this.#controller.refreshTranscriptWebSockets());
         },
         onActivated: (activation) => {

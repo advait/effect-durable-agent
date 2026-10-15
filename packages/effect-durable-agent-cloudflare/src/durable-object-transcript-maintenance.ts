@@ -68,11 +68,11 @@ export interface DurableObjectTranscriptObserver {
   /** Bounded builder or cleanup work is pending; the host schedules a slice. */
   readonly onPendingWork?: () => void;
   /**
-   * An active version that was behind the head (a re-enabled session) reached it, so what reads
-   * serve changed from `UpdatingHistory` to `Ready` without a publication; connected clients need
-   * a re-read.
+   * What reads serve changed without a publication, so connected clients need a re-read: an
+   * active version that was behind the head (a re-enabled session) reached it (`UpdatingHistory`
+   * becomes `Ready`), or the active version froze (it becomes `Degraded`).
    */
-  readonly onCaughtUp?: () => void;
+  readonly onServedChanged?: () => void;
 }
 
 /** Bounds on one builder slice. */
@@ -102,7 +102,11 @@ export const defaultTranscriptSliceLimits: DurableObjectTranscriptSliceLimits = 
 export const resolveTranscriptSliceLimits = (
   limits: Partial<DurableObjectTranscriptSliceLimits> | undefined,
 ): DurableObjectTranscriptSliceLimits => {
-  const resolved = { ...defaultTranscriptSliceLimits, ...limits };
+  // An explicit `undefined` keeps the default, as the optional type promises.
+  const resolved = {
+    ...defaultTranscriptSliceLimits,
+    ...Object.fromEntries(Object.entries(limits ?? {}).filter(([, value]) => value !== undefined)),
+  };
   for (const [name, value] of Object.entries(resolved)) {
     if (!Number.isInteger(value) || value < 1) {
       throw new Error(`transcript slice limit ${name} must be a positive integer; got ${value}`);
@@ -135,8 +139,8 @@ export interface TranscriptEffects {
     readonly version: TranscriptVersion;
     readonly previousVersion: TranscriptVersion | undefined;
   };
-  /** An active version that was behind the head reached it. */
-  caughtUp?: boolean;
+  /** What reads serve changed without a publication (see `onServedChanged`). */
+  servedChanged?: boolean;
   pendingWork: boolean;
 }
 
@@ -163,7 +167,7 @@ export const publishTranscriptEffects = (
   for (const alert of effects.alerts) notify(() => observer?.onAlert?.(alert));
   const activated = effects.activated;
   if (activated !== undefined) notify(() => observer?.onActivated?.(activated));
-  if (effects.caughtUp === true) notify(() => observer?.onCaughtUp?.());
+  if (effects.servedChanged === true) notify(() => observer?.onServedChanged?.());
   if (effects.pendingWork) notify(() => observer?.onPendingWork?.());
 };
 
@@ -255,6 +259,8 @@ const freezeSlot = (
 ): TranscriptSlot => {
   const error = cause instanceof Error ? cause.message : String(cause);
   markTranscriptSlotFailed(storage.sql, slot.slot, failedAtSeq, error);
+  // A frozen active version reads as degraded from now on.
+  if (slot.role === "active") effects.servedChanged = true;
   if (slot.role !== "retired") {
     effects.alerts.push({
       _tag: "ProjectionFailed",
@@ -442,7 +448,7 @@ export const runTranscriptSlice = (
       slot.cursor === log.head()
     ) {
       // An active version behind the head (a re-enabled session) is current again.
-      effects.caughtUp = true;
+      effects.servedChanged = true;
     }
     // A slice that completes resets its target's consecutive failures.
     if (target.sliceFailures > 0) setTranscriptSliceFailures(sql, target.slot, 0);

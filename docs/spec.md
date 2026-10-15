@@ -784,7 +784,7 @@ reuses), and live delivery over transcript-window sockets (§10). Hosts still re
   - _Active but behind._ An active version whose cursor is behind the head (a session re-enabled
     after it was disabled) is not maintained in appends; builder slices catch it up, and until they
     reach the head its reads report `UpdatingHistory` at its real cursor rather than `Ready`. The
-    slice that reaches the head re-reads every transcript socket (`onCaughtUp`).
+    slice that reaches the head re-reads every transcript socket (`onServedChanged`, also raised when the active version freezes).
   - _Reads._ `DurableObjectTranscriptStore` (also `.layer` for the `EDATranscriptStore` port) reads
     windows, meta and status synchronously from storage with no runtime. A stored row this release
     cannot decode serves an empty `Unreadable` window.

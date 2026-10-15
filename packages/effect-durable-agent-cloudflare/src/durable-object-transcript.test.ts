@@ -44,8 +44,8 @@ interface Harness {
   readonly storage: SqliteDurableObjectStorage;
   readonly alerts: Array<{ readonly alert: TranscriptAlert; readonly depth: number }>;
   readonly activations: Array<string>;
-  /** Times an active version behind the head reached it. */
-  readonly caughtUp: number;
+  /** Times what reads serve changed without a publication. */
+  readonly servedChanged: number;
   readonly transcript: DurableObjectTranscriptOptions;
   readonly store: EDASessionStoreShape;
   readonly service: DurableObjectTranscriptStore;
@@ -65,14 +65,14 @@ const makeHarness = (
 ): Harness => {
   const alerts: Harness["alerts"] = [];
   const activations: Array<string> = [];
-  const counts = { caughtUp: 0 };
+  const counts = { servedChanged: 0 };
   const transcript: DurableObjectTranscriptOptions = {
     definitions: definitions ?? { current: plain },
     observer: {
       onAlert: (alert) => alerts.push({ alert, depth: storage.depth }),
       onActivated: ({ version }) => activations.push(version),
-      onCaughtUp: () => {
-        counts.caughtUp += 1;
+      onServedChanged: () => {
+        counts.servedChanged += 1;
       },
     },
     ...(sliceLimits === undefined ? {} : { sliceLimits }),
@@ -88,8 +88,8 @@ const makeHarness = (
     storage,
     alerts,
     activations,
-    get caughtUp() {
-      return counts.caughtUp;
+    get servedChanged() {
+      return counts.servedChanged;
     },
     transcript,
     store,
@@ -702,6 +702,27 @@ describe("Durable Object transcript upgrades and edge failures", () => {
     expect(harness.service.readMeta()[0]?.status._tag).toBe("Failed");
   });
 
+  it("keeps the default for a slice limit given as undefined", () => {
+    const harness = makeHarness({ current: plain }, { maxEvents: undefined });
+    expect(harness.service.hasPendingWork()).toBe(false);
+  });
+
+  it("re-reads sockets when a re-enabled session's catch-up freezes its active version", () => {
+    const log = conversation(3);
+    const enabled = makeHarness({ current: gia });
+    enabled.append(log.events.slice(0, 10));
+    enabled.release(undefined).append(log.events.slice(10));
+    enabled.storage.rows("UPDATE _eda_event_log SET schema_version = 99 WHERE seq = 12");
+    const reenabled = enabled.release({ current: gia }, { maxEvents: 4, pageEvents: 2 });
+    expect(windowOf(reenabled.service).readiness).toEqual({ _tag: "UpdatingHistory" });
+    runToCompletion(reenabled.service);
+    expect(windowOf(reenabled.service).readiness).toMatchObject({
+      _tag: "Degraded",
+      failedAtSeq: 11,
+    });
+    expect(reenabled.servedChanged).toBe(1);
+  });
+
   it("rejects slice limits below one", () => {
     expect(() => makeHarness({ current: plain }, { maxSliceFailures: 0 }).service).toThrow(
       /maxSliceFailures must be a positive integer/,
@@ -771,7 +792,7 @@ describe("Durable Object transcript upgrades and edge failures", () => {
     expect(storedProjection(reenabled.storage)).toEqual(referenceProjection(gia, log.events));
     expect(reenabled.service.status()).toMatchObject({ pending: false, converged: true });
     expect(reenabled.activations).toEqual([]);
-    expect(reenabled.caughtUp).toBe(1);
+    expect(reenabled.servedChanged).toBe(1);
   });
 
   it("reports a disabled session read-only, without initializing or minting anything", () => {
