@@ -24,6 +24,7 @@ import {
   type TranscriptMappings,
 } from "./mapping";
 import {
+  DecorationBufferRecordId,
   TranscriptLogIncarnation,
   TranscriptOrder,
   TranscriptRecord,
@@ -192,6 +193,7 @@ describe("transcript records", () => {
     expect(Schema.decodeUnknownSync(TranscriptRecordViewFromEnvelope)(newerKind)).toEqual({
       kind: "unknown",
       originalKind: "poll",
+      format: 1,
       id: "poll:1",
       updatedSeq: 3,
       position: { anchorSeq: 3, ordinal: 1 },
@@ -302,6 +304,33 @@ describe("transcript records", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it("re-encodes unknown records exactly as they were read", () => {
+    const codec = TranscriptRecordViewFromEnvelope;
+    for (const envelope of [
+      {
+        format: 1,
+        kind: "poll",
+        id: "poll:1",
+        updatedSeq: 3,
+        position: { anchorSeq: 3, ordinal: 0 },
+        body: {},
+      },
+      { ...toEnvelope(nth(records, 1)), format: 2, body: {} },
+    ]) {
+      const decoded = Schema.decodeUnknownSync(codec)(envelope);
+      expect(decoded.kind).toBe("unknown");
+      expect(Schema.decodeUnknownSync(codec)(Schema.encodeSync(codec)(decoded))).toEqual(decoded);
+    }
+  });
+
+  it("bounds decoration buffer ids for any association key", () => {
+    const long = transcriptRecordId.decorationBuffer("idempotencyKey", "k".repeat(600));
+    expect(long.length).toBeLessThan(120);
+    expect(transcriptRecordId.decorationBuffer("idempotencyKey", "k".repeat(601))).not.toBe(long);
+    expect(Schema.is(DecorationBufferRecordId)(long)).toBe(true);
+    expect(transcriptRecordId.decorationBuffer("command", "abc")).toBe("decorations:command:abc");
   });
 
   it("rejects a newer envelope format instead of guessing", () => {

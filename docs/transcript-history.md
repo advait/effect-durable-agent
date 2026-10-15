@@ -289,6 +289,10 @@ Old code cannot read the session's storage after new code takes over, so
 `schemaVersion`s, app event types, transcript definitions, and storage layout. Current code keeps
 decoding every historical event format and stored row envelope.
 
+Within a release line, the stored-row envelope carries a format number: a change that an older
+reader of a known record kind could not decode (a new lifecycle or state tag, a new required field)
+bumps it, so older readers show such a row as an `unknown` record instead of rejecting the window.
+
 Compatibility remains wherever an **older peer can still be running**, including any event payload
 that crosses that boundary: Worker↔DO calls during the cutover (both directions), browser tabs
 opened before the deploy (§9.4), and CLIs or other raw-event consumers.

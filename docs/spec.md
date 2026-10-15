@@ -610,7 +610,8 @@ yet, and hosts still derive their UI from the pruned `ReducedState`.
   `compaction`, `tool`, `runGroup` and `sessionContext`, plus an internal `decorationBuffer` that
   holds host decorations whose user record does not exist yet. Every record carries `updatedSeq`.
   Top-level records carry a `(anchorSeq, ordinal)` position; cursors add the record id and are
-  scoped to a log incarnation and a transcript version. Body ids must agree with the record id.
+  scoped to a log incarnation and a transcript version. Body ids must agree with the record id (an import is
+  identified by its import event, which its body does not repeat).
   Stored rows hold tool bodies inline only up to `transcriptStoredInlineBodyLimit` and as log
   references above it, and decorations are bounded, so rows stay far below storage value limits.
   Stored and wire rows use a backward-readable envelope. A wire reader turns a record kind or

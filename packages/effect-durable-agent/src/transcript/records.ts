@@ -4,6 +4,7 @@ import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { TokenConsumptionState } from "../domain/model-usage";
+import { sha256Hex } from "./hash";
 import { JsonUserMessageContent } from "../domain/reduced-state-schema";
 import { CommandIdempotencyKey, SubmitMessageDisposition } from "../types/commands";
 import {
@@ -109,10 +110,12 @@ export const transcriptRecordId = {
   tool: (toolCallId: ToolCallId): ToolRecordId => `tool:${toolCallId}`,
   runGroup: (rootRunId: RunId): RunGroupRecordId => `run:${rootRunId}`,
   session: "session",
+  /** Keys longer than 256 characters (caller-owned idempotency keys) are hashed to stay bounded. */
   decorationBuffer: (
     association: "command" | "idempotencyKey",
     key: string,
-  ): DecorationBufferRecordId => `decorations:${association}:${key}`,
+  ): DecorationBufferRecordId =>
+    `decorations:${association}:${key.length > 0 && key.length <= 256 ? key : `#sha256:${sha256Hex(key)}`}`,
 } as const;
 
 // ---------------------------------------------------------------------------------------------
@@ -470,7 +473,7 @@ const SessionContextBodyFields = {
 /** One decoration operation parked until its target exists, in arrival order. */
 export const TranscriptBufferedDecoration = Schema.Struct({
   seq: SequenceNumber,
-  mapping: Schema.String,
+  mapping: TranscriptDecorationKey,
   /** Operation index within the mapping. */
   operation: NonNegativeInt,
   value: Schema.Json,
@@ -586,11 +589,11 @@ export const TranscriptRunGroupRecord = Schema.Struct({
       "a run group is named by, and starts with, its root run",
   ),
 );
+export type TranscriptRunGroupRecord = typeof TranscriptRunGroupRecord.Type;
 
 /** A run group's status: the outcome of its latest run. */
 export const runGroupStatus = (group: TranscriptRunGroupRecord): TranscriptRunOutcome =>
-  group.runs[group.runs.length - 1]?.outcome ?? group.runs[0].outcome;
-export type TranscriptRunGroupRecord = typeof TranscriptRunGroupRecord.Type;
+  (group.runs[group.runs.length - 1] ?? group.runs[0]).outcome;
 
 /** Session activity, model selection and token totals; a singleton dependency. */
 export const TranscriptSessionContextRecord = Schema.Struct({
@@ -628,7 +631,9 @@ export type TranscriptRecordKind = TranscriptRecord["kind"];
  */
 export const TranscriptUnknownRecord = Schema.Struct({
   kind: Schema.tag("unknown"),
-  originalKind: Schema.String,
+  originalKind: Schema.NonEmptyString,
+  /** The envelope format it arrived in, kept so it re-encodes exactly as it was read. */
+  format: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
   id: Schema.NonEmptyString,
   updatedSeq: SequenceNumber,
   position: Schema.optionalKey(TranscriptPosition),
@@ -680,7 +685,13 @@ export const isPendingTranscriptUserRecord = (
 // Stored envelope
 // ---------------------------------------------------------------------------------------------
 
-/** Current stored-row envelope format. Readers accept every format up to this one. */
+/**
+ * Current stored-row envelope format. Readers accept every format up to this one.
+ *
+ * Bump it whenever a known kind gains a value an older reader of this format could not decode
+ * (a new lifecycle or state tag, a new required field). Older readers then show such rows as
+ * `unknown` records; without a bump, a strict older reader would reject the whole window.
+ */
 export const transcriptRecordEnvelopeFormat = 1;
 
 /**
@@ -767,13 +778,15 @@ const TranscriptUnknownRecordFromEnvelope = TranscriptRecordEnvelope.check(
     decode: SchemaGetter.transform((envelope) => ({
       kind: "unknown" as const,
       originalKind: envelope.kind,
+      format: envelope.format,
       id: envelope.id,
       updatedSeq: envelope.updatedSeq,
       ...(envelope.position === undefined ? {} : { position: envelope.position }),
     })),
+    // Every field was validated on the unknown record itself, so this decode cannot fail.
     encode: SchemaGetter.transform((record) =>
       Schema.decodeUnknownSync(TranscriptRecordEnvelope)({
-        format: transcriptRecordEnvelopeFormat,
+        format: record.format,
         kind: record.originalKind,
         id: record.id,
         updatedSeq: record.updatedSeq,
