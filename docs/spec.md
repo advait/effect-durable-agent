@@ -439,13 +439,14 @@ serve the ordered transcript stream of `docs/transcript-history.md` §9 on the e
   as ACK receipts free the 16-frame window. The ACK's `appliedUpdateSeq` is the applied cut and may
   name only a fully sent update.
 - **Cloudflare adapter** (`cf/websocket/transcript-sockets.ts`): serializes each subscriber; folds
-  every publication into the active-content accumulator (the publication fence) and serves live
-  content only with a window read at exactly the accumulator's published head; coalesces changed
+  every publication into the active-content accumulator (the publication fence) and serves a window
+  read only at exactly the accumulator's published head (a read that resolves behind or ahead of
+  publication is re-read; a commit published during a read is never lost); coalesces changed
   live content to a display cadence (50 ms) without a store read; persists its checkpoint before
   every send. Window reads are scheduled off the append gate, so subscribers never backpressure
   appends. A socket that wakes from hibernation mid-transfer is closed with `4009`; an idle one
-  resumes from its persisted subscription; destroying the session closes transcript sockets with
-  `4009`. Transcript sockets never prepare the model runtime.
+  resumes from its persisted subscription; destroying the session drops live content and
+  closes the transcript sockets the isolate holds with `4009`. Transcript sockets never prepare the model runtime.
 - **Client reference store** (`src/websocket/transcript-client.ts`): pure helpers that assemble
   chunks, apply complete updates only, evict by coverage, produce ACKs, and build
   `subscribe`/`page`/`retain` requests (including the SSR handoff from a window).

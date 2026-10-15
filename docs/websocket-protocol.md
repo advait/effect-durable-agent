@@ -290,7 +290,9 @@ Either way the client then holds exactly the window read at `throughSeq`: a comp
 batches are coalesced to the boundary a read returns; a batch is never split across updates.
 `activeContent`, when present, replaces live content completely (`[]` clears it); it is published at
 most once per display cadence (50 ms), never as raw deltas, and is absent from degraded updates.
-The update that commits or fails an inference also retires its live content.
+The update that commits or fails an inference also retires its live content: a window read is served
+only at exactly the cut the live-content accumulator has folded, so a read that resolves behind or
+ahead of publication is re-read rather than paired with live parts from another cut.
 
 An update larger than `maxFrameBytes` is sent as `transcript-chunk` frames:
 
@@ -300,7 +302,9 @@ An update larger than `maxFrameBytes` is sent as `transcript-chunk` frames:
 
 The `data` of all chunks concatenated in order is the JSON of one update; the client applies it only
 after chunk `count - 1`. Each chunk is a frame in the flow-control window, so a slow receiver
-receives at most 16 before ACKing. Encoded updates above 8 MiB close the socket with `1011`.
+receives at most 16 before ACKing. Encoded updates above 8 MiB close the socket with `1011`; staging is also
+bounded to 32 MiB across the object's sockets, and a socket whose chunked update would exceed that is
+closed with `4009` to resubscribe later.
 
 ### Acknowledgements
 
@@ -319,7 +323,9 @@ subscription base (incarnation, version, `throughSeq`, coverage, tail) and unans
 idle socket that wakes re-reads its coverage at the next opportunity and continues with patches.
 Chunk data is never persisted: a socket that wakes mid-transfer is closed with `4009`, and the client
 discards the partial transfer, reconnects, and resubscribes from what it last applied. Destroying
-the session also closes its transcript sockets with `4009` and drops live content.
+the session drops live content and closes the transcript sockets the isolate holds with `4009`; a
+socket still hibernated at that moment gets a replacement of the new log's latest records on its next
+refresh, because its cursors name the old incarnation.
 
 The applied cut's `throughSeq` is not monotonic (a new incarnation or a building window may lower
 it); the server validates that `appliedUpdateSeq` never moves backwards, names only a fully sent

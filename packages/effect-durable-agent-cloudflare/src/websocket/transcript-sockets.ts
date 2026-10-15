@@ -45,6 +45,7 @@ import {
   startTranscriptUpdate,
   transcriptAckTimedOut,
   transcriptDeliveryCapacity,
+  utf8ByteLength,
   type EDATranscriptDeliveryLimits,
   type EDATranscriptDeliveryState,
   type EDATranscriptRequestFrame,
@@ -72,6 +73,12 @@ export interface EDATranscriptSocketOptions {
    * without live content. Publication normally follows commit within one append.
    */
   readonly fenceWaitMs?: number;
+  /**
+   * Bytes of chunked updates staged across all sockets of the object. A socket whose update would
+   * exceed it is closed with `4009` and resubscribes later. Each socket is also bounded by
+   * `deliveryLimits.maxStagedBytes`.
+   */
+  readonly maxTotalStagedBytes?: number;
   /** Timer seam for the cadence; the default uses `setTimeout`. */
   readonly schedule?: (delayMs: number, run: () => void) => void;
   readonly now?: () => number;
@@ -101,6 +108,10 @@ interface TranscriptSocket {
     | undefined;
   /** When captures started waiting on the publication fence. */
   fenceWaitingSinceMs: number | undefined;
+  /** A drain queued behind the socket's current operation, which later triggers join. */
+  scheduledDrain: Promise<void> | undefined;
+  /** Encoded size of the chunked update this socket is transferring; 0 when none. */
+  stagedBytes: number;
 }
 
 const decodeClientFrame = Schema.decodeUnknownExit(EDATranscriptClientFrame);
@@ -129,6 +140,7 @@ export class EDATranscriptSockets {
   private readonly limits: EDATranscriptDeliveryLimits;
   private readonly cadenceMs: number;
   private readonly fenceWaitMs: number;
+  private readonly maxTotalStagedBytes: number;
   private readonly schedule: (delayMs: number, run: () => void) => void;
   private readonly now: () => number;
 
@@ -138,6 +150,7 @@ export class EDATranscriptSockets {
     this.limits = options.deliveryLimits ?? defaultEDATranscriptDeliveryLimits;
     this.cadenceMs = options.activeContentCadenceMs ?? defaultActiveContentCadenceMs;
     this.fenceWaitMs = options.fenceWaitMs ?? 1_000;
+    this.maxTotalStagedBytes = options.maxTotalStagedBytes ?? 32 * 1_048_576;
     this.schedule =
       options.schedule ??
       ((delayMs, run) => {
@@ -148,6 +161,11 @@ export class EDATranscriptSockets {
 
   has(webSocket: WebSocket): boolean {
     return this.sockets.has(webSocket);
+  }
+
+  /** Transcript sockets this isolate holds, for hosts that cannot enumerate accepted sockets. */
+  webSockets(): ReadonlyArray<WebSocket> {
+    return [...this.sockets.keys()];
   }
 
   /**
@@ -169,6 +187,8 @@ export class EDATranscriptSockets {
       sentActiveRevision: undefined,
       last: undefined,
       fenceWaitingSinceMs: undefined,
+      scheduledDrain: undefined,
+      stagedBytes: 0,
     };
     this.sockets.set(input.webSocket, socket);
     if (!this.persist(input.webSocket, socket)) return;
@@ -206,6 +226,8 @@ export class EDATranscriptSockets {
       sentActiveRevision: undefined,
       last: undefined,
       fenceWaitingSinceMs: undefined,
+      scheduledDrain: undefined,
+      stagedBytes: 0,
     });
     return true;
   }
@@ -322,8 +344,18 @@ export class EDATranscriptSockets {
     });
   }
 
+  /**
+   * Schedule one drain, coalescing with a drain that is scheduled but not yet running. A drain
+   * that is already running re-checks `dirty` before it returns, so nothing is missed.
+   */
   private drain(webSocket: WebSocket, socket: TranscriptSocket): Promise<void> {
-    return this.enqueue(webSocket, socket, () => this.drainNow(webSocket, socket));
+    if (socket.scheduledDrain !== undefined) return socket.scheduledDrain;
+    const scheduled = this.enqueue(webSocket, socket, () => {
+      socket.scheduledDrain = undefined;
+      return this.drainNow(webSocket, socket);
+    });
+    socket.scheduledDrain = scheduled;
+    return scheduled;
   }
 
   /** Send everything this subscriber is owed, one complete update at a time. */
@@ -351,6 +383,7 @@ export class EDATranscriptSockets {
         const pumped = pumpTranscriptTransfer(socket.delivery, nowMs);
         if (pumped.frames.length === 0) return;
         socket.delivery = pumped.state;
+        if (pumped.state.transfer === undefined) socket.stagedBytes = 0;
         if (!this.persistAndSend(webSocket, socket, pumped.frames)) return;
         continue;
       }
@@ -374,6 +407,9 @@ export class EDATranscriptSockets {
 
       const subscriptionRequest =
         request === undefined ? ({ _tag: "Refresh" } as const) : toSubscriptionRequest(request);
+      // Consume the dirty mark before reading: a commit published while the read is in flight
+      // marks it again, and this loop reads once more instead of losing that commit.
+      socket.dirty = false;
       const read = await Effect.runPromiseExit(
         readTranscriptSubscription(
           this.options.transcriptStore,
@@ -395,17 +431,22 @@ export class EDATranscriptSockets {
       }
       const { window, patchBase } = read.value;
 
-      // The fence: read the accumulator synchronously after the store read resolves.
+      // The fence, read synchronously after the store read resolves. A Ready cut is served only
+      // when the accumulator has folded exactly that cut: behind it, a newer publication (which
+      // may retire live content with a commit this cut lacks) already scheduled another drain;
+      // ahead of it with live content, the commit's publication is still in progress.
       const active = this.active;
+      const ready = window.readiness._tag === "Ready";
       const fenced =
-        active.inference === undefined ||
-        window.readiness._tag !== "Ready" ||
-        window.throughSeq === active.publishedThroughSeq;
+        !ready ||
+        window.throughSeq === active.publishedThroughSeq ||
+        (window.throughSeq > active.publishedThroughSeq && active.inference === undefined);
       if (!fenced) {
+        socket.dirty = true;
         socket.fenceWaitingSinceMs ??= nowMs;
         if (nowMs - socket.fenceWaitingSinceMs < this.fenceWaitMs) {
-          // Publication of this cut is still in progress and normally triggers another drain;
-          // the cadence timer retries anything nothing else would wake.
+          // The publication that moves the accumulator to this cut schedules a drain; the
+          // cadence timer retries anything nothing else would wake.
           this.armCadence();
           return;
         }
@@ -428,10 +469,7 @@ export class EDATranscriptSockets {
       });
       const remaining =
         request === undefined ? socket.delivery.requests : socket.delivery.requests.slice(1);
-      if (request === undefined && this.isNoop(socket, update)) {
-        socket.dirty = false;
-        continue;
-      }
+      if (request === undefined && this.isNoop(socket, update)) continue;
       if (
         !(await this.start(
           webSocket,
@@ -443,7 +481,6 @@ export class EDATranscriptSockets {
       ) {
         return;
       }
-      socket.dirty = false;
       socket.sentActiveRevision = fenced ? active.revision : undefined;
       socket.last = {
         readiness: window.readiness,
@@ -525,9 +562,19 @@ export class EDATranscriptSockets {
     subscription: ReturnType<typeof transcriptSubscriptionBaseOf>,
     requests: ReadonlyArray<EDATranscriptRequestFrame>,
   ): Promise<boolean> {
+    const encodedUpdate = encodeEDATranscriptUpdate(update);
+    const bytes = utf8ByteLength(encodedUpdate);
+    if (
+      bytes > this.flowControl.maxFrameBytes &&
+      this.stagedBytes() + bytes > this.maxTotalStagedBytes
+    ) {
+      // Staging is bounded per object as well as per socket; this client retries later.
+      this.close(webSocket, EDA_WS_CLOSE_TRANSCRIPT_RESUBSCRIBE, "staging-budget");
+      return false;
+    }
     const started = startTranscriptUpdate(
       { ...socket.delivery, requests },
-      { update, encodedUpdate: encodeEDATranscriptUpdate(update), subscription },
+      { update, encodedUpdate, subscription },
       this.limits,
       this.now(),
     );
@@ -542,7 +589,15 @@ export class EDATranscriptSockets {
       return false;
     }
     socket.delivery = started.state;
+    socket.stagedBytes = started.state.transfer === undefined ? 0 : bytes;
     return this.persistAndSend(webSocket, socket, started.frames);
+  }
+
+  /** Bytes of chunked updates still being transferred, across every socket of this object. */
+  private stagedBytes(): number {
+    let total = 0;
+    for (const socket of this.sockets.values()) total += socket.stagedBytes;
+    return total;
   }
 
   /** Persist the checkpoint before any frame it accounts for becomes client-visible. */

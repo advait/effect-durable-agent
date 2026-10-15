@@ -244,6 +244,101 @@ class TestSocket {
   }
 }
 
+const fenceIds = {
+  run: RunId.make("018f6bd5-2f2a-7b1e-9f1a-1f2e3d4c5b6a"),
+  turn: TurnId.make("018f6bd5-2f2a-7b1e-af1a-1f2e3d4c5b6a"),
+  inference: InferenceId.make("018f6bd5-2f2a-7b1e-bf1a-1f2e3d4c5b6a"),
+};
+const envelope = (slot: number) => ({
+  namespace: effectDurableAgentNamespace,
+  schemaVersion: schemaV1,
+  eventId: EventId.make(`018f6bd5-2f2a-7b1e-${(0x9000 + slot).toString(16)}-1f2e3d4c5b6a`),
+  sessionId: SESSION_ID,
+  createdAtMs: UnixEpochMillis.make(1_715_000_000_000 + slot),
+});
+const started = (seq: number) =>
+  PositionedEvent.make({
+    position: durablePosition(SequenceNumber.make(seq)),
+    event: InferenceStartedEvent.make({
+      ...envelope(seq),
+      type: "InferenceStarted",
+      durability: "durable",
+      payload: { runId: fenceIds.run, turnId: fenceIds.turn, inferenceId: fenceIds.inference },
+    }),
+  });
+const completed = (seq: number, inferenceId: InferenceId = fenceIds.inference) =>
+  PositionedEvent.make({
+    position: durablePosition(SequenceNumber.make(seq)),
+    event: InferenceCompletedEvent.make({
+      ...envelope(seq),
+      type: "InferenceCompleted",
+      durability: "durable",
+      payload: { runId: fenceIds.run, turnId: fenceIds.turn, inferenceId },
+    }),
+  });
+const delta = (seq: number, text: string) =>
+  PositionedEvent.make({
+    position: Position.make({
+      seq: SequenceNumber.make(seq),
+      subSeq: SubSequenceNumber.make(1),
+    }),
+    event: TextDeltaEvent.make({
+      ...envelope(100 + seq),
+      type: "TextDelta",
+      durability: "ephemeral",
+      payload: { providerPartId: ProviderPartId.make("t"), delta: text },
+    }),
+  });
+
+/**
+ * A store whose head the test moves, and whose reads can be held open so a test can publish
+ * while a subscriber's read is in flight.
+ */
+class GatedStore {
+  head = 0;
+  private gate: Deferred.Deferred<void> | undefined;
+
+  hold(): void {
+    this.gate = Effect.runSync(Deferred.make<void>());
+  }
+
+  release(): void {
+    const gate = this.gate;
+    this.gate = undefined;
+    if (gate !== undefined) Effect.runSync(Deferred.succeed(gate, undefined));
+  }
+
+  readonly store: EDATranscriptStoreShape = {
+    readTranscriptWindow: () =>
+      Effect.suspend(() => {
+        const window: TranscriptWindow = {
+          incarnation: TranscriptLogIncarnation.make("memory:gated"),
+          version: TranscriptVersion.make("a".repeat(64)),
+          throughSeq: SequenceNumber.make(this.head),
+          records: [],
+          dependencies: [],
+          hasOlder: false,
+          hasNewer: false,
+          readiness: { _tag: "Ready" },
+        };
+        return this.gate === undefined
+          ? Effect.succeed(window)
+          : Deferred.await(this.gate).pipe(Effect.as(window));
+      }),
+    readTranscriptMeta: Effect.succeed([]),
+  };
+}
+
+const publishTo = (manager: EDAWebSocketConnectionManager, event: PositionedEvent) =>
+  Effect.runPromise(
+    Effect.flatMap(Effect.service(SessionEventObserver), (observer) =>
+      observer.onEvent(event),
+    ).pipe(Effect.provide(manager.observerLayer)),
+  );
+
+/** Yield to the event loop so held reads and queued drains reach their await points. */
+const yieldToLoop = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 const isolates: Isolate[] = [];
 afterEach(async () => {
   await Promise.all(isolates.splice(0).map((isolate) => isolate.dispose()));
@@ -438,52 +533,6 @@ describe("transcript-window sockets", () => {
     expect(socket.client.window?.records).toHaveLength(3);
   });
   it("holds a capture taken between commit and publication until publication catches up", async () => {
-    const ids = {
-      run: RunId.make("018f6bd5-2f2a-7b1e-9f1a-1f2e3d4c5b6a"),
-      turn: TurnId.make("018f6bd5-2f2a-7b1e-af1a-1f2e3d4c5b6a"),
-      inference: InferenceId.make("018f6bd5-2f2a-7b1e-bf1a-1f2e3d4c5b6a"),
-    };
-    const envelope = (slot: number) => ({
-      namespace: effectDurableAgentNamespace,
-      schemaVersion: schemaV1,
-      eventId: EventId.make(`018f6bd5-2f2a-7b1e-${(0x9000 + slot).toString(16)}-1f2e3d4c5b6a`),
-      sessionId: SESSION_ID,
-      createdAtMs: UnixEpochMillis.make(1_715_000_000_000 + slot),
-    });
-    const started = (seq: number) =>
-      PositionedEvent.make({
-        position: durablePosition(SequenceNumber.make(seq)),
-        event: InferenceStartedEvent.make({
-          ...envelope(seq),
-          type: "InferenceStarted",
-          durability: "durable",
-          payload: { runId: ids.run, turnId: ids.turn, inferenceId: ids.inference },
-        }),
-      });
-    const completed = (seq: number) =>
-      PositionedEvent.make({
-        position: durablePosition(SequenceNumber.make(seq)),
-        event: InferenceCompletedEvent.make({
-          ...envelope(seq),
-          type: "InferenceCompleted",
-          durability: "durable",
-          payload: { runId: ids.run, turnId: ids.turn, inferenceId: ids.inference },
-        }),
-      });
-    const delta = (seq: number, text: string) =>
-      PositionedEvent.make({
-        position: Position.make({
-          seq: SequenceNumber.make(seq),
-          subSeq: SubSequenceNumber.make(1),
-        }),
-        event: TextDeltaEvent.make({
-          ...envelope(100 + seq),
-          type: "TextDelta",
-          durability: "ephemeral",
-          payload: { providerPartId: ProviderPartId.make("t"), delta: text },
-        }),
-      });
-
     // The store's committed head runs ahead of what has been published, as between an append and
     // its publication.
     let head = 0;
@@ -555,5 +604,94 @@ describe("transcript-window sockets", () => {
     await socket.pump(isolate.manager);
     expect(socket.client.window?.throughSeq).toBe(4);
     expect(socket.client.window?.activeContent).toEqual([]);
+  });
+  it("delivers a commit published while a read is in flight", async () => {
+    const gated = new GatedStore();
+    const socket = new TestSocket();
+    const isolate = new Isolate(() => [socket], defaultEDAWebSocketFlowControl, gated.store);
+    isolate.manager.acceptTranscript({
+      sessionId: SESSION_ID,
+      trace: TRACE,
+      webSocket: socket.asWebSocket(),
+    });
+    await socket.request(isolate.manager, edaTranscriptSubscribeRequest(socket.client));
+    await socket.pump(isolate.manager);
+
+    gated.hold();
+    gated.head = 1;
+    await publishTo(
+      isolate.manager,
+      completed(1, InferenceId.make("018f6bd5-2f2a-7b1e-bf1a-1f2e3d4c5b6b")),
+    );
+    await yieldToLoop();
+    gated.head = 2;
+    await publishTo(
+      isolate.manager,
+      completed(2, InferenceId.make("018f6bd5-2f2a-7b1e-bf1a-1f2e3d4c5b6b")),
+    );
+    gated.release();
+    await isolate.manager.settled();
+    await socket.pump(isolate.manager);
+    expect(socket.client.window?.throughSeq).toBe(2);
+  });
+
+  it("retires live content only in the update that carries its commit", async () => {
+    const gated = new GatedStore();
+    const socket = new TestSocket();
+    const isolate = new Isolate(() => [socket], defaultEDAWebSocketFlowControl, gated.store);
+    isolate.manager.acceptTranscript({
+      sessionId: SESSION_ID,
+      trace: TRACE,
+      webSocket: socket.asWebSocket(),
+    });
+    await socket.request(isolate.manager, edaTranscriptSubscribeRequest(socket.client));
+    await socket.pump(isolate.manager);
+    gated.head = 1;
+    await publishTo(isolate.manager, started(1));
+    await publishTo(isolate.manager, delta(1, "live"));
+    await isolate.tick();
+    await socket.pump(isolate.manager);
+    expect(socket.client.window?.activeContent).toHaveLength(1);
+
+    // A request's read is in flight at head 1 when the commit lands and is published.
+    gated.hold();
+    const request = socket.request(isolate.manager, { _tag: "subscribe", tail: true });
+    await yieldToLoop();
+    gated.head = 2;
+    await publishTo(isolate.manager, completed(2));
+    gated.release();
+    await request;
+    await isolate.tick();
+    await socket.pump(isolate.manager);
+
+    // Every update after the first (which installed the empty window) that clears live content.
+    const retiring = socket.applied
+      .slice(1)
+      .filter(({ update }) => update?.activeContent?.length === 0);
+    expect(retiring.map(({ update }) => update?.throughSeq)).toEqual([2]);
+    expect(socket.client.window?.throughSeq).toBe(2);
+  });
+
+  it("pushes commits to transcript sockets when the host cannot enumerate sockets", async () => {
+    const gated = new GatedStore();
+    const manager = new EDAWebSocketConnectionManager({
+      isSessionReady: () => true,
+      prepareSession: async () => undefined,
+      readEventPage: async () => ({ events: [], head: SequenceNumber.make(0) }),
+      transcript: { transcriptStore: gated.store, schedule: () => undefined },
+    });
+    const socket = new TestSocket();
+    manager.acceptTranscript({
+      sessionId: SESSION_ID,
+      trace: TRACE,
+      webSocket: socket.asWebSocket(),
+    });
+    await socket.request(manager, edaTranscriptSubscribeRequest(socket.client));
+    await socket.pump(manager);
+    gated.head = 1;
+    await publishTo(manager, completed(1));
+    await manager.settled();
+    await socket.pump(manager);
+    expect(socket.client.window?.throughSeq).toBe(1);
   });
 });

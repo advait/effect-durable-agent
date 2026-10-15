@@ -223,7 +223,11 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
   }
 
   private async fanoutPublishedEvent(event: PositionedEvent): Promise<void> {
-    const webSockets = new Set([...(this.options.getWebSockets?.() ?? []), ...this.sockets.keys()]);
+    const webSockets = new Set([
+      ...(this.options.getWebSockets?.() ?? []),
+      ...this.sockets.keys(),
+      ...(this.transcript?.webSockets() ?? []),
+    ]);
     const deliveries: Promise<void>[] = [];
     const transcriptSockets: WebSocket[] = [];
     for (const webSocket of webSockets) {
