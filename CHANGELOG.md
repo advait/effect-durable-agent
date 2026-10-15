@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0-alpha.22
+
+Transcript history, part 1: the EDA core transcript projection (design:
+`docs/transcript-history.md`). Hosts are unaffected until they read it; the model path, prompts and
+`EDASessionStoreShape` are unchanged.
+
+- New `effect-durable-agent/transcript` export: transcript record, window, cursor, selector and
+  readiness schemas; declarative host mapping definitions (executed by `planTranscriptBatch`); version identity
+  (`hash(semantic revision, mappings)`); the synchronous interpreter boundary
+  (`PlanTranscriptBatch`, `TranscriptLookup`, `TranscriptChangePlan`) and its implementation; the
+  `EDATranscriptStore` read port and `TranscriptMaintenanceConfig`.
+- `EDASessionStore.InMemory` / `InMemorySeeded` take optional `InMemoryStoreOptions`
+  (`{ transcript?: TranscriptMaintenanceConfig }`; default: the definition with no host mappings),
+  maintain the transcript inside the append critical section, freeze a failed version, and provide
+  `EDATranscriptStore`.
+- Oracle (incremental equals full rebuild for every batch partition) and fingerprint tests.
+
 ## 0.1.0-alpha.21
 
 Multi-provider sessions (OpenAI and Anthropic), provider prompt caching, and provider-native
