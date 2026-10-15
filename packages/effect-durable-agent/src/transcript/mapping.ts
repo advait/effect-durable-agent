@@ -21,11 +21,14 @@ export const transcriptMappingBounds = {
   maxMappings: 64,
   maxOperationsPerMapping: 16,
   maxPathLength: 16,
-  /**
-   * Canonical JSON bytes of one decoration value or list entry. With `maxListEntries` this keeps
-   * one decoration below 512 KiB, so a record's row stays well inside storage value limits.
-   */
+  /** Canonical JSON bytes of one decoration value or list entry. */
   maxValueBytes: 8_192,
+  /**
+   * Canonical JSON bytes of all decorations of one record, and of one decoration buffer. An
+   * operation that would exceed it is skipped, so no record's row can approach storage value
+   * limits whatever a host appends.
+   */
+  maxDecorationBytes: 262_144,
   /** Entries kept in one decoration list; further distinct entries are dropped. */
   maxListEntries: 64,
   maxUserFallbacks: 16,

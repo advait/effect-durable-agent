@@ -429,7 +429,7 @@ describe("transcript windows", () => {
     );
     expect(decoded.readiness).toEqual({ _tag: "Unknown", readinessType: "Migrating" });
     expect(
-      Exit.isSuccess(
+      Exit.isFailure(
         decode(
           window({
             readiness: { _tag: "Migrating" },
@@ -438,6 +438,12 @@ describe("transcript windows", () => {
         ),
       ),
     ).toBe(true);
+    expect(
+      Exit.isFailure(
+        decode(window({ readiness: { _tag: "Degraded", failedAtSeq: "13", error: "x" } })),
+      ),
+    ).toBe(true);
+    expect(Exit.isFailure(decode(window({ readiness: { _tag: "Degraded" } })))).toBe(true);
   });
 
   it("bounds degraded, unreadable and duplicated cuts", () => {

@@ -219,7 +219,10 @@ export const TranscriptDecorationKey = Schema.String.check(
 export type TranscriptDecorationKey = typeof TranscriptDecorationKey.Type;
 
 /** Key of one decoration list entry: an entry id or a host-assigned ordinal. */
-export const TranscriptDecorationEntryKey = Schema.Union([Schema.String, NonNegativeInt]);
+export const TranscriptDecorationEntryKey = Schema.Union([
+  Schema.String.check(Schema.isMaxLength(256)),
+  NonNegativeInt,
+]);
 export type TranscriptDecorationEntryKey = typeof TranscriptDecorationEntryKey.Type;
 
 /**
@@ -475,8 +478,11 @@ export const TranscriptBufferedDecoration = Schema.Struct({
 });
 export type TranscriptBufferedDecoration = typeof TranscriptBufferedDecoration.Type;
 
-/** Operations one decoration buffer keeps; later ones for the same key are dropped. */
-export const transcriptDecorationBufferLimit = 256;
+/**
+ * Operations one decoration buffer keeps. Later operations for the same key are dropped, as are
+ * operations beyond the mapping bounds' decoration byte budget.
+ */
+export const transcriptDecorationBufferLimit = 32;
 
 const DecorationBufferBodyFields = {
   operations: Schema.Array(TranscriptBufferedDecoration).check(

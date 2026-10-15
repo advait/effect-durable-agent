@@ -9,8 +9,8 @@ import { TranscriptVersion } from "./records";
  * A new durable event type needs a bump only if this release gives it transcript meaning;
  * events the interpreter ignores leave the revision and every version unchanged.
  *
- * The CI fingerprint over a fixed scenario corpus fails when interpretation output changes and
- * this constant does not; update the recorded fingerprint together with the bump.
+ * A CI fingerprint over a fixed scenario corpus (added with the interpreter) fails when
+ * interpretation output changes and this constant does not; re-record it together with the bump.
  */
 export const transcriptSemanticRevision = 1;
 

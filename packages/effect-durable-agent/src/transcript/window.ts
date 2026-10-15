@@ -100,7 +100,22 @@ const KnownReadiness = Schema.TaggedUnion({
   Unknown: { readinessType: Schema.String },
 });
 
-const UnrecognizedReadiness = Schema.Struct({ _tag: Schema.String }).pipe(
+const knownReadinessTags: ReadonlySet<string> = new Set([
+  "Ready",
+  "Degraded",
+  "UpdatingHistory",
+  "Building",
+  "Unreadable",
+  "Unknown",
+]);
+
+const UnrecognizedReadiness = Schema.Struct({
+  _tag: Schema.String.check(
+    Schema.makeFilter(
+      (tag) => !knownReadinessTags.has(tag) || "a known readiness must decode as that readiness",
+    ),
+  ),
+}).pipe(
   Schema.decodeTo(Schema.toType(KnownReadiness.cases.Unknown), {
     decode: SchemaGetter.transform((readiness) => ({
       _tag: "Unknown" as const,
@@ -112,7 +127,8 @@ const UnrecognizedReadiness = Schema.Struct({ _tag: Schema.String }).pipe(
 
 /**
  * Whether the window is the current interpretation of the log. A readiness this reader does not
- * know decodes as `Unknown` and is treated as degraded, except that it may carry live content.
+ * know decodes as `Unknown` and is treated as degraded: it carries no live content. A malformed
+ * readiness with a known tag is a decode failure.
  */
 export const TranscriptReadiness = Schema.Union([KnownReadiness, UnrecognizedReadiness]);
 export type TranscriptReadiness = typeof TranscriptReadiness.Type;
@@ -164,7 +180,6 @@ export const TranscriptWindow = Schema.Struct({
   Schema.makeFilter(
     (window) =>
       window.readiness._tag === "Ready" ||
-      window.readiness._tag === "Unknown" ||
       window.activeContent === undefined ||
       "a degraded read never attaches live content",
   ),
@@ -255,5 +270,12 @@ export const TranscriptVersionMeta = Schema.Struct({
   role: Schema.Literals(["active", "building"]),
   cursor: SequenceNumber,
   status: TranscriptVersionStatus,
-});
+}).check(
+  Schema.makeFilter(
+    (meta) =>
+      meta.status._tag !== "Failed" ||
+      meta.status.failedAtSeq > meta.cursor ||
+      "a failed version is frozen before the seq that failed",
+  ),
+);
 export type TranscriptVersionMeta = typeof TranscriptVersionMeta.Type;

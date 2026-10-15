@@ -318,8 +318,9 @@ runtime (today's controller queries do: `cf/session-controller.ts:201, 294, 303`
   `throughSeq`**: no newer pending users, session context or live content. Readiness says why the
   cut is behind, and the window contract makes active content absent whenever readiness is not
   ready.
-- **Large bodies** are sent as `bodyRef`: an immutable source reference (event and field, or a
-  content digest) scoped to the record revision, resolvable after old projection rows are deleted.
+- **Large bodies** are sent as `bodyRef`: an immutable log location (event seq and field path)
+  plus its byte length, resolvable through the log after old projection rows are deleted. Stored rows
+  also hold large bodies as references, so no row approaches storage value limits.
   The host authorizes body fetches.
 - **Log incarnation.** The adapter owns it (adopting a host's existing value, such as Gia's
   `gia.log_incarnation`). A wiped log invalidates every cursor.
