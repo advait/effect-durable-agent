@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.26
+
+- Transcript windows trim to their byte budget in linear time. Previously a window over its budget
+  dropped one record at a time and re-measured the whole window after each drop (quadratic), so a
+  tool-heavy session's first read with a large inline-body limit could block its Durable Object for
+  seconds (about 6 s for 15 tools × 63 KiB at 100 records; now about 0.2 s). Output is identical to
+  the previous trim; interpretation and transcript versions are unchanged.
+
 ## 0.1.0-alpha.25
 
 Transcript history, part 4: production rollout controls. This is the first release a host may
