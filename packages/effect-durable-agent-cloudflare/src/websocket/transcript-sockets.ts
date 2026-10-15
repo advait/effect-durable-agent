@@ -86,6 +86,9 @@ export interface EDATranscriptSocketOptions {
 
 export const defaultActiveContentCadenceMs = 50;
 
+/** Largest client frame accepted; requests are persisted, so this bounds the attachment too. */
+const maxClientFrameLength = 2_048;
+
 /** Volatile and persisted state of one transcript socket. */
 interface TranscriptSocket {
   readonly sessionId: SessionId;
@@ -112,6 +115,9 @@ interface TranscriptSocket {
   scheduledDrain: Promise<void> | undefined;
   /** Encoded size of the chunked update this socket is transferring; 0 when none. */
   stagedBytes: number;
+  /** When live content was last sent, and whether the cadence timer has fired since. */
+  activeSentAtMs: number | undefined;
+  cadenceDue: boolean;
 }
 
 const decodeClientFrame = Schema.decodeUnknownExit(EDATranscriptClientFrame);
@@ -189,6 +195,8 @@ export class EDATranscriptSockets {
       fenceWaitingSinceMs: undefined,
       scheduledDrain: undefined,
       stagedBytes: 0,
+      activeSentAtMs: undefined,
+      cadenceDue: false,
     };
     this.sockets.set(input.webSocket, socket);
     if (!this.persist(input.webSocket, socket)) return;
@@ -228,6 +236,8 @@ export class EDATranscriptSockets {
       fenceWaitingSinceMs: undefined,
       scheduledDrain: undefined,
       stagedBytes: 0,
+      activeSentAtMs: undefined,
+      cadenceDue: false,
     });
     return true;
   }
@@ -280,6 +290,11 @@ export class EDATranscriptSockets {
     }
     if (message === EDA_WEB_SOCKET_PING_MESSAGE) {
       this.sendText(webSocket, EDA_WEB_SOCKET_PONG_MESSAGE);
+      return;
+    }
+    // Requests are persisted in the attachment; bound them before decoding.
+    if (message.length > maxClientFrameLength) {
+      this.protocolError(webSocket, "Client frame too large");
       return;
     }
     let json: unknown;
@@ -340,7 +355,10 @@ export class EDATranscriptSockets {
     this.timerArmed = true;
     this.schedule(this.cadenceMs, () => {
       this.timerArmed = false;
-      for (const [webSocket, socket] of this.sockets) this.track(this.drain(webSocket, socket));
+      for (const [webSocket, socket] of this.sockets) {
+        socket.cadenceDue = true;
+        this.track(this.drain(webSocket, socket));
+      }
     });
   }
 
@@ -395,6 +413,16 @@ export class EDATranscriptSockets {
         if (base === undefined) return;
         if (!socket.dirty) {
           if (socket.sentActiveRevision === this.active.revision) return;
+          // Live-only changes go out at the display cadence, whatever woke this drain (an ACK,
+          // a request, a publication): at most one complete replacement per interval.
+          const due =
+            socket.cadenceDue ||
+            socket.activeSentAtMs === undefined ||
+            nowMs - socket.activeSentAtMs >= this.cadenceMs;
+          if (!due) {
+            this.armCadence();
+            return;
+          }
           const sent = await this.sendActiveOnly(webSocket, socket);
           if (sent === "NeedsRead") {
             socket.dirty = true;
@@ -482,6 +510,10 @@ export class EDATranscriptSockets {
         return;
       }
       socket.sentActiveRevision = fenced ? active.revision : undefined;
+      if (update.activeContent !== undefined) {
+        socket.cadenceDue = false;
+        socket.activeSentAtMs = this.now();
+      }
       socket.last = {
         readiness: window.readiness,
         hasOlder: window.hasOlder,
@@ -533,6 +565,8 @@ export class EDATranscriptSockets {
       return "Failed";
     }
     socket.sentActiveRevision = active.revision;
+    socket.cadenceDue = false;
+    socket.activeSentAtMs = this.now();
     return "Sent";
   }
 
@@ -627,7 +661,13 @@ export class EDATranscriptSockets {
         ),
       );
       return true;
-    } catch {
+    } catch (error) {
+      Effect.runSync(
+        Effect.logError("EDA transcript socket attachment failed", {
+          error,
+          subscriberId: socket.subscriberId,
+        }),
+      );
       this.close(webSocket, EDA_WS_CLOSE_SEND_FAILED, "attachment-failed");
       return false;
     }
@@ -637,7 +677,9 @@ export class EDATranscriptSockets {
     try {
       webSocket.send(text);
       return true;
-    } catch {
+    } catch (error) {
+      // Closing sockets can still be returned by getWebSockets(); a failed send closes this one.
+      Effect.runSync(Effect.logWarning("EDA transcript socket send failed", { error }));
       this.close(webSocket, EDA_WS_CLOSE_SEND_FAILED, "send-failed");
       return false;
     }

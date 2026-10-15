@@ -282,6 +282,10 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
       this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
       return undefined;
     }
+    // Another caller may have restored this socket while the attachment was decoding.
+    const restoredMeanwhile = this.sockets.get(webSocket);
+    if (restoredMeanwhile !== undefined) return restoredMeanwhile;
+    if (this.transcript?.has(webSocket) === true) return "transcript";
     if (decoded.attachment.kind === "eda-transcript-v1") {
       if (this.transcript === undefined) {
         this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");

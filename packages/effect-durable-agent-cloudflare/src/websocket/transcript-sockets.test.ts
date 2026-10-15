@@ -694,4 +694,36 @@ describe("transcript-window sockets", () => {
     await socket.pump(manager);
     expect(socket.client.window?.throughSeq).toBe(1);
   });
+  it("publishes live content at the display cadence however fast the client acknowledges", async () => {
+    const gated = new GatedStore();
+    const socket = new TestSocket();
+    const isolate = new Isolate(() => [socket], defaultEDAWebSocketFlowControl, gated.store);
+    isolate.manager.acceptTranscript({
+      sessionId: SESSION_ID,
+      trace: TRACE,
+      webSocket: socket.asWebSocket(),
+    });
+    await socket.request(isolate.manager, edaTranscriptSubscribeRequest(socket.client));
+    await socket.pump(isolate.manager);
+    gated.head = 1;
+    await publishTo(isolate.manager, started(1));
+    await isolate.manager.settled();
+    // Leave that update unacknowledged, so every loop below has an ACK to deliver.
+    expect(socket.inbox.length).toBe(1);
+
+    const before = socket.applied.length + 1;
+    for (let index = 0; index < 50; index += 1) {
+      await publishTo(isolate.manager, delta(1, `${index % 10}`));
+      await isolate.manager.settled();
+      await socket.pump(isolate.manager, 1);
+    }
+    // ACKs alone never release live content between cadence ticks.
+    expect(socket.applied.length - before).toBeLessThanOrEqual(1);
+    await isolate.tick();
+    await socket.pump(isolate.manager);
+    expect(socket.client.window?.activeContent[0]?.parts[0]?.part).toEqual({
+      _tag: "Text",
+      text: Array.from({ length: 50 }, (_, index) => `${index % 10}`).join(""),
+    });
+  });
 });

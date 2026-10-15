@@ -256,7 +256,8 @@ as explicit `unknown` representations.
 
 ### Requests
 
-Each request is answered by exactly one update, in arrival order (at most 4 may be outstanding):
+Each request is answered by exactly one update, in arrival order (at most 4 may be outstanding, and
+a client frame may be at most 2,048 characters):
 
 - `subscribe { requestId?, range?, tail?, since?, count? }`: with `range` (`{ from, to }` cursors),
   `tail` and `since` (what SSR rendered, or what a reconnecting client last applied), the first
@@ -304,7 +305,8 @@ The `data` of all chunks concatenated in order is the JSON of one update; the cl
 after chunk `count - 1`. Each chunk is a frame in the flow-control window, so a slow receiver
 receives at most 16 before ACKing. Encoded updates above 8 MiB close the socket with `1011`; staging is also
 bounded to 32 MiB across the object's sockets, and a socket whose chunked update would exceed that is
-closed with `4009` to resubscribe later.
+closed with `4009` to resubscribe later. Clients reconnect after a `4009` with the same bounded
+exponential backoff as after `4008`.
 
 ### Acknowledgements
 
