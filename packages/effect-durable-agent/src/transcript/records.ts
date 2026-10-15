@@ -498,6 +498,7 @@ export const TranscriptBufferedDecoration = Schema.Struct({
   operation: NonNegativeInt,
   value: Schema.Json,
   entryKey: Schema.optionalKey(TranscriptDecorationEntryKey),
+  /** The entry's id, for a list keyed by id or ordinal (`entryKey` then holds the ordinal). */
   entryId: Schema.optionalKey(TranscriptDecorationEntryId),
 });
 export type TranscriptBufferedDecoration = typeof TranscriptBufferedDecoration.Type;

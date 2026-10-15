@@ -625,8 +625,8 @@ prompts are still built from `ReducedState`, which never reads transcript record
   `Ready`, `Degraded`, `UpdatingHistory`, `Building`, and `Unreadable` (a stored row this release
   cannot decode: an empty window until a rebuild); per-version maintenance meta.
 - **Mappings** (`src/transcript/mapping.ts`): declarative host decorations (copy, first-wins,
-  replace a list entry by id, by ordinal, or by either, classify) targeting a user by command id or idempotency
-  key, or the session. They are validated by `makeTranscriptDefinition`, which derives the version
+  replace a list entry by id, by ordinal, or by either, classify) targeting a user by command id
+  or idempotency key, or the session. They are validated by `makeTranscriptDefinition`, which derives the version
   as SHA-256 of the semantic revision (`transcriptSemanticRevision`) and the canonical JSON of the
   mappings.
 - **Interpreter boundary** (`src/transcript/plan.ts`): `PlanTranscriptBatch` is a synchronous pure

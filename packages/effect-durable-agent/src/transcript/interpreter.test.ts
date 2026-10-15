@@ -1,8 +1,11 @@
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { CommandId, InferenceId, RunId, SequenceNumber, ToolCallId } from "../types/core";
 import type { InMemoryTranscriptVersion } from "./in-memory";
 import { planTranscriptBatch } from "./interpreter";
+import { makeTranscriptDefinition, type TranscriptMappingOperation } from "./mapping";
 import {
   isPendingTranscriptUserRecord,
   isTopLevelTranscriptRecord,
@@ -389,6 +392,46 @@ describe("transcript interpreter", () => {
         { key: 1, value: "c.txt", id: "c" },
       ],
     });
+    // Parked (before the command) and live entries project the same under every batch split.
+    expect(normalizedProjection(projectBatches(byIdOrOrdinal, log.events.map((event) => [event])))).toEqual(
+      normalizedProjection(version),
+    );
+    // One event can replace two entries: the same id at one ordinal and another entry's ordinal.
+    attach(log, "c", 0, "c-moved.txt");
+    expect(user(projectBatches(byIdOrOrdinal, [log.events]), 1).decorations["attachments"]).toEqual({
+      _tag: "List",
+      entries: [{ key: 0, value: "c-moved.txt", id: "c" }],
+    });
+    // The list keeps at most 64 entries.
+    for (let ordinal = 2; ordinal < 80; ordinal += 1) attach(log, `x${ordinal}`, ordinal, "x");
+    const full = user(projectBatches(byIdOrOrdinal, [log.events]), 1).decorations["attachments"];
+    expect(full?._tag === "List" && full.entries.length).toBe(64);
+  });
+
+  it("rejects one list written with two different key kinds", () => {
+    const attachments = (key: TranscriptMappingOperation) => ({
+      name: `attachments-${key._tag}`,
+      event: { namespace: "gia-agent", type: "GiaFileAttachmentCreated", schemaVersion: 1 },
+      target: { _tag: "UserByIdempotencyKey", path: ["relatedCommandIdempotencyKey"] },
+      operations: [key],
+    });
+    const exit = Effect.runSync(
+      Effect.exit(
+        makeTranscriptDefinition({
+          mappings: [
+            attachments({ _tag: "ReplaceListEntry", from: [], to: "attachments", key: { _tag: "Ordinal", path: ["ordinal"] } }),
+            attachments({
+              _tag: "ReplaceListEntry",
+              from: [],
+              to: "attachments",
+              key: { _tag: "IdOrOrdinal", id: ["attachmentId"], ordinal: ["ordinal"] },
+            }),
+          ],
+          userFallbacks: [],
+        }),
+      ),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
   });
 
   it("normalizes decoration and body values to the JSON a stored log holds", () => {
