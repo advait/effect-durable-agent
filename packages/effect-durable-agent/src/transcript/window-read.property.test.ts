@@ -200,12 +200,6 @@ const selectorArbitrary = (whole: TranscriptWindow): fc.Arbitrary<TranscriptWind
   );
 };
 
-const totalBytes = (window: TranscriptWindow) =>
-  windowBytes(
-    window.records.filter((record) => record.kind !== "unknown"),
-    window.dependencies.filter((record) => record.kind !== "unknown"),
-  );
-
 /** A log of `turns` runs whose tools return bodies of the given sizes. */
 const toolBodyLog = (bodies: ReadonlyArray<ReadonlyArray<number>>) => {
   const log = new TestLog().configure();
