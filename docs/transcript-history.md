@@ -18,7 +18,9 @@ interpreter, mapping executor and oracle of §14 step 2, ship as `core/transcrip
 delivery of §9 (step 4) also ships: active content, the subscription data source, socket update
 schemas, chunking, the negotiation envelope, the publication fence and transcript-window sockets
 in the Cloudflare adapter, over any `EDATranscriptStore` (see `docs/websocket-protocol.md`). The
-Cloudflare store's tables, maintenance and builder (step 3) are still planned.
+Cloudflare adapter's storage (§14 step 3: tables, maintenance, freezing, runtime-free reads, the
+builder, activation, the shared alarm and the log incarnation) ships too, and the session Durable
+Object serves its transcript sockets from it; `docs/spec.md` §9, §14 and §16 describe it.
 As each part ships, `docs/spec.md` and `docs/websocket-protocol.md` describe the current behavior
 and this document keeps the design rationale.
 
@@ -128,6 +130,12 @@ Top-level records count toward the window size. Dependencies count only against 
 
 All tables are EDA-owned, live in the session store, and are keyed by version.
 
+_As built:_ the adapter's tables use its `_eda_` prefix (`_eda_transcript_records`,
+`_eda_transcript_aliases`, `_eda_transcript_meta`), and rows are keyed by a **slot**, one stored
+instance of one version, rather than by the version string. A slot's role is `active`, `building`
+or `retired` (discarded or replaced, awaiting bounded deletion), so a retired slot still being
+deleted never collides with a later build of the same version.
+
 | Table | Purpose |
 | --- | --- |
 | `transcript_records` | `(version, id)` → kind, position, `updatedSeq`, body. Indexes: position, `updatedSeq`, pending membership, and the typed dependency lookup |
@@ -145,9 +153,15 @@ No whole-history collection is ever held in memory.
 - **Isolation.** Projection writes run in an inner `storage.transactionSync`. If the projection
   fails, the adapter catches the error outside the inner transaction, records the failure, and the
   event append still commits. This uses the platform's nested-transaction API, not raw
-  `SAVEPOINT`, which Cloudflare rejects. The nesting behavior was verified only in a local
-  Miniflare experiment, and the repo's storage fakes model one level of rollback
-  (`cf/durable-object-store.test.ts:1794`), so gate 3 must run on workerd.
+  `SAVEPOINT`, which Cloudflare rejects. Gate 3 now runs on workerd and confirms it.
+  - _As built:_ **celld rejects nested transactions** ("cannot start a transaction within a
+    transaction"), leaving the enclosing transaction intact. So the adapter computes the plan,
+    decodes the rows it reads and encodes the rows it will write (serialization and the size cap)
+    before any write; every recoverable projection error is raised there, on every platform. It
+    probes nesting once per storage object. Where nesting works, the writes also run inside the
+    inner transaction, so even a failing write freezes only that version. Where it does not, the
+    writes run in the append transaction, and a write that fails after planning succeeded fails the
+    append atomically. That is a storage failure, which the "Limits" bullet below already allows.
 - **Inside the boundary.** Plan computation, decoding and the SQL writes all run inside the inner
   boundary.
 - **Freezing a failed version.** A recoverable failure marks **that version** `failed` at its
@@ -245,12 +259,20 @@ _interpreter_ never drops an old event-schema reader (`core/types/events/durable
    then deleted in bounded slices.
 5. A brand-new log initializes `current` at seq 0, before its first append or read.
 
+_As built:_ a version is maintained in the append exactly when it is carried, healthy and caught
+up (its cursor equals the head before the batch). A building version is caught up only by
+slices, and the slice that reaches the head activates it in the same transaction, so a build is
+never maintained in the append. This one rule also repairs any active version found behind the head.
+
 **The builder.** State lives in `transcript_meta`. Any request, alarm or constructor that sees
 pending work runs or schedules one bounded slice through the storage service; it never constructs
 the model runtime. Alarm scheduling is shared with runtime work, and neither owner deletes the
 other's wakeup. Today `syncAlarm` deletes the alarm when no lease is held
 (`cf/durable-object-keepalive.ts:190-192`); this must change. The in-memory keep-alive lease (`cf/durable-object-keepalive.ts:38-49, 190`) is not
-relied on.
+relied on. _As built:_ `cf/durable-object-alarms.ts` keeps one durable wakeup row per owner and
+sets the platform alarm to the earliest. The keep-alive is unchanged and uses its owner's view, so
+its "delete when idle" deletes only its own wakeup, and the alarm handler knows after an eviction
+whether it fired for the builder (storage-only slices) or the runtime.
 
 **Backfill (host, once per definition change).** After the release fully rolls out:
 

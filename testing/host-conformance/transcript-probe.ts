@@ -74,11 +74,33 @@ class ProbeStorage implements DurableObjectSessionStorage {
   };
 }
 
-const toSessionStorage = (storage: DurableObjectStorage): DurableObjectSessionStorage => {
-  // SAFETY: DurableObjectStorage provides the SQL and transactionSync subset; its stricter row
-  // generic is wider than the adapter's at runtime.
-  return storage as DurableObjectSessionStorage;
-};
+/** Rows are trusted to have the shape each adapter query selects. */
+const isRow = <Row>(_row: unknown): _row is Row => true;
+
+/** The adapter's storage subset over the platform storage, without a type assertion. */
+const toSessionStorage = (storage: DurableObjectStorage): DurableObjectSessionStorage => ({
+  sql: {
+    exec: <Row>(query: string, ...bindings: ReadonlyArray<unknown>) => {
+      const cursor = storage.sql.exec(query, ...bindings);
+      const rows = cursor.toArray();
+      return {
+        one: () => {
+          const [row, ...rest] = rows;
+          if (row === undefined || rest.length > 0 || !isRow<Row>(row)) {
+            throw new Error(`expected one row, got ${rows.length}`);
+          }
+          return row;
+        },
+        toArray: () => {
+          const typed: Array<Row> = [];
+          for (const row of rows) if (isRow<Row>(row)) typed.push(row);
+          return typed;
+        },
+      };
+    },
+  },
+  transactionSync: (closure) => storage.transactionSync(closure),
+});
 
 interface Harness {
   readonly storage: ProbeStorage;
@@ -230,6 +252,26 @@ export interface TranscriptProbeResult {
   readonly info: Record<string, number>;
 }
 
+/** A realistic 10k-event log (user turns, assistant text, every other turn a tool). */
+const perfLog = (): ReadonlyArray<CommittedDurableEvent> => {
+  const log = new TestLog().configure();
+  for (let turn = 1; log.events.length < 10_000; turn += 1) {
+    log.submit({ command: turn, message: turn, text: `ping ${turn} `.repeat(20) });
+    log.startRun({ run: turn, commands: [turn] });
+    log.assistantTurn({
+      run: turn,
+      turn,
+      inference: turn,
+      message: 100_000 + turn,
+      text: `pong ${turn} `.repeat(40),
+      inputs: [turn],
+      ...(turn % 2 === 0 ? { tools: [turn] } : {}),
+    });
+    log.runCompleted(turn, [turn]);
+  }
+  return log.events.slice(0, 10_000);
+};
+
 const faultLog = conversation(3);
 const faultPrefix = faultLog.events.slice(0, 10);
 const faultBatch = faultLog.events.slice(10, 20);
@@ -239,7 +281,10 @@ const faultLater = faultLog.events.slice(20);
  * Run one named probe step against this object's storage.
  *
  * Steps: `oracle-count`, `oracle:<index>`, `fault-count`, `fault:<n>`, `build-start`,
- * `build-resume`, `activate`, `discard-and-repair`, `missed-session`, `init`.
+ * `build-resume`, `activate`, `discard-and-repair`, `missed-session`, `init`, and the
+ * measurement steps `perf-append:on|off` (10k events in two-event appends) and `perf-build`
+ * (build the `perf-append:off` object's log), which the caller times from outside because
+ * Workers clocks do not advance during synchronous execution.
  */
 export const runTranscriptProbe = (
   durableStorage: DurableObjectStorage,
@@ -484,6 +529,21 @@ export const runTranscriptProbe = (
       const log = conversation(2);
       probe.append(log.events);
       checks.equal("maintained", storedProjection(storage), reference(plain, log.events));
+      break;
+    }
+    case "perf-append": {
+      const events = perfLog();
+      const probe = harness(storage, argument === "on" ? { current: gia } : undefined);
+      for (let index = 0; index < events.length; index += 2) {
+        probe.append(events.slice(index, index + 2));
+      }
+      info.appends = events.length / 2;
+      break;
+    }
+    case "perf-build": {
+      const probe = harness(storage, { current: gia });
+      info.slices = drain(probe.service);
+      checks.equal("built", probe.service.status().converged, true);
       break;
     }
     default:

@@ -335,6 +335,17 @@ Foundational tables:
 - `_eda_reducer_checkpoints` — framework `_eda.framework.reduced-state` and app reducer checkpoints.
 - `_eda_sink_cursors` — durable sink checkpoints (cursor plus versioned sink-owned payload).
 
+Transcript tables (forward migration 2; see "Transcript history" in §14):
+
+- `_eda_transcript_meta` — one row per stored transcript **slot** (one built instance of one
+  version): version, role (`active`, `building` or `retired`), cursor, status and failure.
+- `_eda_transcript_records` — `(slot, id)` → kind, position, `updatedSeq`, flags and the stored
+  record envelope. Indexes: transcript order, ordinal allocation per anchor, `updatedSeq`, pending
+  users, and tools by assistant.
+- `_eda_transcript_aliases` — `(slot, namespace, key)` → record id; inserts only.
+- `_eda_log_incarnation` — the adapter-owned identity of this physical log.
+- `_eda_alarm_wakeups` — each alarm owner's durable wakeup (`runtime`, `transcript`).
+
 Logical durable events are canonical. The DO store may physically normalize large framework fields into sidecar tables, but `eventsAfter` reconstructs full logical events before returning them to reducers, sinks, query APIs, and live catch-up.
 
 There is intentionally no separate privileged session-state table. Framework `ReducedState` is persisted through the same reducer-checkpoint mechanism as app reducers; `_eda.framework.reduced-state` is reserved for framework-owned state, while app reducers use non-`_eda.` names.
@@ -350,7 +361,9 @@ Inside append:
 1. Insert event-log rows; SQLite allocates `seq`.
 2. Write framework sidecar bodies/projections.
 3. Update synchronous command metadata.
-4. Return committed logical events with positions.
+4. Maintain the transcript once for the batch (only newly inserted events), when the store was
+   given transcript definitions (§14 "Transcript history").
+5. Return committed logical events with positions.
 
 No `await`, model/tool calls, publishing, or external I/O may occur inside the transaction. Live publish happens after append succeeds and is owned by `SessionState`.
 
@@ -643,10 +656,10 @@ Prompt hydration preserves model-facing prefix fidelity. Durable assistant/tool 
 
 `effect-durable-agent/transcript` implements the user-visible transcript designed in
 `docs/transcript-history.md`: its contracts, its interpreter and mapping executor, maintenance
-and window reads in the in-memory store, and live delivery over transcript-window sockets (§10). The
-Cloudflare store does not maintain a transcript yet, so production hosts still derive their UI from
-the pruned `ReducedState`. The model path is unchanged:
-prompts are still built from `ReducedState`, which never reads transcript records.
+and window reads in the in-memory store and in the Cloudflare Durable Object store (which celld
+reuses), and live delivery over transcript-window sockets (§10). Hosts still render from the pruned
+`ReducedState` until they switch readers. The model path is unchanged: prompts are still built from
+`ReducedState`, which never reads transcript records.
 
 - **Records** (`src/transcript/records.ts`): `user`, `assistant` (inference or import),
   `compaction`, `tool`, `runGroup` and `sessionContext`, plus an internal `decorationBuffer` that
@@ -727,6 +740,37 @@ prompts are still built from `ReducedState`, which never reads transcript record
   and `readTranscriptMeta`. `TranscriptMaintenanceConfig` (`current`, optional `previous`) is the
   configuration a maintaining store takes at construction. `EDASessionStore` method semantics are
   unchanged.
+- **Cloudflare store** (`cf/durable-object-store.ts`, `cf/durable-object-transcript*.ts`), given
+  `DurableObjectSessionStoreOptions.transcript`:
+  - _Maintenance._ One batch-level hook inside the append transaction, after every entry, over the
+    newly inserted events only. A version is maintained there exactly when it is carried, `Ok` and
+    caught up (its cursor is the head the batch started from); anything behind is caught up by
+    builder slices, and a failed or uncarried version is never written. Planning, row decoding and
+    row encoding (serialization and the size cap) run before any write, inside an inner
+    `transactionSync` on platforms that nest transactions (workerd), which also contains the
+    writes. A throw freezes only that version (`failed` at its unchanged cursor, with `failedAt` and
+    the error) and the events still commit. celld rejects nested transactions, so there the writes
+    run in the append transaction: a write that fails after planning succeeded fails the append
+    atomically, like a failed event insert. Alerts and activations reach the host's observer only
+    after the outer transaction commits; the store keeps no in-memory transcript cache.
+  - _Versions._ Before an append or read, versions are reconciled: an empty log starts `current`
+    active at seq 0; a log written before transcripts existed starts a `current` build while reads
+    report `Building`; a build that is not `current` is retired; if the active version is not
+    `current` and no build of `current` exists, one starts (a failed build of `current` counts, so
+    it is never retried). An active version this release no longer carries is frozen, reads report
+    `UpdatingHistory` at its real cursor, and a `MissedSession` alert is raised.
+  - _Builder._ `DurableObjectTranscriptStore.runSlice` reconciles, projects at most 512 log events
+    into the building version in pages of 16 (each page's rows and cursor commit together), activates
+    the build when its cursor equals the head re-read in the same transaction (the old slot becomes
+    `retired`), and deletes at most 2,000 retired rows. All builder state is in
+    `_eda_transcript_meta`; the session object kicks the builder from its constructor and runs it
+    from its alarm and from `transcriptStatus`, never through the model runtime.
+  - _Reads._ `DurableObjectTranscriptStore` (also `.layer` for the `EDATranscriptStore` port) reads
+    windows, meta and status synchronously from storage with no runtime. A stored row this release
+    cannot decode serves an empty `Unreadable` window.
+  - _Incarnation._ Minted (UUIDv7) on first need into `_eda_log_incarnation`, or adopted from a
+    host key/value (`adoptIncarnation`), whose key the adapter also writes when it mints, so host
+    and adapter always agree. A storage wipe mints a new one.
 
 ### Current compaction implementation
 
@@ -845,6 +889,13 @@ Current production host:
 - one Durable Object instance/database stores one session;
 - host startup runs EDA schema migrations via `ctx.blockConcurrencyWhile(...)`;
 - host entrypoints expose RPC methods for submit, submitBatch, submitAndBlock, blockOnCommand, snapshot, messages, backup/destroy, alarm, and WebSocket events;
+- two storage-only RPC methods never construct the model runtime, reducers or sinks:
+  `transcriptStatus` advances pending transcript build work by up to 16 bounded slices and returns
+  the status (incarnation, head, current version, every version's meta, `pending`, `converged`) a
+  host backfill records; `readTranscriptWindow` serves SSR and CLI reads. Hosts authorize callers;
+- host transcript options (`EDASessionDurableObjectOptions.transcript`): `definitions`
+  (default: no host mappings), `adoptIncarnationKey` (Gia: `gia.log_incarnation` in
+  `ctx.storage.kv`), `onAlert` (default `console.error`) and `onActivated`;
 - `EDASessionDurableObject` owns only Cloudflare callbacks, upgrade wiring, and object identity;
 - `EDASessionController` coordinates public session use cases without owning platform state;
 - `EDASessionRuntime` owns lazy `ManagedRuntime` construction, disposal, and keep-alive;
@@ -852,7 +903,12 @@ Current production host:
   and interpretation of core delivery actions;
 - runtime construction retries after a failed hydration/build instead of pinning the warm isolate to a rejected promise;
 - `EDAKeepAlive` integrates with Durable Object alarms/leases so active control/model/sink work can keep the object awake enough to finish or reschedule;
-- session destruction shuts down in-memory keep-alive state and deletes the Durable Object alarm before deleting storage;
+- the Durable Object alarm is shared through `DurableObjectAlarmScheduler`: each owner (`runtime`
+  for keep-alive and run-scheduling redelivery, `transcript` for the builder) keeps a durable
+  wakeup row and the platform alarm is set to the earliest, so neither owner deletes or postpones the
+  other's. The keep-alive uses its owner's view unchanged. `alarm()` runs builder slices for a
+  builder wakeup and the runtime only for its own wakeup or an alarm no owner recorded;
+- session destruction shuts down in-memory keep-alive state and deletes the Durable Object alarm before deleting storage, then recreates the empty tables (a new log and incarnation);
 - WebSocket hibernation restores exact ACK-window state from an Effect Schema attachment.
 
 Core publishes through the infallible `SessionEventObserver` port supplied at layer construction.
@@ -924,8 +980,6 @@ EDA currently provides:
 EDA currently does **not** provide:
 
 - storage pruning/BaseState;
-- a maintained transcript or transcript window reads in the Cloudflare store (the in-memory store
-  maintains and serves one);
 - coalesced live-state snapshots for raw event sockets (transcript sockets carry active content);
 - direct tool ephemerals or per-tool retry policy objects;
 - provider-executed tool projection/replay;

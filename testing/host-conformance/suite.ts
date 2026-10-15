@@ -624,5 +624,41 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         await host.stop();
       }
     }, 600_000);
+
+    // Opt-in measurement (design §13 gate 6): EDA_TRANSCRIPT_PERF=true.
+    it.skipIf(process.env.EDA_TRANSCRIPT_PERF !== "true")(
+      "measures append overhead and build cost at 10k events",
+      async () => {
+        const host = await startHost(kind);
+        const timed = async (object: string, step: string) => {
+          const started = performance.now();
+          const result = await decodeJson<TranscriptProbeResult>(
+            await fetch(
+              `${host.baseUrl}/transcript-probe/${kind}-${object}/${encodeURIComponent(step)}`,
+              {
+                signal: AbortSignal.timeout(600_000),
+              },
+            ),
+          );
+          expect(result.failures).toEqual([]);
+          return { ms: performance.now() - started, info: result.info };
+        };
+        try {
+          await timed("perf-warm", "perf-append:on");
+          const off = await timed("perf-off", "perf-append:off");
+          const on = await timed("perf-on", "perf-append:on");
+          const build = await timed("perf-off", "perf-build");
+          const appends = on.info.appends ?? 1;
+          process.stderr.write(
+            `\n[${kind}] 10k events in ${appends} appends: without transcript ${off.ms.toFixed(0)} ms, ` +
+              `with ${on.ms.toFixed(0)} ms (+${(((on.ms - off.ms) / appends) * 1000).toFixed(0)} us/append); ` +
+              `build ${build.ms.toFixed(0)} ms in ${build.info.slices} slices\n`,
+          );
+        } finally {
+          await host.stop();
+        }
+      },
+      1_200_000,
+    );
   });
 };
