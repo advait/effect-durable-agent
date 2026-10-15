@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.0-alpha.24
+
+Transcript history, part 3: Durable Object storage. **Development release: do not adopt in
+production.** In this release, maintenance and builds run for every session of every host;
+0.1.0-alpha.25 makes them opt-in per session and bounds builder retries.
+
+- `effect-durable-agent-cloudflare`: the Durable Object session store maintains transcripts inside
+  the append transaction (forward migration 2: `_eda_transcript_meta`, `_eda_transcript_records`,
+  `_eda_transcript_aliases`, `_eda_log_incarnation`, `_eda_alarm_wakeups`). A projection failure
+  freezes only that version; events still commit. Where the platform rejects nested
+  `transactionSync` (celld), plans are staged before any write and a write failure fails the
+  append atomically.
+- `DurableObjectTranscriptStore` (runtime-free windows, meta and status; the `EDATranscriptStore`
+  port) and `DurableObjectTranscriptBuilder` (bounded slices, activation at the head, old-row
+  cleanup, stale-build discard, missed-session safety net).
+- `EDASessionTranscriptOptions` on the Durable Object: `definitions`
+  (`TranscriptMaintenanceConfig`), `adoptIncarnationKey` (adopt a host's `ctx.storage.kv`
+  incarnation, e.g. Gia's `gia.log_incarnation`), `onAlert`, `onActivated`.
+- Storage-only RPCs `transcriptStatus` (advances builds; for host backfills) and
+  `readTranscriptWindow` (SSR, CLIs); neither builds the model runtime nor starts sinks.
+- Shared alarms (`durable-object-alarms`): runtime and builder each keep a durable wakeup, and an
+  alarm armed by an older release is adopted as the runtime's.
+- `transcriptSockets: {}` serves `?stream=transcript` from the object's own store; activating a
+  rebuilt version refreshes every transcript socket, held or hibernated.
+- Destroying a session closes hibernated transcript sockets (4009); the client-frame limit counts
+  UTF-8 bytes.
+- New `effect-durable-agent/testkit/transcript` test helpers.
+
 ## 0.1.0-alpha.23
 
 Transcript history, part 2: live delivery. Inert until a host passes a transcript store; the raw
