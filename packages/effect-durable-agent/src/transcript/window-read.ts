@@ -140,12 +140,17 @@ export const readTranscriptWindowFrom = (
   // Latest and Page(before) keep the newest records when trimming; the others keep the oldest.
   const keepNewest =
     selector._tag === "Latest" || (selector._tag === "Page" && selector.direction === "before");
-  let top = selected.map((record) => withBodyRefs(record, limits.maxInlineBodyBytes));
-  let dependencies = collectDependencies(source, top, limits.maxInlineBodyBytes);
-  while (top.length > 1 && windowBytes(top, dependencies) > limits.maxBytes) {
-    top = keepNewest ? top.slice(1) : top.slice(0, -1);
-    dependencies = collectDependencies(source, top, limits.maxInlineBodyBytes);
-  }
+  const kept = trimToBudget(
+    dependencyGroups(
+      source,
+      selected.map((record) => withBodyRefs(record, limits.maxInlineBodyBytes)),
+      limits.maxInlineBodyBytes,
+    ),
+    limits.maxBytes,
+    keepNewest,
+  );
+  const top = kept.top;
+  const dependencies = flattenDependencies(kept);
 
   const first = top[0];
   const last = top[top.length - 1];
@@ -226,60 +231,144 @@ const emptySelectionNeighbours = (
   }
 };
 
-/** Session context, then each record's run group and tools in part order, then pending users. */
-const collectDependencies = (
+/**
+ * A selection with its dependencies grouped by owner: the session context first, each top-level
+ * record's run group and tools in part order, then pending users. A record may appear in several
+ * groups; the window carries it once, where it first appears.
+ */
+interface DependencyGroups {
+  readonly top: ReadonlyArray<TranscriptTopLevelRecord>;
+  readonly leading: ReadonlyArray<TranscriptRecord>;
+  /** Dependencies of `top[i]`, in order. */
+  readonly perTop: ReadonlyArray<ReadonlyArray<TranscriptRecord>>;
+  readonly trailing: ReadonlyArray<TranscriptRecord>;
+}
+
+const dependencyGroups = (
   source: TranscriptWindowSource,
   top: ReadonlyArray<TranscriptTopLevelRecord>,
   maxInlineBodyBytes: number,
-): ReadonlyArray<TranscriptRecord> => {
-  const dependencies = new Map<string, TranscriptRecord>();
-  const add = (record: TranscriptRecord | undefined) => {
-    if (record !== undefined && !dependencies.has(record.id)) {
-      dependencies.set(record.id, withBodyRefs(record, maxInlineBodyBytes));
-    }
-  };
-  add(source.record(transcriptRecordId.session));
-  for (const record of top) {
-    switch (record.kind) {
-      case "assistant": {
-        if (record.runGroupId !== undefined) add(source.record(record.runGroupId));
-        const partOrder = new Map(
-          record.parts.flatMap((part, index) =>
-            part._tag === "ToolCall" && part.toolId !== undefined ? [[part.toolId, index]] : [],
-          ),
-        );
-        const tools = [...source.toolsOf(record.id)].sort(
+): DependencyGroups => {
+  const referenced = (records: ReadonlyArray<TranscriptRecord | undefined>) =>
+    records.flatMap((record) =>
+      record === undefined ? [] : [withBodyRefs(record, maxInlineBodyBytes)],
+    );
+  return {
+    top,
+    leading: referenced([source.record(transcriptRecordId.session)]),
+    perTop: top.map((record) => referenced(recordDependencies(source, record))),
+    trailing: referenced(
+      [...source.pendingUsers()]
+        .filter(isPendingTranscriptUserRecord)
+        .sort(
           (left, right) =>
-            (partOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
-              (partOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER) ||
+            left.submittedSeq - right.submittedSeq ||
             (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
-        );
-        tools.forEach(add);
-        break;
-      }
-      case "user": {
-        // The consuming run's group, or, for a submission committed at its own run's start (the
-        // interrupt path, which records no run on the user), the group that owns its command.
-        const runId = record.state._tag === "Consumed" ? record.state.runId : undefined;
-        const groupId =
-          (runId === undefined ? undefined : source.alias("runId", runId)) ??
-          source.alias("runCommand", record.commandId);
-        if (groupId !== undefined) add(source.record(groupId));
-        break;
-      }
-      case "compaction":
-        break;
+        ),
+    ),
+  };
+};
+
+/** One top-level record's run group and tools, in part order. */
+const recordDependencies = (
+  source: TranscriptWindowSource,
+  record: TranscriptTopLevelRecord,
+): ReadonlyArray<TranscriptRecord | undefined> => {
+  switch (record.kind) {
+    case "assistant": {
+      const partOrder = new Map(
+        record.parts.flatMap((part, index) =>
+          part._tag === "ToolCall" && part.toolId !== undefined ? [[part.toolId, index]] : [],
+        ),
+      );
+      const tools = [...source.toolsOf(record.id)].sort(
+        (left, right) =>
+          (partOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+            (partOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER) ||
+          (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+      );
+      return [
+        ...(record.runGroupId === undefined ? [] : [source.record(record.runGroupId)]),
+        ...tools,
+      ];
     }
+    case "user": {
+      // The consuming run's group, or, for a submission committed at its own run's start (the
+      // interrupt path, which records no run on the user), the group that owns its command.
+      const runId = record.state._tag === "Consumed" ? record.state.runId : undefined;
+      const groupId =
+        (runId === undefined ? undefined : source.alias("runId", runId)) ??
+        source.alias("runCommand", record.commandId);
+      return groupId === undefined ? [] : [source.record(groupId)];
+    }
+    case "compaction":
+      return [];
   }
-  [...source.pendingUsers()]
-    .filter(isPendingTranscriptUserRecord)
-    .sort(
-      (left, right) =>
-        left.submittedSeq - right.submittedSeq ||
-        (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
-    )
-    .forEach(add);
+};
+
+/** Each dependency once, where it first appears. */
+const flattenDependencies = (groups: DependencyGroups): ReadonlyArray<TranscriptRecord> => {
+  const dependencies = new Map<string, TranscriptRecord>();
+  for (const record of [...groups.leading, ...groups.perTop.flat(), ...groups.trailing]) {
+    if (!dependencies.has(record.id)) dependencies.set(record.id, record);
+  }
   return Array.from(dependencies.values());
+};
+
+/**
+ * Drop records from the far end of the selection until the window (records and their
+ * dependencies) fits `maxBytes`, keeping at least one.
+ *
+ * Each record is measured once. A dependency's bytes count while any kept record (or the
+ * window itself, for the session context and pending users) needs it, so dropping a record
+ * subtracts its own bytes and those of the dependencies only it needed. The result equals
+ * re-measuring the whole window after every drop, in time linear in the selection.
+ */
+const trimToBudget = (
+  groups: DependencyGroups,
+  maxBytes: number,
+  keepNewest: boolean,
+): DependencyGroups => {
+  const { top } = groups;
+  if (top.length <= 1) return groups;
+  const users = new Map<string, number>();
+  const sizes = new Map<string, number>();
+  const sizeOf = (record: TranscriptRecord) => {
+    const known = sizes.get(record.id);
+    if (known !== undefined) return known;
+    const bytes = recordBytes(record);
+    sizes.set(record.id, bytes);
+    return bytes;
+  };
+  let total = 0;
+  const need = (record: TranscriptRecord) => {
+    const count = users.get(record.id) ?? 0;
+    if (count === 0) total += sizeOf(record);
+    users.set(record.id, count + 1);
+  };
+  const release = (record: TranscriptRecord) => {
+    const count = (users.get(record.id) ?? 0) - 1;
+    if (count === 0) total -= sizeOf(record);
+    users.set(record.id, count);
+  };
+  // Within one record a dependency counts once, as the window carries it once.
+  const ownDependencies = groups.perTop.map((records) => [
+    ...new Map(records.map((record) => [record.id, record])).values(),
+  ]);
+  const topBytes = top.map(recordBytes);
+  for (const record of [...groups.leading, ...groups.trailing]) need(record);
+  top.forEach((_, index) => {
+    total += topBytes[index] ?? 0;
+    ownDependencies[index]?.forEach(need);
+  });
+  let from = 0;
+  let to = top.length;
+  while (to - from > 1 && total > maxBytes) {
+    const dropped = keepNewest ? from++ : --to;
+    total -= topBytes[dropped] ?? 0;
+    ownDependencies[dropped]?.forEach(release);
+  }
+  return { ...groups, top: top.slice(from, to), perTop: groups.perTop.slice(from, to) };
 };
 
 const encoder = new TextEncoder();
@@ -290,11 +379,8 @@ const jsonBytes = (value: unknown): number => {
   return json === undefined ? 0 : encoder.encode(json).length;
 };
 
-const windowBytes = (
-  top: ReadonlyArray<TranscriptRecord>,
-  dependencies: ReadonlyArray<TranscriptRecord>,
-): number =>
-  [...top, ...dependencies].reduce((total, record) => total + jsonBytes(encodeRecord(record)), 0);
+/** A record's size in the window, as it is encoded on the wire. */
+const recordBytes = (record: TranscriptRecord): number => jsonBytes(encodeRecord(record));
 
 const bodyRef = (body: TranscriptBody, maxInlineBodyBytes: number): TranscriptBody => {
   if (body._tag === "Ref") return body;
