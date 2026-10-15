@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { CommandId, InferenceId, RunId, ToolCallId } from "../types/core";
+import { CommandId, InferenceId, RunId, SequenceNumber, ToolCallId } from "../types/core";
 import type { InMemoryTranscriptVersion } from "./in-memory";
 import { planTranscriptBatch } from "./interpreter";
 import {
@@ -391,6 +391,64 @@ describe("transcript interpreter", () => {
       { _tag: "Text", text: "imported" },
       { _tag: "Unknown", partType: "tool-call" },
     ]);
+  });
+
+  it("normalizes model settings to JSON instead of storing an unwritable row", () => {
+    const log = new TestLog();
+    log.append("SessionConfigured", {
+      modelSelection: { provider: "test", modelId: "m", settings: { seed: 7n } },
+    });
+    log.submit({ command: 1, message: 1, text: "hi" });
+    log.append("RunStarted", {
+      runId: ids.run(1),
+      commandIds: [ids.command(1)],
+      modelSelection: { provider: "test", modelId: "m", settings: { seed: 7n } },
+      trace: {
+        root: {
+          traceId: "0123456789abcdef0123456789abcdef",
+          spanId: "0123456789abcdef",
+          sampled: true,
+          tracestate: null,
+        },
+        links: [],
+      },
+    });
+    const version = projectBatches(plain, [log.events]);
+    expect(version.meta.status._tag).toBe("Ok");
+    const session = record(version, transcriptRecordId.session);
+    expect(session.kind === "sessionContext" && session.modelSelection).toEqual({
+      provider: "test",
+      modelId: "m",
+    });
+  });
+
+  it("refuses to plan a record no store could write", () => {
+    const { events } = transcriptScenarios()[0] ?? { events: [] };
+    const version = projectBatches(plain, [events.slice(0, 3)]);
+    const pending = user(version, 1);
+    // A corrupted stored row: a waiting submission with a position.
+    const corrupted = { ...pending, position: { anchorSeq: SequenceNumber.make(1), ordinal: 0 } };
+    const promote = new TestLog().append("UserMessagePromoted", {
+      commandId: ids.command(9),
+      messageId: ids.message(1),
+      from: "queue",
+      to: "steer",
+    }).events;
+    expect(() =>
+      planTranscriptBatch(
+        {
+          cursor: version.meta.cursor,
+          record: (id) => (id === pending.id ? corrupted : version.records.get(id)),
+          alias: (namespace, key) => version.aliases.get(`${namespace}\u0000${key}`),
+          nextOrdinal: () => 0,
+        },
+        promote.map((entry) => ({
+          ...entry,
+          position: { ...entry.position, seq: SequenceNumber.make(4) },
+        })),
+        plain,
+      ),
+    ).toThrow(/does not satisfy the transcript record schema/);
   });
 
   it("ignores events without transcript meaning", () => {

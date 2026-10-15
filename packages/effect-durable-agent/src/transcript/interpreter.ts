@@ -18,7 +18,7 @@ import {
   effectDurableAgentNamespace,
   FailurePayload,
   ToolName,
-  type ModelSelectionPayload,
+  ModelSelectionPayload,
 } from "../types/events/envelope";
 import {
   assistantMessageCommittedEventType,
@@ -97,6 +97,7 @@ import {
   type TranscriptCompactionRecord,
   type TranscriptPosition,
   TranscriptRecord,
+  TranscriptRecordFromEnvelope,
   type TranscriptRecordId,
   type TranscriptRunGroupRecord,
   type TranscriptRunMember,
@@ -203,9 +204,9 @@ export class TranscriptBatch {
     // Every planned record must satisfy the strict stored-row schema: an invalid record fails
     // this version's projection (freezing it) rather than becoming a row no reader can decode.
     for (const record of this.records.values()) {
-      if (!isValidRecord(record)) {
+      if (!isStorableRecord(record)) {
         throw new TranscriptProjectionError({
-          message: `planned record ${record.id} does not satisfy the transcript record schema`,
+          message: `planned record ${record.id} does not satisfy the transcript record schema or is not JSON`,
         });
       }
     }
@@ -221,8 +222,20 @@ const aliasKey = (namespace: TranscriptAliasNamespace, key: string) => `${namesp
 
 const matchesRecordSchema = Schema.is(TranscriptRecord);
 
-/** Whether a record satisfies the stored-row schema, filters included. */
-const isValidRecord = (record: TranscriptRecord): boolean => matchesRecordSchema(record);
+const encodeRecord = Schema.encodeSync(TranscriptRecordFromEnvelope);
+
+/**
+ * Whether a record satisfies the stored-row schema, filters included, and its envelope is JSON:
+ * exactly what a store can write and every reader can encode.
+ */
+const isStorableRecord = (record: TranscriptRecord): boolean => {
+  if (!matchesRecordSchema(record)) return false;
+  try {
+    return JSON.stringify(encodeRecord(record)) !== undefined;
+  } catch {
+    return false;
+  }
+};
 
 const kindMismatch = (id: string, expected: string, actual: string) =>
   new TranscriptProjectionError({ message: `record ${id} is ${actual}, expected ${expected}` });
@@ -266,7 +279,11 @@ const interpretEvent = (
     case sessionConfiguredEventType: {
       const session = batch.session(seq);
       if (session.modelSelection === undefined) {
-        batch.put({ ...session, updatedSeq: seq, modelSelection: event.payload.modelSelection });
+        batch.put({
+          ...session,
+          updatedSeq: seq,
+          modelSelection: jsonModelSelection(event.payload.modelSelection),
+        });
       }
       return;
     }
@@ -643,7 +660,7 @@ const interpretEvent = (
         at,
         event.payload.runId,
         event.payload.commandIds,
-        event.payload.modelSelection,
+        jsonModelSelection(event.payload.modelSelection),
       );
       return;
     }
@@ -1043,6 +1060,18 @@ const inlineBody = (
   return byteLength <= transcriptStoredInlineBodyLimit
     ? { _tag: "Inline", value: normalized, source: { seq, path } }
     : { _tag: "Ref", source: { seq, path }, byteLength };
+};
+
+/** A model selection as the JSON a persisted log holds; settings with no JSON form are dropped. */
+const jsonModelSelection = (selection: ModelSelectionPayload): ModelSelectionPayload => {
+  try {
+    const json = JSON.stringify(selection);
+    const normalized: unknown = json === undefined ? undefined : JSON.parse(json);
+    if (Schema.is(ModelSelectionPayload)(normalized)) return normalized;
+  } catch {
+    // Fall through to the fields every selection has.
+  }
+  return { provider: selection.provider, modelId: selection.modelId };
 };
 
 /** A failure as the JSON a persisted log holds; details with no JSON form are dropped. */

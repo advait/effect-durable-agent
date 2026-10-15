@@ -219,7 +219,8 @@ export const replayBufferedDecorations = (
   for (const fallback of batch.definition.mappings.userFallbacks) {
     const source = session.decorations[fallback.fromSession];
     if (decorations[fallback.to] === undefined && source?._tag === "Value") {
-      decorations = { ...decorations, [fallback.to]: source };
+      const next = { ...decorations, [fallback.to]: source };
+      if (jsonBytes(next) <= transcriptMappingBounds.maxDecorationBytes) decorations = next;
     }
   }
   return decorations === decorated.decorations

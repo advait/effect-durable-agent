@@ -189,7 +189,8 @@ Ownership and limits:
   `decorations:<association>:<key>` record (bounded per key), applies them in arrival order when
   the user record is created, and drains the buffer. Host-declared **user fallbacks** then copy
   session decorations onto a user record created without them, in declaration order, first present
-  wins (Gia: the latest author, else the session owner); a host-classified record takes none.
+  wins (Gia: the latest author, else the session owner); a record already classified when it is
+  created (its classification preceded its command, as Gia's notices do) takes none.
 
 The first host's coverage (Gia: author identity with its span-then-owner fallback, attachments,
 references, subagent notice classification) must be demonstrated against its historical fixtures

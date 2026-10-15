@@ -59,7 +59,12 @@ const fingerprints = (scenario: TranscriptScenario): ScenarioFingerprints => {
   const projected = projectBatches(definitionFor(scenario.name), [scenario.events]);
   const reduced = reduceCommittedEvents(scenario.events);
   return {
-    transcript: sha256Hex(projectionJson(projected.records.values())),
+    transcript: sha256Hex(
+      json({
+        records: projectionJson(projected.records.values()),
+        aliases: normalizedProjection(projected).aliases,
+      }),
+    ),
     prompt: sha256Hex(
       json({
         transcript: durableMessageTranscript(reduced),

@@ -662,8 +662,8 @@ prompts are still built from `ReducedState`, which never reads transcript record
   key, or an operation that would take a record's decorations past `maxDecorationBytes` skips only
   that operation; an unresolvable target skips only its mapping. Decorations whose user record does
   not exist yet are parked in a bounded `decorations:<association>:<key>` record, applied in arrival
-  order when the record is created, and then drained. The declared user fallbacks follow, except
-  for host-classified records.
+  order when the record is created, and then drained. The declared user fallbacks follow, within
+  the byte budget, except for a record already classified when it is created.
 - **Plan validation**: every record a plan writes must satisfy the strict stored-row schema;
   anything else fails that version's projection (freezing it) instead of producing an unreadable
   row. Failures and bodies are normalized to JSON the same way.
