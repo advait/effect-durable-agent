@@ -135,12 +135,44 @@ export const TranscriptReadiness = Schema.Union([KnownReadiness, UnrecognizedRea
 export type TranscriptReadiness = typeof TranscriptReadiness.Type;
 
 /**
+ * One live part of the inference streaming now.
+ *
+ * `id` is stable for the life of the part (`text:<providerPartId>`, `reasoning:<providerPartId>`,
+ * `tool:<toolCallId>`), so a client keys a streaming part by it and replaces it in place as it
+ * grows. `paramsText` is the tool-call parameter text streamed so far; it is speculative until
+ * the call is sealed into a tool record.
+ */
+export const TranscriptActivePart = Schema.Struct({
+  id: Schema.NonEmptyString,
+  part: TranscriptAssistantPart,
+  paramsText: Schema.optionalKey(Schema.String),
+}).check(
+  Schema.makeFilter(
+    (active) =>
+      (active.part._tag === "Text"
+        ? active.id.startsWith("text:")
+        : active.part._tag === "Reasoning"
+          ? active.id.startsWith("reasoning:")
+          : active.part._tag === "ToolCall"
+            ? active.id.startsWith("tool:")
+            : true) || "a live part's id names its kind",
+  ),
+  Schema.makeFilter(
+    (active) =>
+      active.paramsText === undefined ||
+      active.part._tag === "ToolCall" ||
+      "only a tool call streams parameter text",
+  ),
+);
+export type TranscriptActivePart = typeof TranscriptActivePart.Type;
+
+/**
  * Accumulated parts of the inference streaming now, captured at the same publication boundary as
  * the window. Owned by the live runtime; storage-level reads never include it.
  */
 export const TranscriptActiveContent = Schema.Struct({
   assistantId: InferenceAssistantRecordId,
-  parts: Schema.Array(TranscriptAssistantPart),
+  parts: Schema.Array(TranscriptActivePart),
 });
 export type TranscriptActiveContent = typeof TranscriptActiveContent.Type;
 

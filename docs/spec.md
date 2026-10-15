@@ -411,6 +411,45 @@ The current WebSocket transport is described in detail in `docs/websocket-protoc
 - Slow subscribers are closed independently; they do not backpressure `SessionState`, the durable append path, model streams, tools, sinks, or other subscribers.
 - Cloudflare WebSocket attachments store the full delivery checkpoint, including in-flight frame
   receipts, so ACK validation remains strict after hibernation.
+- A socket upgraded with `?stream=transcript` carries the transcript-window stream instead of raw
+  events (below). Raw event sockets are unchanged.
+
+### Transcript-window sockets
+
+Hosts that pass `transcriptSockets: { transcriptStore }` to the controller (or Durable Object base)
+serve the ordered transcript stream of `docs/transcript-history.md` §9 on the existing transport
+(hello, ACK, application ping, flow control, hibernation). The wire is in
+`docs/websocket-protocol.md`.
+
+- **Window data source** (`src/transcript/subscription.ts`): `readTranscriptSubscription` answers a
+  `Subscribe`, `Page`, `Retain` or `Refresh` (committed changes) with one window read at one cut
+  through the `EDATranscriptStore` port; helper reads that find a page's edge are never served.
+  Coverage is contiguous and bounded by the subscription limits (300 records by default): paging
+  back evicts the newest records, paging forward the oldest, and a tail that outgrows the bound keeps
+  its newest. `planTranscriptUpdate` turns the read into one `TranscriptUpdate`: a `replace`, or a
+  `patch` relative to the cut the client last applied (changed or newly covered records, the
+  complete dependency membership, coverage). Either way the client ends at exactly one complete cut.
+- **Active content** (`src/transcript/active-content.ts`): a pure fold over the published stream
+  accumulates the one active inference's parts under stable part ids (`text:`, `reasoning:`,
+  `tool:`), associating provider-part deltas with the latest `InferenceStarted` (publication is
+  serialized by the append gate). It retires on `InferenceCompleted`/`InferenceFailed` (commit,
+  partial plus failure, empty success, recovery failure) and on its turn's terminal.
+- **Transport** (`src/websocket/transcript-delivery.ts`): updates within `maxFrameBytes` are one
+  frame; larger ones are chunked with a completion marker, staged in memory up to 8 MiB, and pumped
+  as ACK receipts free the 16-frame window. The ACK's `appliedUpdateSeq` is the applied cut and may
+  name only a fully sent update.
+- **Cloudflare adapter** (`cf/websocket/transcript-sockets.ts`): serializes each subscriber; folds
+  every publication into the active-content accumulator (the publication fence) and serves a window
+  read only at exactly the accumulator's published head (a read that resolves behind or ahead of
+  publication is re-read; a commit published during a read is never lost); coalesces changed
+  live content to a display cadence (50 ms) without a store read; persists its checkpoint before
+  every send. Window reads are scheduled off the append gate, so subscribers never backpressure
+  appends. A socket that wakes from hibernation mid-transfer is closed with `4009`; an idle one
+  resumes from its persisted subscription; destroying the session drops live content and
+  closes the transcript sockets the isolate holds with `4009`. Transcript sockets never prepare the model runtime.
+- **Client reference store** (`src/websocket/transcript-client.ts`): pure helpers that assemble
+  chunks, apply complete updates only, evict by coverage, produce ACKs, and build
+  `subscribe`/`page`/`retain` requests (including the SSR handoff from a window).
 
 ### Active-turn ephemeral replay
 
@@ -603,9 +642,10 @@ Prompt hydration preserves model-facing prefix fidelity. Durable assistant/tool 
 ### Transcript history
 
 `effect-durable-agent/transcript` implements the user-visible transcript designed in
-`docs/transcript-history.md`: its contracts, its interpreter and mapping executor, and maintenance
-and window reads in the in-memory store. The Cloudflare store does not maintain a transcript yet, so
-production hosts still derive their UI from the pruned `ReducedState`. The model path is unchanged:
+`docs/transcript-history.md`: its contracts, its interpreter and mapping executor, maintenance
+and window reads in the in-memory store, and live delivery over transcript-window sockets (§10). The
+Cloudflare store does not maintain a transcript yet, so production hosts still derive their UI from
+the pruned `ReducedState`. The model path is unchanged:
 prompts are still built from `ReducedState`, which never reads transcript records.
 
 - **Records** (`src/transcript/records.ts`): `user`, `assistant` (inference or import),
@@ -875,6 +915,8 @@ EDA currently provides:
 - best-effort ephemeral sinks;
 - Cloudflare Durable Object SQLite store and WebSocket host;
 - reconnect-safe `eventsAfter` merged stream;
+- transcript-window sockets: ordered complete-cut updates, paging, retention, chunking, coalesced
+  active content and a publication fence, over any `EDATranscriptStore`;
 - deterministic recovery of incomplete durable lifecycles;
 - model-context compaction/rebase without storage pruning;
 - testkit layers for in-memory model/store/host-style tests.
@@ -884,7 +926,7 @@ EDA currently does **not** provide:
 - storage pruning/BaseState;
 - a maintained transcript or transcript window reads in the Cloudflare store (the in-memory store
   maintains and serves one);
-- coalesced live-state snapshots for reconnect;
+- coalesced live-state snapshots for raw event sockets (transcript sockets carry active content);
 - direct tool ephemerals or per-tool retry policy objects;
 - provider-executed tool projection/replay;
 - durable stdout/stderr chunks or file-change artifacts for sandbox tools;
