@@ -1,5 +1,6 @@
 import * as Prompt from "effect/ai/Prompt";
 import * as AIResponse from "effect/ai/Response";
+import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import { ModelResolver } from "effect-durable-agent/services/model-resolver";
@@ -16,9 +17,31 @@ import { encodeEdaRpcCommand } from "../../packages/effect-durable-agent-cloudfl
 
 declare const EDA_CONFORMANCE_BLOCK_MODEL: boolean;
 
-interface ConformanceEnv {
-  readonly EDA_SESSION: DurableObjectNamespace<EDASessionDurableObject>;
+/** A conformance session object that also reports whether its model runtime was built. */
+type ConformanceSession = EDASessionDurableObject & {
+  readonly runtimeBuilds: () => Promise<number>;
+};
+
+/** Storage-level transcript probe object; see `transcript-probe.ts`. */
+interface TranscriptProbeObject {
+  readonly probe: (step: string) => Promise<{
+    readonly failures: ReadonlyArray<string>;
+    readonly info: Record<string, number>;
+  }>;
 }
+
+interface ConformanceEnv {
+  readonly EDA_SESSION: DurableObjectNamespace<ConformanceSession>;
+  readonly TRANSCRIPT_PROBE: DurableObjectNamespace<
+    TranscriptProbeObject & Rpc.DurableObjectBranded
+  >;
+}
+
+/**
+ * Model runtimes built in this isolate. The model resolver layer is part of every runtime, so a
+ * storage-only entry point that leaves this unchanged did not start the runtime or its sinks.
+ */
+export const conformanceRuntimeBuilds = { count: 0 };
 
 const usage = () =>
   new AIResponse.Usage({
@@ -35,9 +58,16 @@ const finishedStream = (text: string) =>
 /** Deterministic model and runtime configuration shared by both real-host fixtures. */
 export const conformanceHostOptions = (): EDASessionDurableObjectOptions => ({
   config: { modelSelection: { provider: "conformance", modelId: "fixed-pong" } },
-  modelResolverLayer: ModelResolver.Fixed.pipe(
-    Layer.provide(
-      makeLanguageModelLayer(EDA_CONFORMANCE_BLOCK_MODEL ? Stream.never : finishedStream("pong")),
+  modelResolverLayer: Layer.merge(
+    ModelResolver.Fixed.pipe(
+      Layer.provide(
+        makeLanguageModelLayer(EDA_CONFORMANCE_BLOCK_MODEL ? Stream.never : finishedStream("pong")),
+      ),
+    ),
+    Layer.effectDiscard(
+      Effect.sync(() => {
+        conformanceRuntimeBuilds.count += 1;
+      }),
     ),
   ),
 });
@@ -60,7 +90,16 @@ export const conformanceWorker = {
       return json({ ok: true });
     }
 
-    const match = /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy)\/?$/.exec(url.pathname);
+    const probe = /^\/transcript-probe\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+    if (probe !== null) {
+      const [, objectName = "", step = ""] = probe;
+      return json(await env.TRANSCRIPT_PROBE.getByName(objectName).probe(decodeURIComponent(step)));
+    }
+
+    const match =
+      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|runtime-builds)\/?$/.exec(
+        url.pathname,
+      );
     if (match === null) {
       return json({ error: "Not found" }, 404);
     }
@@ -93,6 +132,18 @@ export const conformanceWorker = {
       }
       await session.destroySession(scoped);
       return new Response(null, { status: 204 });
+    }
+
+    if (operation === "transcript-status") {
+      return json(await session.transcriptStatus(scoped));
+    }
+    if (operation === "transcript") {
+      return json(
+        await session.readTranscriptWindow({ ...scoped, selector: { _tag: "Latest", count: 100 } }),
+      );
+    }
+    if (operation === "runtime-builds") {
+      return json({ count: await session.runtimeBuilds() });
     }
 
     if (operation === "snapshot") {

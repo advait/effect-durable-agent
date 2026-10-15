@@ -30,6 +30,26 @@ interface MessageResult {
   };
 }
 
+interface TranscriptProbeResult {
+  readonly failures: ReadonlyArray<string>;
+  readonly info: Record<string, number>;
+}
+
+interface TranscriptStatus {
+  readonly incarnation: string;
+  readonly headSeq: number;
+  readonly converged: boolean;
+  readonly versions: ReadonlyArray<{ readonly cursor: number }>;
+}
+
+interface TranscriptRead {
+  readonly _tag: string;
+  readonly window: {
+    readonly readiness: { readonly _tag: string };
+    readonly records: ReadonlyArray<{ readonly kind: string }>;
+  };
+}
+
 interface EventsFrame {
   readonly _tag: "events";
   readonly durableThroughSeq: number;
@@ -204,8 +224,9 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
           CELLD_ADDR: `127.0.0.1:${port}`,
           CELLD_INTERNAL_ADDR: `127.0.0.1:${internalPort}`,
           CELLD_TEST_DATA_DIR: dataDirectory,
-          CELLD_TEST_DO_BINDINGS: "EDA_SESSION=EDAConformanceSession",
-          CELLD_TEST_DO_CLASSES: "EDAConformanceSession",
+          CELLD_TEST_DO_BINDINGS:
+            "EDA_SESSION=EDAConformanceSession,TRANSCRIPT_PROBE=EDATranscriptProbe",
+          CELLD_TEST_DO_CLASSES: "EDAConformanceSession,EDATranscriptProbe",
           CELLD_TEST_SCRIPT_PATH: celldBundle!,
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -521,5 +542,87 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         await host.stop();
       }
     }, 240_000);
+
+    it("maintains transcripts in the real platform's transactions and serves them storage-only", async () => {
+      const host = await startHost(kind);
+      const get = async <A>(path: string): Promise<A> =>
+        await decodeJson<A>(
+          await fetch(`${host.baseUrl}${path}`, { signal: AbortSignal.timeout(60_000) }),
+        );
+      const probe = (object: string, step: string) =>
+        get<TranscriptProbeResult>(
+          `/transcript-probe/${kind}-${object}/${encodeURIComponent(step)}`,
+        );
+      const sessionId =
+        kind === "cloudflare"
+          ? "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b7a"
+          : "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b7a";
+      try {
+        // The interpretation oracle, through the real nested transactions.
+        const { info: oracle } = await probe("oracle-count", "oracle-count");
+        expect(oracle.scenarios).toBeGreaterThan(10);
+        for (let index = 0; index < (oracle.scenarios ?? 0); index += 1) {
+          expect((await probe(`oracle-${index}`, `oracle:${index}`)).failures).toEqual([]);
+        }
+
+        // A projection failure at every statement of the inner transaction, each in a fresh
+        // object: events commit, the projection rolls back, and the version freezes for good.
+        // Where the platform nests transactions (workerd) even a failing write only freezes the
+        // version; where it does not (celld) a failing write fails the append atomically.
+        const { info: faults } = await probe("fault-count", "fault-count");
+        expect(faults.projectionStatements).toBeGreaterThan(10);
+        if (kind === "cloudflare") expect(faults.innerStatements).toBeGreaterThan(10);
+        else expect(faults.innerStatements).toBe(0);
+        for (let failAt = 1; failAt <= (faults.projectionStatements ?? 0); failAt += 1) {
+          const result = await probe(`fault-${failAt}`, `fault:${failAt}`);
+          expect(result.failures).toEqual([]);
+          expect(result.info.appendFailed ?? 0).toBe(
+            kind === "celld" && result.info.writeFault === 1 ? 1 : 0,
+          );
+        }
+
+        for (const step of ["activate", "discard-and-repair", "missed-session", "init"]) {
+          expect((await probe(step, step)).failures).toEqual([]);
+        }
+
+        // A build resumes from its committed cursor after the process dies.
+        const started = await probe("build", "build-start");
+        expect(started).toEqual({ failures: [], info: { cursor: 5 } });
+        await host.restart({ hard: true });
+        const resumed = await probe("build", "build-resume");
+        expect(resumed.failures).toEqual([]);
+        expect(resumed.info.cursorAtResume).toBe(5);
+
+        // A real session: the runtime maintains the transcript in its appends.
+        await submitMessage(host, sessionId, { idempotencyKey: "transcript:first", text: "ping" });
+        const status = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
+        expect(status.converged).toBe(true);
+        expect(status.versions).toHaveLength(1);
+        expect(status.versions[0]?.cursor).toBe(status.headSeq);
+        const live = await get<TranscriptRead>(`/sessions/${sessionId}/transcript`);
+        expect(live._tag).toBe("Window");
+        expect(live.window.readiness._tag).toBe("Ready");
+        expect(live.window.records.map((record) => record.kind)).toEqual(["user", "assistant"]);
+
+        // Cold reads and backfill status never build the model runtime.
+        await host.restart({ hard: true });
+        const cold = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
+        expect(cold).toEqual(status);
+        expect(await get<TranscriptRead>(`/sessions/${sessionId}/transcript`)).toEqual(live);
+        expect(await get(`/sessions/${sessionId}/runtime-builds`)).toEqual({ count: 0 });
+
+        // A wiped log is a new incarnation.
+        const destroyed = await fetch(`${host.baseUrl}/sessions/${sessionId}/destroy`, {
+          method: "DELETE",
+        });
+        expect(destroyed.status).toBe(204);
+        const wiped = await get<TranscriptStatus>(`/sessions/${sessionId}/transcript-status`);
+        expect(wiped.incarnation).not.toBe(status.incarnation);
+        expect(wiped.headSeq).toBe(0);
+        expect(wiped.converged).toBe(true);
+      } finally {
+        await host.stop();
+      }
+    }, 600_000);
   });
 };

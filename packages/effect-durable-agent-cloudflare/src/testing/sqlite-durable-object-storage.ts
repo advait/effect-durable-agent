@@ -12,11 +12,15 @@ import type {
  * nested transactions do. Unlike the pattern-matching SQL fakes, every query runs for real.
  *
  * `faults` lets a test throw from a chosen statement, to inject projection failures at any point.
+ * With `nestedTransactions: false` it rejects nesting the way celld does.
  */
 export class SqliteDurableObjectStorage
   implements DurableObjectSessionStorage, DurableObjectAlarmStorage
 {
   readonly db = new DatabaseSync(":memory:");
+
+  constructor(readonly options: { readonly nestedTransactions?: boolean } = {}) {}
+
   /** Current `transactionSync` nesting depth; 0 outside any transaction. */
   depth = 0;
   alarm: number | null = null;
@@ -47,6 +51,9 @@ export class SqliteDurableObjectStorage
   };
 
   transactionSync = <A>(closure: () => A): A => {
+    if (this.depth > 0 && this.options.nestedTransactions === false) {
+      throw new Error("storage.transaction: cannot start a transaction within a transaction");
+    }
     const savepoint = `eda_test_${this.depth}`;
     this.db.exec(this.depth === 0 ? "BEGIN" : `SAVEPOINT ${savepoint}`);
     this.depth += 1;

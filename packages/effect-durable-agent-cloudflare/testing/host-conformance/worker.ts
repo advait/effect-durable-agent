@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -10,8 +11,13 @@ import {
 
 import {
   conformanceHostOptions,
+  conformanceRuntimeBuilds,
   conformanceWorker,
 } from "../../../../testing/host-conformance/fixture";
+import {
+  runTranscriptProbe,
+  type TranscriptProbeResult,
+} from "../../../../testing/host-conformance/transcript-probe";
 
 const ProjectionState = Schema.Struct({ frameCount: Schema.Int });
 type ProjectionState = typeof ProjectionState.Type;
@@ -54,6 +60,17 @@ const conformanceProjection: EDAWebSocketProjection<ProjectionState> = {
 export class EDAConformanceSession extends EDASessionDurableObject<object, ProjectionState> {
   constructor(ctx: DurableObjectState, env: object) {
     super(ctx, env, { ...conformanceHostOptions(), webSocketProjection: conformanceProjection });
+  }
+
+  async runtimeBuilds(): Promise<number> {
+    return conformanceRuntimeBuilds.count;
+  }
+}
+
+/** Runs storage-level transcript scenarios against this object's real storage. */
+export class EDATranscriptProbe extends DurableObject {
+  async probe(step: string): Promise<TranscriptProbeResult> {
+    return runTranscriptProbe(this.ctx.storage, step);
   }
 }
 

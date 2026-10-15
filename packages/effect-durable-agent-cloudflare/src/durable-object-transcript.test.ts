@@ -298,68 +298,101 @@ describe("Durable Object transcript maintenance", () => {
     expect(storedProjection(harness.storage)).toEqual(before);
   });
 
-  describe("projection failure freezes only that version and never fails the append", () => {
-    const log = conversation(3);
-    const prefix = log.events.slice(0, 10);
-    const batch = log.events.slice(10, 20);
-    const later = log.events.slice(20);
+  /** Projection statements of one append: lookups, record and alias writes, the cursor. */
+  const isProjectionStatement = (query: string) =>
+    /_eda_transcript_(records|aliases)|SET cursor/.test(query);
+  const isWrite = (query: string) => /^\s*(INSERT|UPDATE|DELETE)/i.test(query);
 
-    // Count the statements maintenance runs inside its inner transaction for this batch, then
-    // fail each of them in turn: every write, and every lookup of a later batch entry.
-    const probe = makeHarness({ current: plain });
-    probe.append(prefix);
-    let innerStatements = 0;
-    probe.storage.faults = () => {
-      if (probe.storage.depth >= 2) innerStatements += 1;
-    };
-    probe.append(batch);
-    expect(innerStatements).toBeGreaterThan(10);
+  for (const nestedTransactions of [true, false]) {
+    describe(`projection failure isolation (${nestedTransactions ? "nested transactions, as workerd" : "no nesting, as celld"})`, () => {
+      const log = conversation(3);
+      const prefix = log.events.slice(0, 10);
+      const batch = log.events.slice(10, 20);
+      const later = log.events.slice(20);
+      const fresh = () =>
+        makeHarness(
+          { current: plain },
+          undefined,
+          new SqliteDurableObjectStorage({ nestedTransactions }),
+        );
 
-    for (let failAt = 1; failAt <= innerStatements; failAt += 1) {
-      it(`at inner statement ${failAt} of ${innerStatements}`, () => {
-        const harness = makeHarness({ current: plain });
-        harness.append(prefix);
-        const lastGood = storedProjection(harness.storage);
-        const lastGoodWindow = windowOf(harness.service);
-        let seen = 0;
-        harness.storage.faults = (query) => {
-          if (harness.storage.depth >= 2 && ++seen === failAt) {
-            throw new Error(`injected failure at ${query.trim().split(/\s+/, 3).join(" ")}`);
+      // Record the projection statements this batch runs, then fail each in turn: every lookup
+      // of every batch entry, every write, and the cursor update.
+      const probe = fresh();
+      probe.append(prefix);
+      const statements: Array<string> = [];
+      probe.storage.faults = (query) => {
+        if (isProjectionStatement(query)) statements.push(query);
+      };
+      probe.append(batch);
+      expect(statements.length).toBeGreaterThan(10);
+
+      statements.forEach((statement, index) => {
+        const failAt = index + 1;
+        const recoverable = nestedTransactions || !isWrite(statement);
+        it(`at projection statement ${failAt} of ${statements.length}: ${recoverable ? "freezes the version" : "fails the append atomically"}`, () => {
+          const harness = fresh();
+          harness.append(prefix);
+          const lastGood = storedProjection(harness.storage);
+          const lastGoodWindow = windowOf(harness.service);
+          let seen = 0;
+          harness.storage.faults = (query) => {
+            if (isProjectionStatement(query) && ++seen === failAt) {
+              throw new Error(`injected failure at ${query.trim().split(/\s+/, 3).join(" ")}`);
+            }
+          };
+          if (!recoverable) {
+            // Without nesting, a write that fails after planning succeeded is a storage failure:
+            // the whole append rolls back, events included, and nothing is published.
+            expect(() => harness.append(batch)).toThrow(/injected failure/);
+            harness.storage.faults = undefined;
+            expect(eventCount(harness.storage)).toBe(prefix.length);
+            expect(storedProjection(harness.storage)).toEqual(lastGood);
+            expect(harness.alerts).toEqual([]);
+            harness.append(batch);
+            harness.append(later);
+            expect(storedProjection(harness.storage)).toEqual(
+              referenceProjection(plain, log.events),
+            );
+            return;
           }
-        };
-        harness.append(batch);
-        harness.storage.faults = undefined;
+          harness.append(batch);
+          harness.storage.faults = undefined;
 
-        // Events committed; the projection rolled back to its last good cut; failure recorded.
-        expect(eventCount(harness.storage)).toBe(prefix.length + batch.length);
-        const frozen = storedProjection(harness.storage);
-        expect({ ...frozen, meta: { ...frozen.meta, status: { _tag: "Ok" } } }).toEqual(lastGood);
-        expect(frozen.meta.status).toMatchObject({
-          _tag: "Failed",
-          failedAtSeq: prefix.length + 1,
+          // Events committed; the projection rolled back to its last good cut; failure recorded.
+          expect(eventCount(harness.storage)).toBe(prefix.length + batch.length);
+          const frozen = storedProjection(harness.storage);
+          expect({ ...frozen, meta: { ...frozen.meta, status: { _tag: "Ok" } } }).toEqual(lastGood);
+          expect(frozen.meta.status).toMatchObject({
+            _tag: "Failed",
+            failedAtSeq: prefix.length + 1,
+          });
+          // Published once, after the outer transaction committed.
+          expect(harness.alerts).toHaveLength(1);
+          expect(harness.alerts[0]).toMatchObject({
+            depth: 0,
+            alert: { _tag: "ProjectionFailed" },
+          });
+
+          // Frozen permanently: later appends commit events but never touch the version.
+          harness.append(later);
+          expect(eventCount(harness.storage)).toBe(log.events.length);
+          expect(storedProjection(harness.storage)).toEqual(frozen);
+          expect(harness.service.hasPendingWork()).toBe(false);
+          expect(runToCompletion(harness.service)).toBe(1);
+          expect(storedProjection(harness.storage)).toEqual(frozen);
+
+          // The degraded read serves the last good cut and nothing newer.
+          const degraded = windowOf(harness.service);
+          expect(degraded.readiness).toMatchObject({
+            _tag: "Degraded",
+            failedAtSeq: prefix.length + 1,
+          });
+          expect({ ...degraded, readiness: lastGoodWindow.readiness }).toEqual(lastGoodWindow);
         });
-        // Published once, after the outer transaction committed.
-        expect(harness.alerts).toHaveLength(1);
-        expect(harness.alerts[0]).toMatchObject({ depth: 0, alert: { _tag: "ProjectionFailed" } });
-
-        // Frozen permanently: later appends commit events but never touch the version.
-        harness.append(later);
-        expect(eventCount(harness.storage)).toBe(log.events.length);
-        expect(storedProjection(harness.storage)).toEqual(frozen);
-        expect(harness.service.hasPendingWork()).toBe(false);
-        expect(runToCompletion(harness.service)).toBe(1);
-        expect(storedProjection(harness.storage)).toEqual(frozen);
-
-        // The degraded read serves the last good cut and nothing newer.
-        const degraded = windowOf(harness.service);
-        expect(degraded.readiness).toMatchObject({
-          _tag: "Degraded",
-          failedAtSeq: prefix.length + 1,
-        });
-        expect({ ...degraded, readiness: lastGoodWindow.readiness }).toEqual(lastGoodWindow);
       });
-    }
-  });
+    });
+  }
 
   it("builds a new definition beside the active one, activates at the head under concurrent appends, and deletes the old rows", () => {
     const log = conversation(12);

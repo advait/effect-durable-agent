@@ -9,6 +9,7 @@ import {
 import type { DurableObjectSessionStorage } from "./durable-object-storage";
 import {
   deleteRetiredTranscriptRows,
+  encodeTranscriptPlan,
   insertTranscriptSlot,
   makeTranscriptLookup,
   markTranscriptSlotFailed,
@@ -16,6 +17,7 @@ import {
   setTranscriptSlotRole,
   writeTranscriptPlan,
   type AdoptedLogIncarnation,
+  type EncodedTranscriptPlan,
   type TranscriptSlot,
 } from "./durable-object-transcript-tables";
 
@@ -187,12 +189,37 @@ export const reconcileTranscriptSlots = (
   }
 };
 
+const nestedTransactionSupport = new WeakMap<DurableObjectSessionStorage, boolean>();
+
 /**
- * Project committed events into one slot inside an inner transaction, or freeze the slot.
+ * Whether this storage runs a `transactionSync` nested in another as an independent inner
+ * transaction. workerd does; celld rejects nesting ("cannot start a transaction within a
+ * transaction") without disturbing the enclosing transaction. Probed once per storage object.
+ */
+const supportsNestedTransactions = (storage: DurableObjectSessionStorage): boolean => {
+  const known = nestedTransactionSupport.get(storage);
+  if (known !== undefined) return known;
+  let supported: boolean;
+  try {
+    storage.transactionSync(() => storage.transactionSync(() => undefined));
+    supported = true;
+  } catch {
+    supported = false;
+  }
+  nestedTransactionSupport.set(storage, supported);
+  return supported;
+};
+
+/**
+ * Project committed events into one slot, or freeze the slot (§5.2).
  *
- * Planning, row decoding and every SQL write run inside the inner `transactionSync`. Any throw
- * rolls back only that inner transaction; the failure is recorded outside it, in the caller's
- * transaction, so the events the caller appended still commit (§5.2).
+ * Planning, row decoding and row encoding (serialization and the size cap) all run before any
+ * write, so every recoverable projection error is raised before the slot is touched. Where the
+ * platform nests transactions (workerd), the writes also run inside an inner `transactionSync`,
+ * so even a failing write rolls back only that slot. Either way the failure is recorded in the
+ * caller's transaction and the events the caller appended still commit. Where it does not
+ * (celld), a write that fails after planning succeeded is a storage failure, which fails the
+ * caller's whole transaction atomically, exactly as a failed event insert does.
  */
 const advanceSlot = (
   storage: DurableObjectSessionStorage,
@@ -203,13 +230,17 @@ const advanceSlot = (
 ): TranscriptSlot => {
   const first = events.find((entry) => entry.position.seq > slot.cursor);
   if (first === undefined || slot.status._tag === "Failed" || slot.role === "retired") return slot;
+  const nested = supportsNestedTransactions(storage);
+  const project = () => {
+    const plan = encodeTranscriptPlan(
+      planTranscriptBatch(makeTranscriptLookup(storage.sql, slot), events, definition),
+    );
+    if (nested) writeTranscriptPlan(storage.sql, slot.slot, plan);
+    return plan;
+  };
+  let plan: EncodedTranscriptPlan;
   try {
-    const throughSeq = storage.transactionSync(() => {
-      const plan = planTranscriptBatch(makeTranscriptLookup(storage.sql, slot), events, definition);
-      writeTranscriptPlan(storage.sql, slot.slot, plan);
-      return plan.throughSeq;
-    });
-    return { ...slot, cursor: throughSeq };
+    plan = nested ? storage.transactionSync(project) : project();
   } catch (cause) {
     const error = cause instanceof Error ? cause.message : String(cause);
     const failedAtSeq = first.position.seq;
@@ -223,6 +254,8 @@ const advanceSlot = (
     });
     return { ...slot, status: { _tag: "Failed", failedAtSeq, error } };
   }
+  if (!nested) writeTranscriptPlan(storage.sql, slot.slot, plan);
+  return { ...slot, cursor: plan.throughSeq };
 };
 
 /**

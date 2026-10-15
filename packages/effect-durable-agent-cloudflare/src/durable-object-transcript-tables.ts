@@ -246,14 +246,42 @@ const decodeRecordRow = (row: TranscriptRecordRow): TranscriptRecord =>
 const positionOf = (record: TranscriptRecord) =>
   "position" in record ? record.position : undefined;
 
-/** Apply one change plan to a slot and advance its cursor; the caller owns the transaction. */
+/**
+ * A change plan already encoded into rows: every envelope serialized and size-checked. Encoding
+ * is where a plan can still fail recoverably, so it happens before any write.
+ */
+export interface EncodedTranscriptPlan {
+  readonly records: ReadonlyArray<ReadonlyArray<string | number | null>>;
+  readonly aliases: ReadonlyArray<TranscriptChangePlan["aliases"][number]>;
+  readonly throughSeq: SequenceNumber;
+}
+
+export const encodeTranscriptPlan = (plan: TranscriptChangePlan): EncodedTranscriptPlan => ({
+  records: plan.records.map((record) => {
+    const position = positionOf(record);
+    return [
+      record.id,
+      record.kind,
+      position?.anchorSeq ?? null,
+      position?.ordinal ?? null,
+      isTopLevelTranscriptRecord(record) ? 1 : 0,
+      isPendingTranscriptUserRecord(record) ? 1 : 0,
+      record.kind === "tool" ? record.assistantId : null,
+      record.updatedSeq,
+      stringifyJsonForColumn(encodeEnvelope(record), "_eda_transcript_records.envelope_json"),
+    ];
+  }),
+  aliases: plan.aliases,
+  throughSeq: plan.throughSeq,
+});
+
+/** Write an encoded plan to a slot and advance its cursor; the caller owns the transaction. */
 export const writeTranscriptPlan = (
   sql: DurableObjectSqlStorage,
   slot: number,
-  plan: TranscriptChangePlan,
+  plan: EncodedTranscriptPlan,
 ): void => {
-  for (const record of plan.records) {
-    const position = positionOf(record);
+  for (const row of plan.records) {
     sql.exec(
       `INSERT INTO _eda_transcript_records (
         slot, id, kind, anchor_seq, ordinal, top_level, pending, assistant_id, updated_seq, envelope_json
@@ -268,15 +296,7 @@ export const writeTranscriptPlan = (
         updated_seq = excluded.updated_seq,
         envelope_json = excluded.envelope_json`,
       slot,
-      record.id,
-      record.kind,
-      position?.anchorSeq ?? null,
-      position?.ordinal ?? null,
-      isTopLevelTranscriptRecord(record) ? 1 : 0,
-      isPendingTranscriptUserRecord(record) ? 1 : 0,
-      record.kind === "tool" ? record.assistantId : null,
-      record.updatedSeq,
-      stringifyJsonForColumn(encodeEnvelope(record), "_eda_transcript_records.envelope_json"),
+      ...row,
     );
   }
   for (const alias of plan.aliases) {

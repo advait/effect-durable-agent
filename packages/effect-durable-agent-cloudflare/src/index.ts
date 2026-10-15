@@ -20,3 +20,4 @@ export type {
   TranscriptAlert,
 } from "./durable-object-transcript-maintenance";
 export type { AdoptedLogIncarnation } from "./durable-object-transcript-tables";
+export { DurableObjectSessionStore } from "./durable-object-store";
