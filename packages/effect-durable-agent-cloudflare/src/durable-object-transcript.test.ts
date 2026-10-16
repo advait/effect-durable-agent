@@ -832,7 +832,7 @@ describe("Durable Object transcript upgrades and edge failures", () => {
     expect(windowOf(harness.service).readiness).toEqual({ _tag: "Building" });
     runToCompletion(harness.service);
     const [build] = harness.service.readMeta();
-    if (build?.status._tag !== "Failed") throw new Error("the build froze");
+    if (build?.status._tag !== "Failed") throw new Error("expected the build to freeze");
     const window = windowOf(harness.service);
     expect(window).toMatchObject({
       version: gia.version,

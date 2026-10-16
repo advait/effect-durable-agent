@@ -863,7 +863,10 @@ describe("transcript-window sockets over the Durable Object transcript store", (
    * slices; `undecodableSeq` names a log event this release cannot decode, which freezes the
    * build there.
    */
-  const firstBuild = (undecodableSeq?: number): DurableObjectTranscriptStore => {
+  const firstBuild = (
+    undecodableSeq?: number,
+    onServedChanged?: () => void,
+  ): DurableObjectTranscriptStore => {
     const storage = new SqliteDurableObjectStorage();
     const legacy = Effect.runSync(
       DurableObjectSessionStore.make({ sessionId: testSessionId, storage }),
@@ -886,11 +889,17 @@ describe("transcript-window sockets over the Durable Object transcript store", (
     return new DurableObjectTranscriptStore({
       sessionId: testSessionId,
       storage,
-      transcript: { definitions: { current: testDefinition() }, sliceLimits: { maxEvents: 2 } },
+      transcript: {
+        definitions: { current: testDefinition() },
+        sliceLimits: { maxEvents: 2 },
+        ...(onServedChanged === undefined ? {} : { observer: { onServedChanged } }),
+      },
     });
   };
 
-  const subscribe = async (store: DurableObjectTranscriptStore): Promise<TestSocket> => {
+  const subscribe = async (
+    store: DurableObjectTranscriptStore,
+  ): Promise<{ readonly socket: TestSocket; readonly isolate: Isolate }> => {
     const socket = new TestSocket();
     const isolate = new Isolate(() => [socket], defaultEDAWebSocketFlowControl, store.port);
     isolates.push(isolate);
@@ -901,13 +910,13 @@ describe("transcript-window sockets over the Durable Object transcript store", (
     });
     await socket.request(isolate.manager, edaTranscriptSubscribeRequest(socket.client));
     await socket.pump(isolate.manager);
-    return socket;
+    return { socket, isolate };
   };
 
   it("reports a first build that froze as failed as unreadable on subscribe", async () => {
     const store = firstBuild(3);
     while (store.runSlice());
-    const socket = await subscribe(store);
+    const { socket } = await subscribe(store);
     expect(socket.client.window?.readiness).toMatchObject({
       _tag: "Unreadable",
       error: expect.stringMatching(/failed to build at seq 3: /),
@@ -916,7 +925,30 @@ describe("transcript-window sockets over the Durable Object transcript store", (
   });
 
   it("reports a healthy first build that has not finished as building on subscribe", async () => {
-    const socket = await subscribe(firstBuild());
+    const { socket } = await subscribe(firstBuild());
     expect(socket.client.window?.readiness).toEqual({ _tag: "Building" });
+  });
+
+  it("moves a connected client from building to unreadable when the first build freezes", async () => {
+    // The object wires the store's served-changed signal to a transcript socket refresh.
+    const refreshes: Array<() => Promise<void>> = [];
+    const store = firstBuild(3, () => {
+      for (const refresh of refreshes) void refresh();
+    });
+    const { socket, isolate } = await subscribe(store);
+    expect(socket.client.window?.readiness).toEqual({ _tag: "Building" });
+    refreshes.push(() => isolate.manager.refreshTranscript());
+
+    while (store.runSlice());
+    expect(store.readMeta()).toMatchObject([
+      { role: "building", status: { _tag: "Failed", failedAtSeq: 3 } },
+    ]);
+    await isolate.manager.settled();
+    await socket.pump(isolate.manager);
+    expect(socket.client.window?.readiness).toMatchObject({
+      _tag: "Unreadable",
+      error: expect.stringMatching(/failed to build at seq 3: /),
+    });
+    expect(socket.client.window?.records).toEqual([]);
   });
 });

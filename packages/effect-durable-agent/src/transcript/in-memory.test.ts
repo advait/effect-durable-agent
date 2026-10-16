@@ -213,7 +213,7 @@ describe("in-memory transcript maintenance", () => {
       version: gia.version,
       status: { _tag: "Failed", failedAtSeq },
     });
-    if (build?.status._tag !== "Failed") throw new Error("the build froze");
+    if (build?.status._tag !== "Failed") throw new Error("expected the build to freeze");
     expect(roundTrip(result.window)).toMatchObject({
       version: gia.version,
       throughSeq: 0,

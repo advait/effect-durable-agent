@@ -766,9 +766,10 @@ reuses), and live delivery over transcript-window sockets (§10). Hosts still re
     `current` and no build of `current` exists, one starts (a failed build of `current` counts, so
     it is never retried). With no active version, reads report `Building` while the build of
     `current` is healthy and `Unreadable` (naming its version, `failedAtSeq` and error) once it has
-    frozen as failed; a build freezing while nothing is active re-reads every transcript socket. An active version this release no longer carries is frozen, reads report
-    `UpdatingHistory` at its real cursor, and every object start raises a `MissedSession` alert
-    until the rebuild activates. A log event the release cannot decode freezes the build at it.
+    frozen as failed; a build freezing while nothing is active re-reads every transcript socket.
+    An active version this release no longer carries is frozen, reads report `UpdatingHistory` at
+    its real cursor, and every object start raises a `MissedSession` alert until the rebuild
+    activates. A log event the release cannot decode freezes the build at it.
   - _Builder._ `DurableObjectTranscriptStore.runSlice` reconciles, projects at most 512 log events
     into the building version in pages of 16 (each page's rows and cursor commit together), activates
     the build when its cursor equals the head re-read in the same transaction (the old slot becomes

@@ -601,7 +601,8 @@ export abstract class EDASessionDurableObject<
           if (builder !== undefined) this.ctx.waitUntil(builder.kick());
         },
         onServedChanged: () => {
-          // A behind active version reached the head, or the active version froze: sockets re-read.
+          // A behind active version reached the head, the active version froze, or a build froze
+          // while no version was active (Building becomes Unreadable): sockets re-read.
           this.ctx.waitUntil(this.#controller.refreshTranscriptWebSockets());
         },
         onActivated: (activation) => {

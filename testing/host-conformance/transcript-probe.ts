@@ -282,10 +282,9 @@ const faultLater = faultLog.events.slice(20);
  *
  * Steps: `oracle-count`, `oracle:<index>`, `fault-count`, `fault:<n>`, `build-start`,
  * `build-resume`, `activate`, `discard-and-repair`, `failed-first-build`, `missed-session`,
- * `init`, and the
- * measurement steps `perf-append:on|off` (10k events in two-event appends) and `perf-build`
- * (build the `perf-append:off` object's log), which the caller times from outside because
- * Workers clocks do not advance during synchronous execution.
+ * `init`, and the measurement steps `perf-append:on|off` (10k events in two-event appends) and
+ * `perf-build` (build the `perf-append:off` object's log), which the caller times from outside
+ * because Workers clocks do not advance during synchronous execution.
  */
 export const runTranscriptProbe = (
   durableStorage: DurableObjectStorage,
