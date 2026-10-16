@@ -11,10 +11,7 @@ import {
 import { EDATraceMetadata } from "effect-durable-agent/types/tracing";
 import { CommittedDurableEvent } from "effect-durable-agent/services/session-store";
 import { CommittedCommandTerminalEvent } from "effect-durable-agent/services/runtime";
-import {
-  EDASessionSnapshot,
-  DurableTranscriptMessages,
-} from "effect-durable-agent/services/session-query";
+import { EDASessionSnapshot } from "effect-durable-agent/services/session-query";
 import { RunGrantResult, RunRequestOutcome } from "effect-durable-agent/domain/run-scheduling";
 import {
   TranscriptBodySource,
@@ -121,7 +118,6 @@ export const edaSessionRpc = {
   grantRun: { input: SessionGrantRunInput, output: RunGrantResult },
   runRequestOutcome: { input: SessionOutcomeInput, output: RunRequestOutcome },
   snapshot: { input: SessionScopedInput, output: EDASessionSnapshot },
-  messages: { input: SessionScopedInput, output: DurableTranscriptMessages },
   destroySession: { input: SessionScopedInput, output: Schema.Void },
   transcriptStatus: { input: SessionScopedInput, output: TranscriptStorageStatus },
   readTranscriptWindow: {

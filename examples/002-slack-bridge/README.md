@@ -117,6 +117,13 @@ seq  event                                      why it matters
 }
 ```
 
+## HTTP facade
+
+- `POST /sessions/:sessionId/slack/events` — admits the command and its Slack event together.
+- `GET /sessions/:sessionId/transcript` — returns the latest 50 records of the session's transcript
+  (`readTranscriptWindow`); the session object enables transcripts with
+  `transcript: { enabled: true }`.
+
 ## Example request
 
 ```bash

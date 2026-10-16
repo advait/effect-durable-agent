@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { ReducedStateSchema, QueryMessageRecordSchema } from "../domain/reduced-state-schema";
+import { ReducedStateSchema } from "../domain/reduced-state-schema";
 import { durableEventEnvelope } from "../types/events/durable";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -8,8 +8,6 @@ import * as PubSub from "effect/PubSub";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
-import { durableMessageTranscript } from "../domain/message-transcript";
-import type { DurableTranscriptMessage } from "../domain/message-transcript";
 import { RunRequestOutcome } from "../domain/run-scheduling";
 import { effectDurableAgentNamespace } from "../types/events";
 import { type RunRequestId, SequenceNumber } from "../types/core";
@@ -19,20 +17,10 @@ import { LiveEventBus } from "./live-event-bus";
 import { SessionState } from "./session-state";
 import { annotateEdaSpan } from "./tracing";
 
-/** Reconnect-safe transcript query preserving the existing structured-clone Prompt parts. */
-export const DurableTranscriptMessages = Schema.Array(
-  Schema.Union([
-    QueryMessageRecordSchema.members[1],
-    QueryMessageRecordSchema.members[3],
-    QueryMessageRecordSchema.members[4],
-    Schema.Struct({ ...QueryMessageRecordSchema.members[2].fields, consumedSeq: SequenceNumber }),
-  ]),
-);
-/** Authoritative live snapshot for one EDA session plus its derived durable transcript. */
+/** Authoritative live snapshot for one EDA session: reduced state plus app reducer states. */
 export const EDASessionSnapshot = Schema.Struct({
   state: ReducedStateSchema,
   reducerStates: Schema.ReadonlyMap(Schema.String, Schema.Unknown),
-  messages: DurableTranscriptMessages,
 });
 export type EDASessionSnapshot = typeof EDASessionSnapshot.Type;
 
@@ -42,13 +30,8 @@ export interface EDASessionQueryShape {
   readonly runRequestOutcome: (
     requestId: RunRequestId,
   ) => Effect.Effect<RunRequestOutcome, EDASessionStoreError>;
-  /** Read the authoritative live state and derive its durable transcript. */
+  /** Read the authoritative live state and app reducer states. */
   readonly snapshot: () => Effect.Effect<EDASessionSnapshot, EDASessionStoreError>;
-  /** Read durable user/assistant messages in committed sequence order from the live snapshot. */
-  readonly messages: () => Effect.Effect<
-    ReadonlyArray<DurableTranscriptMessage>,
-    EDASessionStoreError
-  >;
   /** Backfill durable events after `afterSeq`, then follow live durable/ephemeral events. */
   readonly eventsAfter: (
     afterSeq: SequenceNumber,
@@ -86,7 +69,6 @@ export class EDASessionQuery extends Context.Service<EDASessionQuery, EDASession
         return {
           state: data.reduced,
           reducerStates: data.reducerStates,
-          messages: durableMessageTranscript(data.reduced),
         } satisfies EDASessionSnapshot;
       });
 
@@ -134,7 +116,6 @@ export class EDASessionQuery extends Context.Service<EDASessionQuery, EDASession
           return outcome;
         }),
         snapshot: () => snapshot,
-        messages: () => snapshot.pipe(Effect.map((snapshot) => snapshot.messages)),
         eventsAfter: (afterSeq: SequenceNumber) =>
           Effect.gen(function* () {
             const live = yield* liveBus.subscribeQueue();

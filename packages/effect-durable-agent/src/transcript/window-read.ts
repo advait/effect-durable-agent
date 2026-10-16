@@ -99,6 +99,30 @@ export const buildingTranscriptWindow = (
   readiness: { _tag: "Building" },
 });
 
+/**
+ * The empty window served while no version is active.
+ *
+ * It reads as `Building` while the build of `currentVersion` can still finish. A build that has
+ * frozen as failed is never retried (only a new definition repairs it), so once the build of
+ * `currentVersion` has failed the window is `Unreadable` and names that failure, rather than
+ * reading as building forever.
+ */
+export const inactiveTranscriptWindow = (
+  incarnation: TranscriptLogIncarnation,
+  currentVersion: TranscriptVersion,
+  build: Pick<TranscriptVersionMeta, "version" | "status"> | undefined,
+): TranscriptWindow => {
+  const building = buildingTranscriptWindow(incarnation, currentVersion);
+  if (build?.version !== currentVersion || build.status._tag !== "Failed") return building;
+  return {
+    ...building,
+    readiness: {
+      _tag: "Unreadable",
+      error: `transcript version ${build.version} failed to build at seq ${build.status.failedAtSeq}: ${build.status.error}`,
+    },
+  };
+};
+
 const orderKey = (record: TranscriptTopLevelRecord): TranscriptOrderKey => ({
   anchorSeq: record.position?.anchorSeq ?? 0,
   ordinal: record.position?.ordinal ?? 0,

@@ -109,9 +109,6 @@ export interface EDASessionRpcSurface {
   readonly snapshot: (
     input: EDASessionScopedRpcInput,
   ) => Promise<typeof edaSessionRpc.snapshot.output.Encoded>;
-  readonly messages: (
-    input: EDASessionScopedRpcInput,
-  ) => Promise<typeof edaSessionRpc.messages.output.Encoded>;
   readonly destroySession: (
     input: EDASessionScopedRpcInput,
   ) => Promise<typeof edaSessionRpc.destroySession.output.Encoded>;
@@ -418,17 +415,6 @@ export abstract class EDASessionDurableObject<
     return Schema.encodeSync(edaSessionRpc.snapshot.output)(snapshot);
   }
 
-  async messages(
-    raw: typeof SessionScopedInput.Encoded,
-  ): Promise<typeof edaSessionRpc.messages.output.Encoded> {
-    const input = Schema.decodeUnknownSync(SessionScopedInput)(raw);
-    const result = await this.#controller.messages({
-      sessionId: this.parseSessionId(input.sessionId),
-      trace: decodeTraceMetadata(input.trace),
-    });
-    return Schema.encodeSync(edaSessionRpc.messages.output)(result);
-  }
-
   async webSocketMessage(webSocket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     await this.#controller.webSocketMessage(webSocket, message);
   }
@@ -615,7 +601,8 @@ export abstract class EDASessionDurableObject<
           if (builder !== undefined) this.ctx.waitUntil(builder.kick());
         },
         onServedChanged: () => {
-          // A behind active version reached the head, or the active version froze: sockets re-read.
+          // A behind active version reached the head, the active version froze, or a build froze
+          // while no version was active (Building becomes Unreadable): sockets re-read.
           this.ctx.waitUntil(this.#controller.refreshTranscriptWebSockets());
         },
         onActivated: (activation) => {

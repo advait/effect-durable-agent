@@ -92,11 +92,16 @@ const KnownReadiness = Schema.TaggedUnion({
    * (a session re-enabled after it was disabled; clients receive a re-read when it gets there).
    */
   UpdatingHistory: {},
-  /** No version is servable yet; the window is empty. */
+  /**
+   * No version is servable yet and the build of the current definition can still finish; the
+   * window is empty.
+   */
   Building: {},
   /**
-   * A stored row of the served version cannot be decoded by this release. Nothing is served
-   * until a rebuild finishes, rather than a wrong view; the window is empty.
+   * Nothing can be served, and `error` says why; the window is empty. Either a stored row of the
+   * served version cannot be decoded by this release (nothing is served until a rebuild finishes,
+   * rather than a wrong view), or no version is active and the build of the current definition
+   * froze as failed, which is never retried (only a new definition repairs it).
    */
   Unreadable: { error: Schema.String },
   /** A readiness this reader does not know; treated as degraded. */

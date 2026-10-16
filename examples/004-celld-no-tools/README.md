@@ -49,7 +49,8 @@ curl -X POST \
 ```
 
 Retrying the same idempotency key returns the original durable admission rather than running the
-command twice. `GET` on the same URL returns the committed transcript.
+command twice. `GET` on the same URL returns the latest 50 records of the session's transcript
+(`readTranscriptWindow`); the cell enables transcripts with `transcript: { enabled: true }`.
 
 ## Generated bindings
 

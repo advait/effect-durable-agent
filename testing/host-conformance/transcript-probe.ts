@@ -281,10 +281,10 @@ const faultLater = faultLog.events.slice(20);
  * Run one named probe step against this object's storage.
  *
  * Steps: `oracle-count`, `oracle:<index>`, `fault-count`, `fault:<n>`, `build-start`,
- * `build-resume`, `activate`, `discard-and-repair`, `missed-session`, `init`, and the
- * measurement steps `perf-append:on|off` (10k events in two-event appends) and `perf-build`
- * (build the `perf-append:off` object's log), which the caller times from outside because
- * Workers clocks do not advance during synchronous execution.
+ * `build-resume`, `activate`, `discard-and-repair`, `failed-first-build`, `missed-session`,
+ * `init`, and the measurement steps `perf-append:on|off` (10k events in two-event appends) and
+ * `perf-build` (build the `perf-append:off` object's log), which the caller times from outside
+ * because Workers clocks do not advance during synchronous execution.
  */
 export const runTranscriptProbe = (
   durableStorage: DurableObjectStorage,
@@ -463,6 +463,7 @@ export const runTranscriptProbe = (
         { maxEvents: 4, pageEvents: 4 },
       );
       release1.service.runSlice();
+      const served = windowOf(release1.service);
       storage.projectionStatements = [];
       storage.fault = (query) => {
         const reads = storage.projectionStatements.filter((statement) => !isWrite(statement));
@@ -476,6 +477,7 @@ export const runTranscriptProbe = (
         ["ProjectionFailed"],
       );
       const failed = storedProjection(storage, "building");
+      checks.equal("active version served unchanged", windowOf(release1.service), served);
       checks.equal("failed build not pending", release1.service.hasPendingWork(), false);
       release1.service.runSlice();
       checks.equal("failed build never retried", storedProjection(storage, "building"), failed);
@@ -499,6 +501,39 @@ export const runTranscriptProbe = (
         count(storage, "SELECT COUNT(*) AS count FROM _eda_transcript_meta"),
         1,
       );
+      break;
+    }
+    case "failed-first-build": {
+      // A log written before transcripts existed: no version is active until `current` builds.
+      const log = conversation(6);
+      harness(storage, undefined).append(log.events);
+      const probe = harness(storage, { current: gia }, { maxEvents: 4, pageEvents: 4 });
+      probe.service.runSlice();
+      checks.equal("healthy build reads as building", windowOf(probe.service).readiness, {
+        _tag: "Building",
+      });
+      storage.projectionStatements = [];
+      storage.fault = (query) => {
+        const reads = storage.projectionStatements.filter((statement) => !isWrite(statement));
+        if (!isWrite(query) && reads.length === 3) throw new Error("injected build failure");
+      };
+      probe.service.runSlice();
+      storage.fault = undefined;
+      const [build] = probe.service.readMeta();
+      checks.equal("build failed", build?.status._tag, "Failed");
+      const window = windowOf(probe.service);
+      checks.equal(
+        "failed first build reads as unreadable",
+        [window.readiness._tag, window.records.length, window.throughSeq],
+        ["Unreadable", 0, 0],
+      );
+      if (build?.status._tag === "Failed" && window.readiness._tag === "Unreadable") {
+        checks.equal(
+          "unreadable names the failed build",
+          window.readiness.error,
+          `transcript version ${gia.version} failed to build at seq ${build.status.failedAtSeq}: ${build.status.error}`,
+        );
+      }
       break;
     }
     case "missed-session": {

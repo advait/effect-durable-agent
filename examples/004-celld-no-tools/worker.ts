@@ -31,6 +31,8 @@ export class CelldNoToolsSession extends EDASessionCell<Env> {
           }),
         ),
       ),
+      // Maintain this session's transcript: the user-visible history `GET` reads below.
+      transcript: { enabled: true },
     });
   }
 }
@@ -53,7 +55,9 @@ export default {
     const scoped = { sessionId, trace: makeRootEDATraceMetadata() };
 
     if (request.method === "GET") {
-      return json(await session.messages(scoped));
+      return json(
+        await session.readTranscriptWindow({ ...scoped, selector: { _tag: "Latest", count: 50 } }),
+      );
     }
     if (request.method !== "POST") {
       return json({ error: "Method not allowed" }, 405);
@@ -88,6 +92,6 @@ export default {
       ),
     });
 
-    return json({ admitted, messages: await session.messages(scoped) }, 202);
+    return json({ admitted }, 202);
   },
 } satisfies ExportedHandler<Env>;

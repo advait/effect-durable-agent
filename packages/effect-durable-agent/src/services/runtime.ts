@@ -82,8 +82,6 @@ export interface EDARuntimeShape {
   ) => Effect.Effect<CommittedCommandTerminalEvent, EDARuntimeError>;
   /** Read the authoritative live session snapshot. */
   readonly snapshot: EDASessionQueryShape["snapshot"];
-  /** Read durable user/assistant messages in committed order. */
-  readonly messages: EDASessionQueryShape["messages"];
   /** Backfill durable events after a committed sequence, then follow live events. */
   readonly eventsAfter: EDASessionQueryShape["eventsAfter"];
   /** Read one bounded page of committed durable events plus the committed head. */
@@ -163,7 +161,6 @@ const makeLiveRuntime = (config: EDARuntimeConfig) =>
         return yield* blockOnCommand(commandIdFromCommandAdmitted(admitted), admitted.position.seq);
       }),
       snapshot: () => query.snapshot(),
-      messages: () => query.messages(),
       eventsAfter: (afterSeq: SequenceNumber) => query.eventsAfter(afterSeq),
       readEventPage: (afterSeq: SequenceNumber, limit: number) =>
         query.readEventPage(afterSeq, limit),

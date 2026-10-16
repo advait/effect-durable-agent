@@ -1,7 +1,6 @@
 import * as Effect from "effect/Effect";
 import type * as Tracer from "effect/Tracer";
 
-import type { DurableTranscriptMessage } from "effect-durable-agent/domain/message-transcript";
 import type {
   CommittedCommandTerminalEvent,
   EDARuntimeShape,
@@ -207,10 +206,6 @@ export class EDASessionController<ProjectionState extends object = never> {
 
   snapshot(input: EDASessionScopedInput): Promise<EDASessionSnapshot> {
     return this.query(input, (eda) => eda.snapshot(), "agent.session.snapshot");
-  }
-
-  messages(input: EDASessionScopedInput): Promise<ReadonlyArray<DurableTranscriptMessage>> {
-    return this.query(input, (eda) => eda.messages(), "agent.messages.list");
   }
 
   acceptEventWebSocket(

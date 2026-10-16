@@ -822,6 +822,58 @@ describe("Durable Object transcript upgrades and edge failures", () => {
     expect(harness.alerts.map(({ alert }) => alert._tag)).toEqual(["ProjectionFailed"]);
   });
 
+  it("reads a first build that froze as failed as unreadable, naming the failure", () => {
+    const log = conversation(3);
+    const legacy = makeHarness(undefined);
+    legacy.append(log.events);
+    legacy.storage.rows("UPDATE _eda_event_log SET schema_version = 99 WHERE seq = 7");
+    const harness = legacy.release({ current: gia }, { maxEvents: 4, pageEvents: 2 });
+    // A healthy build that has not finished still reads as building.
+    expect(windowOf(harness.service).readiness).toEqual({ _tag: "Building" });
+    runToCompletion(harness.service);
+    const [build] = harness.service.readMeta();
+    if (build?.status._tag !== "Failed") throw new Error("expected the build to freeze");
+    const window = windowOf(harness.service);
+    expect(window).toMatchObject({
+      version: gia.version,
+      throughSeq: 0,
+      records: [],
+      dependencies: [],
+      hasOlder: false,
+      hasNewer: false,
+      readiness: {
+        _tag: "Unreadable",
+        error: `transcript version ${gia.version} failed to build at seq 7: ${build.status.error}`,
+      },
+    });
+    // The port (which transcript sockets read) agrees, and connected sockets were told to re-read.
+    expect(
+      Effect.runSync(
+        harness.service.port.readTranscriptWindow(latest, defaultTranscriptWindowLimits),
+      ),
+    ).toEqual(window);
+    expect(harness.servedChanged).toBe(1);
+  });
+
+  it("keeps serving the active version unchanged when a build of a newer definition fails", () => {
+    const log = conversation(3);
+    const base = makeHarness({ current: plain });
+    base.append(log.events);
+    const served = windowOf(base.service);
+    base.storage.rows("UPDATE _eda_event_log SET schema_version = 99 WHERE seq = 7");
+    const release = base.release(
+      { current: gia, previous: plain },
+      { maxEvents: 4, pageEvents: 2 },
+    );
+    runToCompletion(release.service);
+    expect(release.service.readMeta()).toMatchObject([
+      { role: "active", version: plain.version, status: { _tag: "Ok" } },
+      { role: "building", version: gia.version, status: { _tag: "Failed", failedAtSeq: 7 } },
+    ]);
+    expect(windowOf(release.service)).toEqual(served);
+    expect(release.servedChanged).toBe(0);
+  });
+
   it("treats only the platform's refusal to nest as unsupported nesting", () => {
     const storage = new SqliteDurableObjectStorage();
     const harness = makeHarness({ current: plain }, undefined, storage);

@@ -70,7 +70,8 @@ export interface DurableObjectTranscriptObserver {
   /**
    * What reads serve changed without a publication, so connected clients need a re-read: an
    * active version that was behind the head (a re-enabled session) reached it (`UpdatingHistory`
-   * becomes `Ready`), or the active version froze (it becomes `Degraded`).
+   * becomes `Ready`), the active version froze (it becomes `Degraded`), or a build froze while no
+   * version was active (`Building` becomes `Unreadable`).
    */
   readonly onServedChanged?: () => void;
 }
@@ -259,8 +260,15 @@ const freezeSlot = (
 ): TranscriptSlot => {
   const error = cause instanceof Error ? cause.message : String(cause);
   markTranscriptSlotFailed(storage.sql, slot.slot, failedAtSeq, error);
-  // A frozen active version reads as degraded from now on.
-  if (slot.role === "active") effects.servedChanged = true;
+  // A frozen active version reads as degraded from now on, and a build that froze while nothing
+  // was active reads as unreadable rather than building.
+  if (
+    slot.role === "active" ||
+    (slot.role === "building" &&
+      !readTranscriptSlots(storage.sql).some((other) => other.role === "active"))
+  ) {
+    effects.servedChanged = true;
+  }
   if (slot.role !== "retired") {
     effects.alerts.push({
       _tag: "ProjectionFailed",
