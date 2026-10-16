@@ -6,13 +6,15 @@ Hosts read user-visible history only from the transcript.
 
 - **Breaking:** the host-facing APIs that exposed the runtime's pruned model transcript as if it
   were history are removed. Compaction prunes that transcript, so hosts rendering it lost earlier
-  history (`docs/transcript-history.md` §2); read history with `readTranscriptWindow` instead.
+  history (`docs/transcript-history.md` §2); read history with `readTranscriptWindow` instead. A
+  host that has not enabled transcripts (opt-in since alpha.25) must enable them first; model-side
+  code can still derive the pruned transcript with `durableMessageTranscript(snapshot.state)`.
   - `EDASessionSnapshot` is now `{ state, reducerStates }`: its `messages` field and the exported
     `DurableTranscriptMessages` schema are gone.
   - `EDASessionQueryShape.messages`, `EDARuntimeShape.messages` and
     `EDASessionController.messages` are removed, with the `agent.messages.list` span.
   - **`EDASessionRpcSurface` loses its `messages` member** (and `edaSessionRpc.messages`, the
-    Durable Object's `messages()` method). The snapshot RPC output changes shape, so deploy the
+    Durable Object's `messages()` method, and so celld's `EDASessionCell`). The snapshot RPC output changes shape, so deploy the
     Worker and the Durable Object together.
   - Model-facing code is unchanged (`durableMessageTranscript`, the prompt projector, compaction,
     `ReducedState`): prompt bytes are identical.
