@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Prompt from "effect/ai/Prompt";
@@ -402,6 +403,38 @@ describe("startup recovery with tool recovery policies", () => {
       const restored = decodeReducedStateCheckpoint(encodeReducedStateCheckpoint(retried), seed);
       assert.strictEqual(restored.toolCalls.get(toolCallId)?.attempt, 2);
       assert.strictEqual(restored.toolCalls.get(toolCallId)?.startedSeq, tool.startedSeq);
+    }),
+  );
+
+  it.effect("answers an alarm's scheduling redelivery at once while recovery re-invokes", () =>
+    Effect.gen(function* () {
+      const seed = yield* crashWhileBothToolsRun;
+      const release = yield* Deferred.make<void>();
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const state = yield* SessionState;
+          yield* state.start({ modelSelection });
+          yield* waitFor((entries) => startedCount(entries) === 3);
+          // The host's alarm handler calls this before re-arming its heartbeat.
+          const redelivered = yield* state
+            .retryRunSchedulingDelivery()
+            .pipe(Effect.timeoutOption("1 second"));
+          assert.isTrue(Option.isSome(redelivered));
+          yield* Deferred.succeed(release, undefined);
+          yield* waitFor(hasCommandCompleted(CommandId.make(command.commandId)));
+        }),
+      ).pipe(
+        Effect.provide(
+          makeEdaTestLayer({
+            sessionId: SessionId.make(SESSION_ID),
+            ids: freshIds(),
+            seedEvents: seed.map((entry) => entry.event),
+            parts: finalText(),
+            toolRegistry: registry([], release),
+            clock: "live",
+          }),
+        ),
+      );
     }),
   );
 });

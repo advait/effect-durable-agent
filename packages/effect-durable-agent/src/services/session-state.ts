@@ -467,6 +467,8 @@ const makeLiveSessionState = Effect.gen(function* () {
    * that finishes in the background (re-invoked tools) would otherwise race live admission.
    */
   const admissionGate = yield* Semaphore.make(1);
+  /** Set while startup recovery finishes in the background holding the control gate. */
+  const recoveringInBackground = yield* Ref.make(false);
   const deliveryGate = yield* Semaphore.make(1);
   const ingressSignals = yield* Queue.sliding<void>(1);
   // Checkpoints are derived caches: keep only the latest pending boundary snapshot
@@ -1220,6 +1222,10 @@ const makeLiveSessionState = Effect.gen(function* () {
   });
 
   const retryRunSchedulingDelivery = Effect.fnUntraced(function* () {
+    // Background recovery holds the control gate for as long as re-invoked tools run, and forks
+    // delivery itself when it finishes. Waiting here would hold the host's alarm handler, and
+    // with it the keep-alive re-arm and transcript maintenance, until then.
+    if (yield* Ref.get(recoveringInBackground)) return;
     yield* deliveryGate.withPermitsIfAvailable(1)(
       Effect.gen(function* () {
         const request = yield* controlGate.withPermits(1)(
@@ -2699,6 +2705,7 @@ const makeLiveSessionState = Effect.gen(function* () {
     // before anything can interleave) keeps drains, grants and scheduling delivery waiting
     // until the interrupted run has been recovered.
     yield* controlGate.take(1);
+    yield* Ref.set(recoveringInBackground, true);
     yield* Effect.gen(function* () {
       yield* annotateRunInput(input);
       yield* initialize(input);
@@ -2710,7 +2717,9 @@ const makeLiveSessionState = Effect.gen(function* () {
         }),
       );
     }).pipe(
-      Effect.ensuring(controlGate.release(1)),
+      Effect.ensuring(
+        Ref.set(recoveringInBackground, false).pipe(Effect.andThen(controlGate.release(1))),
+      ),
       Effect.andThen(forkSchedulingDelivery()),
       Effect.andThen(runLiveControlLoop(input)),
       // Startup failing synchronously fails the runtime build; failing here must be as loud, or

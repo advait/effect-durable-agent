@@ -16,7 +16,11 @@
 - `ToolCallStarted` gains an optional `attempt` (2 or more) for re-invocations; the reducer keeps
   the first start's `startedSeq`/`startedAtMs` and records `attempt` on the tool-call record,
   which reducer checkpoints carry. Older readers retain the field as excess and treat the
-  extra start as a restart of the same call. The transcript keeps the first start's time.
+  extra start as a restart of the same call. The transcript keeps the first start's time (no
+  transcript revision change: logs without re-invocations project identically; after a rollback,
+  an older reader shows a re-invoked call's start as the re-invocation's).
+- While background recovery runs, an alarm's scheduling redelivery returns at once (recovery
+  delivers when it finishes), so the host re-arms its heartbeat promptly.
 - `EDAToolExecutionContext.queryEvents` accepts `afterSeq`.
 - The test kit's `makeEdaTestLayer` accepts a full `toolRegistry` shape.
 
