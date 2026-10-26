@@ -950,7 +950,7 @@ Current production host:
 - `EDAWebSocketConnectionManager` owns accepted sockets, attachment persistence, restoration,
   and interpretation of core delivery actions;
 - runtime construction retries after a failed hydration/build instead of pinning the warm isolate to a rejected promise;
-- `EDAKeepAlive` integrates with Durable Object alarms/leases so active control/model/sink work can keep the object awake enough to finish or reschedule;
+- `EDAKeepAlive` integrates with Durable Object alarms/leases so active control/model/sink work can keep the object awake enough to finish or reschedule. Cloudflare evicts an object that receives no inbound event for roughly 70-140 s, whatever outbound work it has in flight, so the heartbeat must be *delivered*: a released lease never deletes or postpones an armed keep-alive alarm (work releases and re-acquires between turns, and moving the alarm each time would keep it from ever firing). Only the alarm handler finding no work, or shutdown, clears it, so active work gets a heartbeat at least every interval (30 s) and an object going idle gets one final heartbeat;
 - `alarm()` is `runEDASessionAlarm` (`cf/durable-object-alarm-handler.ts`), unit-tested over real
   SQLite;
 - the Durable Object alarm is shared through `DurableObjectAlarmScheduler`: each owner (`runtime`

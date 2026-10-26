@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.28
 
 - **Fix:** the Cloudflare keep-alive heartbeat is delivered during multi-step work instead of
   being postponed forever. `DurableObjectKeepAlive` deleted the alarm whenever its last lease was
