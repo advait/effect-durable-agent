@@ -278,8 +278,8 @@ the model runtime. Alarm scheduling is shared with runtime work, and neither own
 other's wakeup. Today `syncAlarm` deletes the alarm when no lease is held
 (`cf/durable-object-keepalive.ts:190-192`); this must change. The in-memory keep-alive lease (`cf/durable-object-keepalive.ts:38-49, 190`) is not
 relied on. _As built:_ `cf/durable-object-alarms.ts` keeps one durable wakeup row per owner and
-sets the platform alarm to the earliest. The keep-alive is unchanged and uses its owner's view, so
-its "delete when idle" deletes only its own wakeup, and the alarm handler knows after an eviction
+sets the platform alarm to the earliest. The keep-alive uses its owner's view, so its idle clear
+(made only by its alarm handler or shutdown since alpha.28) deletes only its own wakeup, and the alarm handler knows after an eviction
 whether it fired for the builder (storage-only slices) or the runtime: an owner's wakeup is
 cleared only after its work succeeds, so a retry after a failure or an eviction is still attributed.
 

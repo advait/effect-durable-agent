@@ -38,6 +38,14 @@ export interface DurableObjectKeepAliveLease {
 /**
  * Alarm-backed in-memory keepalive for a raw Durable Object host.
  *
+ * Inbound events (requests, alarms) are what reliably keep an object resident: sessions streaming
+ * model responses and sandbox output were evicted 70-140 seconds after their last inbound event.
+ * The heartbeat therefore has to be delivered, not just scheduled: an armed alarm is never
+ * deleted or postponed when work is released, because finite work (model turns, sink catch-up)
+ * releases and re-acquires between steps, and moving the alarm on every step would keep it from
+ * ever firing. Only the alarm handler, finding no work left, or {@link shutdown} clears it, so a
+ * session that goes idle receives one final heartbeat.
+ *
  * The active lease count is intentionally not durable: if the object is evicted
  * or crashes, the fibers the leases represented are gone too, and normal EDA
  * durable recovery must explain any escaped lifecycle boundaries.
@@ -155,9 +163,9 @@ export class DurableObjectKeepAlive {
     return fiber;
   }
 
-  /** Handle the Durable Object `alarm()` callback and re-arm while work remains. */
+  /** Handle the Durable Object `alarm()` callback: re-arm while work remains, else clear. */
   alarm(): Promise<void> {
-    return this.reschedule();
+    return this.reschedule(true);
   }
 
   /** Permanently stop the heartbeat and prevent later lease releases from re-arming it. */
@@ -166,7 +174,7 @@ export class DurableObjectKeepAlive {
     this.generation += 1;
     this.activeLeases = 0;
     this.runSchedulingPending = false;
-    return this.reschedule();
+    return this.reschedule(true);
   }
 
   /** Start a fresh lease generation after the host intentionally resets its durable state. */
@@ -182,14 +190,17 @@ export class DurableObjectKeepAlive {
     void promise;
   }
 
-  private reschedule(): Promise<void> {
-    this.scheduleTail = this.scheduleTail.catch(() => undefined).then(() => this.syncAlarm());
+  /** `clearWhenIdle`: only the alarm handler and shutdown may remove an idle object's alarm. */
+  private reschedule(clearWhenIdle = false): Promise<void> {
+    this.scheduleTail = this.scheduleTail
+      .catch(() => undefined)
+      .then(() => this.syncAlarm(clearWhenIdle));
     return this.scheduleTail;
   }
 
-  private async syncAlarm(): Promise<void> {
+  private async syncAlarm(clearWhenIdle: boolean): Promise<void> {
     if (this.shutdownRequested || (this.activeLeases === 0 && !this.runSchedulingPending)) {
-      await this.storage.deleteAlarm();
+      if (clearWhenIdle || this.shutdownRequested) await this.storage.deleteAlarm();
       return;
     }
 

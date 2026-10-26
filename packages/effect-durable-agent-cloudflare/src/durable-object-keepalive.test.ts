@@ -68,6 +68,8 @@ describe("DurableObjectKeepAlive", () => {
         yield* Effect.promise(() => reconstructed.alarm());
         assert.strictEqual(storage.alarm, 6_000);
         yield* Effect.promise(() => reconstructed.setRunSchedulingPending(false));
+        assert.strictEqual(storage.alarm, 6_000);
+        yield* Effect.promise(() => reconstructed.alarm());
         assert.isNull(storage.alarm);
       }),
   );
@@ -83,7 +85,7 @@ describe("DurableObjectKeepAlive", () => {
         yield* Effect.promise(() => keepAlive.setRunSchedulingPending(false));
         assert.strictEqual(storage.alarm, 6_000);
         yield* Effect.promise(() => lease.release());
-        assert.isNull(storage.alarm);
+        assert.strictEqual(storage.alarm, 6_000);
       }),
   );
 
@@ -108,6 +110,44 @@ describe("DurableObjectKeepAlive", () => {
 
     await second.release();
     expect(keepAlive.activeLeaseCount).toBe(0);
+    expect(storage.alarm).toBe(6_000);
+    expect(storage.calls).toEqual([{ _tag: "set", at: 6_000 }]);
+  });
+
+  it("delivers a heartbeat through back-to-back short work instead of postponing it", async () => {
+    // A model run releases and re-acquires between turns shorter than the interval. Deleting the
+    // alarm at each release and arming it again at each acquire kept it from ever firing, and an
+    // object with no inbound event for 70-140 s is evicted mid-run.
+    const storage = new FakeAlarmStorage();
+    let now = 1_000;
+    const keepAlive = makeKeepAlive(storage, undefined, () => now);
+    for (let turn = 0; turn < 4; turn += 1) {
+      const lease = await keepAlive.acquire();
+      now += 2_000;
+      await lease.release();
+    }
+    expect(storage.alarm).toBe(6_000);
+    expect(storage.calls).toEqual([{ _tag: "set", at: 6_000 }]);
+
+    const lease = await keepAlive.acquire();
+    now = 6_000;
+    storage.alarm = null;
+    await keepAlive.alarm();
+    expect(storage.alarm).toBe(11_000);
+    await lease.release();
+  });
+
+  it("clears the heartbeat when it fires with no work left", async () => {
+    const storage = new FakeAlarmStorage();
+    let now = 1_000;
+    const keepAlive = makeKeepAlive(storage, undefined, () => now);
+    const lease = await keepAlive.acquire();
+    await lease.release();
+    expect(storage.alarm).toBe(6_000);
+
+    now = 6_000;
+    storage.alarm = null;
+    await keepAlive.alarm();
     expect(storage.alarm).toBeNull();
     expect(storage.calls.at(-1)).toEqual({ _tag: "delete" });
   });
@@ -170,7 +210,7 @@ describe("DurableObjectKeepAlive", () => {
     await lease.release();
 
     expect(keepAlive.activeLeaseCount).toBe(0);
-    expect(storage.calls.filter((call) => call._tag === "delete")).toHaveLength(1);
+    expect(storage.calls).toEqual([{ _tag: "set", at: 6_000 }]);
   });
 
   it("does not re-arm when a stale lease releases after shutdown", async () => {
@@ -202,7 +242,7 @@ describe("DurableObjectKeepAlive", () => {
     expect(storage.alarm).toBe(6_000);
 
     await freshLease.release();
-    expect(storage.alarm).toBeNull();
+    expect(storage.alarm).toBe(6_000);
   });
 
   it("releases the heartbeat when host-wrapped promise work throws", async () => {
@@ -216,7 +256,7 @@ describe("DurableObjectKeepAlive", () => {
     ).rejects.toThrow("boom");
 
     expect(keepAlive.activeLeaseCount).toBe(0);
-    expect(storage.alarm).toBeNull();
+    expect(storage.alarm).toBe(6_000);
   });
 
   it("releases the heartbeat when a host-forked Effect fiber settles", async () => {
@@ -235,7 +275,7 @@ describe("DurableObjectKeepAlive", () => {
 
     expect(Exit.isSuccess(exit)).toBe(true);
     expect(keepAlive.activeLeaseCount).toBe(0);
-    expect(storage.alarm).toBeNull();
+    expect(storage.alarm).toBe(6_000);
   });
 
   it("releases the heartbeat when a host-forked Effect fiber settles immediately", async () => {
@@ -249,6 +289,6 @@ describe("DurableObjectKeepAlive", () => {
 
     expect(exit).toEqual(Exit.succeed("done"));
     expect(keepAlive.activeLeaseCount).toBe(0);
-    expect(storage.alarm).toBeNull();
+    expect(storage.alarm).toBe(6_000);
   });
 });

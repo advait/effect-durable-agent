@@ -444,7 +444,15 @@ describe("EDASessionController", () => {
         );
         yield* Effect.promise(() => third.snapshot(scope));
         assert.strictEqual(deliveries.length, deliveryCount);
+        // Parked work keeps at most its final heartbeat, which clears without redelivering.
+        for (let i = 0; i < 100 && thirdKeepAlive.activeLeaseCount > 0; i += 1)
+          yield* Effect.yieldNow;
+        if (storage.alarm !== null) {
+          storage.alarm = null;
+          yield* Effect.promise(() => third.alarm(scope));
+        }
         assert.isNull(storage.alarm);
+        assert.strictEqual(deliveries.length, deliveryCount);
         const grant = { ...scope, command: new GrantRunCommand({ requestId: request.requestId }) };
         const granted = yield* Effect.promise(() => third.grantRun(grant));
         assert.strictEqual(granted._tag, "Granted");
