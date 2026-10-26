@@ -38,9 +38,9 @@ export interface DurableObjectKeepAliveLease {
 /**
  * Alarm-backed in-memory keepalive for a raw Durable Object host.
  *
- * The platform keeps an object alive only while inbound events (requests, alarms) keep arriving;
- * one that receives none for roughly 70-140 seconds is evicted even with outbound work still in
- * flight. The heartbeat therefore has to be delivered, not just scheduled: an armed alarm is never
+ * Inbound events (requests, alarms) are what reliably keep an object resident: sessions streaming
+ * model responses and sandbox output were evicted 70-140 seconds after their last inbound event.
+ * The heartbeat therefore has to be delivered, not just scheduled: an armed alarm is never
  * deleted or postponed when work is released, because finite work (model turns, sink catch-up)
  * releases and re-acquires between steps, and moving the alarm on every step would keep it from
  * ever firing. Only the alarm handler, finding no work left, or {@link shutdown} clears it, so a
