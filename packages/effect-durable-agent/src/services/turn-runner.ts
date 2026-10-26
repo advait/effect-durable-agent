@@ -33,7 +33,8 @@ import { EventFactory, type EventFactoryShape } from "./event-factory";
 import { IdGenerator } from "./id-generator";
 import { failurePayloadFromCause } from "./started-boundary-guard";
 import { ToolExecutor } from "./tool-executor";
-import type { ToolExecutorError } from "./tool-executor";
+import type { ExecuteToolCallInput, ToolExecutorError } from "./tool-executor";
+import { EDAToolRegistry, toolRecoveryPolicy, type ToolRecoveryPolicy } from "./tool-registry";
 import { InferenceRunResult, InferenceRunner } from "./inference-runner";
 import type { InferenceRunnerError } from "./inference-runner";
 import type { SessionEventSink } from "./session-event-sink";
@@ -91,10 +92,26 @@ const defaultMaxToolRejectionCorrections = NonNegativeInt.make(1);
 const defaultMaxToolCallsPerRun = NonNegativeInt.make(20);
 const maxToolExecutionConcurrency = 10;
 
+/** One interrupted tool call startup recovery re-invokes. */
+export interface ResumedToolCall {
+  readonly created: CommittedDurableEvent;
+  readonly resume: NonNullable<ExecuteToolCallInput["resume"]>;
+}
+
 /** Runtime service that owns inferences, tool execution, and turn terminalization. */
 export interface TurnRunnerShape {
   /** Run one turn around a provider inference stream. */
   readonly runTurn: (input: RunTurnInput) => Effect.Effect<TurnRunResult, TurnRunnerError>;
+  /** The recovery policy the registered toolkit declares for a tool. */
+  readonly toolRecoveryPolicy: (toolName: string) => Effect.Effect<ToolRecoveryPolicy>;
+  /**
+   * Re-invoke interrupted tool calls (concurrently, bounded like a turn's tool batch), each
+   * committing its next start, then its completion or failure.
+   */
+  readonly resumeToolCalls: (input: {
+    readonly calls: ReadonlyArray<ResumedToolCall>;
+    readonly eventSink: SessionEventSink;
+  }) => Effect.Effect<void, ToolExecutorError>;
 }
 
 /** Construct the live turn-runner implementation. */
@@ -103,6 +120,7 @@ const makeLiveTurnRunner = Effect.gen(function* () {
   const events = yield* EventFactory;
   const inferenceRunner = yield* InferenceRunner;
   const toolExecutor = yield* ToolExecutor;
+  const toolRegistry = yield* EDAToolRegistry;
 
   const commitCompletedTurn = (
     input: RunTurnInput,
@@ -271,6 +289,22 @@ const makeLiveTurnRunner = Effect.gen(function* () {
     });
 
   return {
+    toolRecoveryPolicy: (toolName: string) =>
+      toolRegistry
+        .getModelToolkit()
+        .pipe(Effect.map((toolkit) => toolRecoveryPolicy(toolkit, toolName))),
+    resumeToolCalls: ({
+      calls,
+      eventSink,
+    }: {
+      readonly calls: ReadonlyArray<ResumedToolCall>;
+      readonly eventSink: SessionEventSink;
+    }) =>
+      Effect.forEach(
+        calls,
+        ({ created, resume }) => toolExecutor.executeCreated({ created, eventSink, resume }),
+        { concurrency: maxToolExecutionConcurrency, discard: true },
+      ),
     runTurn: Effect.fn("agent.turn")(function* (input: RunTurnInput) {
       const turnIdentity = { runId: input.runId, turnId: input.turnId };
       const maxToolCallsPerRun = input.maxToolCallsPerRun ?? defaultMaxToolCallsPerRun;

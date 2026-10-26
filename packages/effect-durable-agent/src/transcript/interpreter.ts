@@ -586,7 +586,8 @@ const interpretEvent = (
       batch.put({
         ...tool,
         updatedSeq: seq,
-        startedAtMs: at,
+        // A recovery re-invocation keeps the first start's time.
+        startedAtMs: event.payload.attempt === undefined ? at : (tool.startedAtMs ?? at),
         lifecycle: tool.lifecycle._tag === "Created" ? { _tag: "Running" } : tool.lifecycle,
       });
       return;

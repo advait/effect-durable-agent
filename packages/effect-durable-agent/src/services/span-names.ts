@@ -38,6 +38,7 @@ export const SpanNames = defineSpanNames([
   "agent.run.grant",
   "agent.run.request.outcome",
   "agent.session.hydrate",
+  "agent.session.recover.tools",
   "agent.session.snapshot",
   "agent.sink.drain",
   "agent.sink.hydrate",

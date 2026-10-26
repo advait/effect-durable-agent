@@ -120,6 +120,7 @@ import {
 } from "./tracing";
 import type { EDARunTrace, EDATraceLink } from "../types/tracing";
 import { TurnRunner, type TurnRunResult } from "./turn-runner";
+import { maxToolCallAttempts } from "./tool-registry";
 import type { TurnRunnerError } from "./turn-runner";
 
 interface EphemeralAnchorState {
@@ -1652,6 +1653,57 @@ const makeLiveSessionState = Effect.gen(function* () {
       } satisfies ExecutionInspection;
     });
 
+  /**
+   * Before failing what the dead runtime left open, re-invoke each started tool call whose tool
+   * declares `ToolRecovery: "reinvoke"` and still has attempts left. Each commits its next start
+   * before running, so a runtime that dies again mid-reinvocation spends that attempt. Calls that
+   * finish here are terminal by the time recovery plans its batch; the rest are failed as before.
+   */
+  const plannedReinvocations = Effect.fnUntraced(function* (reduced: ReducedState) {
+    const calls: Array<{
+      readonly seq: SequenceNumber;
+      readonly resume: {
+        readonly attempt: number;
+        readonly firstStartedAtMs: number;
+        readonly firstStartedSeq: SequenceNumber;
+      };
+    }> = [];
+    for (const tool of planSessionRecovery(reduced).openToolCalls) {
+      const decision = tool.decision;
+      if (decision?._tag !== "Created" || decision.providerExecuted) continue;
+      if (tool.startedSeq === undefined || tool.startedAtMs === undefined) continue;
+      const attempt = (tool.attempt ?? 1) + 1;
+      if (attempt > maxToolCallAttempts) continue;
+      if ((yield* turnRunner.toolRecoveryPolicy(decision.toolName)) !== "reinvoke") continue;
+      calls.push({
+        seq: decision.seq,
+        resume: {
+          attempt,
+          firstStartedAtMs: tool.startedAtMs,
+          firstStartedSeq: tool.startedSeq,
+        },
+      });
+    }
+    return calls;
+  });
+
+  const resumeInterruptedToolCalls = Effect.fnUntraced(function* (
+    calls: Effect.Success<ReturnType<typeof plannedReinvocations>>,
+  ) {
+    yield* annotateEdaSpan({ "eda.recovery.reinvoked_tool_calls": calls.length });
+    if (calls.length === 0) return;
+    const created = yield* store.loadCommittedEventsBySeq(calls.map((call) => call.seq));
+    yield* turnRunner
+      .resumeToolCalls({
+        calls: calls.flatMap((call) => {
+          const event = created.find((entry) => entry.position.seq === call.seq);
+          return event === undefined ? [] : [{ created: event, resume: call.resume }];
+        }),
+        eventSink: sessionApi,
+      })
+      .pipe(Effect.catchTag("ToolExecutionEventNotCreated", (error) => Effect.die(error)));
+  });
+
   const recoverSession = Effect.fnUntraced(function* (
     reduced: ReducedState,
     reason: string,
@@ -2618,9 +2670,38 @@ const makeLiveSessionState = Effect.gen(function* () {
   });
 
   const start = Effect.fn(function* (input: SessionRunInput) {
-    yield* runStartupRecovery(input);
-    yield* forkSchedulingDelivery();
-    yield* runLiveControlLoop(input).pipe(Effect.forkIn(runtimeScope));
+    const reinvocations = yield* plannedReinvocations(yield* currentReduced());
+    if (reinvocations.length === 0) {
+      yield* runStartupRecovery(input);
+      yield* forkSchedulingDelivery();
+      yield* runLiveControlLoop(input).pipe(Effect.forkIn(runtimeScope));
+      return;
+    }
+    // Re-invoked tools may run for minutes, so recovery finishes in the background while the
+    // runtime already serves reads and accepts input. Holding the control permit (taken here,
+    // before anything can interleave) keeps drains, grants and scheduling delivery waiting
+    // until the interrupted run has been recovered.
+    yield* controlGate.take(1);
+    yield* Effect.gen(function* () {
+      yield* annotateRunInput(input);
+      yield* initialize(input);
+      yield* keepAlive.withActiveWork(
+        "session-recovery",
+        Effect.gen(function* () {
+          yield* withFatalRecording(resumeInterruptedToolCalls(reinvocations));
+          yield* runStartupRecoveryPass(input);
+        }),
+      );
+    }).pipe(
+      Effect.ensuring(controlGate.release(1)),
+      Effect.andThen(forkSchedulingDelivery()),
+      Effect.andThen(runLiveControlLoop(input)),
+      Effect.catchCause((cause) =>
+        Effect.logError("EDA background startup recovery failed", { cause: Cause.pretty(cause) }),
+      ),
+      Effect.withSpan("agent.session.recover.tools"),
+      Effect.forkIn(runtimeScope),
+    );
   });
 
   yield* sinkRegistry.startSinkRunners({

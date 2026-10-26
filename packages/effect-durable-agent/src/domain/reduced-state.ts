@@ -208,7 +208,10 @@ export type ToolTerminal =
 export interface ToolCallRecord extends LifecycleTiming {
   readonly toolCallId: ToolCallId;
   readonly decision?: ToolDecision;
+  /** First start; `startedAtMs` is its time. Later attempts keep both. */
   readonly startedSeq?: SequenceNumber;
+  /** Latest execution attempt (1 when only the first start is recorded). */
+  readonly attempt?: number;
   readonly terminal?: ToolTerminal;
 }
 
@@ -1036,12 +1039,18 @@ export const foldReducedState = (
         break;
       }
       case toolCallStartedEventType: {
-        const { toolCallId } = event.payload;
-        upsert(toolCalls, toolCallId, { toolCallId }, (record) => ({
-          ...record,
-          startedAtMs: eventCreatedAtMs,
-          startedSeq: seq,
-        }));
+        const { toolCallId, attempt } = event.payload;
+        upsert(toolCalls, toolCallId, { toolCallId }, (record) =>
+          attempt === undefined
+            ? { ...record, startedAtMs: eventCreatedAtMs, startedSeq: seq }
+            : {
+                ...record,
+                ...(record.startedSeq === undefined
+                  ? { startedAtMs: eventCreatedAtMs, startedSeq: seq }
+                  : {}),
+                attempt,
+              },
+        );
         break;
       }
       case toolCallCompletedEventType: {

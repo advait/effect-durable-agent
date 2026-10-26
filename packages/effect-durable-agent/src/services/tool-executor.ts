@@ -25,7 +25,7 @@ import { IdGenerator } from "./id-generator";
 import { SessionContext } from "./session-context";
 import { makeStartedBoundaryGuard } from "./started-boundary-guard";
 import { failurePayloadFromCause } from "./started-boundary-guard";
-import { EDAToolRegistry } from "./tool-registry";
+import { EDAToolRegistry, type EDAToolExecutionContext } from "./tool-registry";
 import type { SessionEventSink } from "./session-event-sink";
 import { annotateEdaSpan } from "./tracing";
 
@@ -38,6 +38,8 @@ export type CommittedToolCallCreated = CommittedDurableEvent & {
 export interface ExecuteToolCallInput {
   readonly created: CommittedDurableEvent;
   readonly eventSink: SessionEventSink;
+  /** Set by startup recovery to re-invoke a call whose first attempt was interrupted. */
+  readonly resume?: NonNullable<EDAToolExecutionContext["recovery"]>;
 }
 
 /** Tool execution outcome after committing ToolCallCompleted. */
@@ -120,6 +122,7 @@ const makeLiveToolExecutor = Effect.gen(function* () {
         "eda.tool_call.id": created.event.payload.toolCallId,
         "eda.tool.name": created.event.payload.promptPart.name,
         "eda.tool.provider_executed": created.event.payload.promptPart.providerExecuted,
+        ...(input.resume === undefined ? {} : { "eda.tool.attempt": input.resume.attempt }),
       });
       if (created.event.payload.promptPart.providerExecuted) {
         const outcome = ToolExecutionSkipped.make({ reason: "provider-executed" });
@@ -129,7 +132,10 @@ const makeLiveToolExecutor = Effect.gen(function* () {
 
       const startedBoundaryGuard = makeStartedBoundaryGuard(input.eventSink);
       const guarded = yield* startedBoundaryGuard({
-        start: events.toolCallStarted({ toolCallId: created.event.payload.toolCallId }),
+        start: events.toolCallStarted({
+          toolCallId: created.event.payload.toolCallId,
+          ...(input.resume === undefined ? {} : { attempt: input.resume.attempt }),
+        }),
         body: () =>
           Effect.gen(function* () {
             const handled = yield* registry
@@ -144,6 +150,7 @@ const makeLiveToolExecutor = Effect.gen(function* () {
                   sessionId: session.sessionId,
                   makeEventId: ids.makeEventId,
                   emitDurable: input.eventSink.appendDurable,
+                  ...(input.resume === undefined ? {} : { recovery: input.resume }),
                 },
               )
               .pipe(
