@@ -11,10 +11,11 @@
   and the replacement run's prompt sees both. At most `maxToolCallAttempts` (3) attempts per call.
   When re-invocations are needed, startup returns without waiting for them: reads and admission
   proceed while drains, grants and scheduling delivery wait for recovery (`agent.session.recover.tools`
-  span). See `docs/spec.md` §15 "Tool recovery policies".
+  span); admission waits only while recovery commits its repair. If that background recovery
+  fails, the runtime records it as fatal so later work fails instead of being accepted unprocessed. See `docs/spec.md` §15 "Tool recovery policies".
 - `ToolCallStarted` gains an optional `attempt` (2 or more) for re-invocations; the reducer keeps
-  the first start's `startedSeq`/`startedAtMs` and records `attempt` on the tool-call record
-  (also in the reducer checkpoint schema). Older readers retain the field as excess and treat the
+  the first start's `startedSeq`/`startedAtMs` and records `attempt` on the tool-call record,
+  which reducer checkpoints carry. Older readers retain the field as excess and treat the
   extra start as a restart of the same call. The transcript keeps the first start's time.
 - `EDAToolExecutionContext.queryEvents` accepts `afterSeq`.
 - The test kit's `makeEdaTestLayer` accepts a full `toolRegistry` shape.

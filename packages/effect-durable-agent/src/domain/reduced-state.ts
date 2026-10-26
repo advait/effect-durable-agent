@@ -591,6 +591,7 @@ const encodeCheckpointToolCallRecord = (
   ...(record.durationMs === undefined ? {} : { durationMs: record.durationMs }),
   ...(record.startedAtMs === undefined ? {} : { startedAtMs: record.startedAtMs }),
   ...(record.startedSeq === undefined ? {} : { startedSeq: record.startedSeq }),
+  ...(record.attempt === undefined ? {} : { attempt: record.attempt }),
   ...(record.terminalAtMs === undefined ? {} : { terminalAtMs: record.terminalAtMs }),
   ...(record.terminal === undefined
     ? {}
@@ -685,6 +686,7 @@ const decodeCheckpointToolCallRecords = (
         ...(record.durationMs === undefined ? {} : { durationMs: record.durationMs }),
         ...(record.startedAtMs === undefined ? {} : { startedAtMs: record.startedAtMs }),
         ...(record.startedSeq === undefined ? {} : { startedSeq: record.startedSeq }),
+        ...(record.attempt === undefined ? {} : { attempt: record.attempt }),
         ...(record.terminalAtMs === undefined ? {} : { terminalAtMs: record.terminalAtMs }),
         ...(record.terminal === undefined
           ? {}

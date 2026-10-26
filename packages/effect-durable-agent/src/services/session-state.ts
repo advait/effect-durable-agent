@@ -461,6 +461,12 @@ const makeLiveSessionState = Effect.gen(function* () {
   const gate = yield* Semaphore.make(1);
   // Control actions and trusted grants share ownership; append serialization remains separate.
   const controlGate = yield* Semaphore.make(1);
+  /**
+   * Admission versus startup repair: recovery plans its repair batch from a snapshot and then
+   * checks the result reached a fixed point, so no command may be admitted in between. Recovery
+   * that finishes in the background (re-invoked tools) would otherwise race live admission.
+   */
+  const admissionGate = yield* Semaphore.make(1);
   const deliveryGate = yield* Semaphore.make(1);
   const ingressSignals = yield* Queue.sliding<void>(1);
   // Checkpoints are derived caches: keep only the latest pending boundary snapshot
@@ -808,7 +814,10 @@ const makeLiveSessionState = Effect.gen(function* () {
       return [event, ...clearEvents, submitted];
     });
 
-  const submitBatch = Effect.fn(function* (input: ReadonlyArray<EDASubmittable>) {
+  const submitBatch = (input: ReadonlyArray<EDASubmittable>) =>
+    admissionGate.withPermits(1)(submitBatchAdmitted(input));
+
+  const submitBatchAdmitted = Effect.fn(function* (input: ReadonlyArray<EDASubmittable>) {
     const commandCount = input.filter(isEDACommand).length;
     yield* annotateEdaSpan({
       "eda.command.submittable_count": input.length,
@@ -2597,11 +2606,19 @@ const makeLiveSessionState = Effect.gen(function* () {
       "eda.model.id": input.modelSelection.modelId,
     });
     yield* failIfFatal;
-    const initial = yield* currentReduced();
-    input = { ...input, modelSelection: initial.modelSelection ?? input.modelSelection };
-    const recovery = yield* withFatalRecording(
-      recoverSession(initial, startupRecoveryReason, input),
+    const { initial, recovery } = yield* admissionGate.withPermits(1)(
+      Effect.gen(function* () {
+        const initial = yield* currentReduced();
+        const recovery = yield* withFatalRecording(
+          recoverSession(initial, startupRecoveryReason, {
+            ...input,
+            modelSelection: initial.modelSelection ?? input.modelSelection,
+          }),
+        );
+        return { initial, recovery };
+      }),
     );
+    input = { ...input, modelSelection: initial.modelSelection ?? input.modelSelection };
     yield* requestStartupRecoveryCheckpointIfNeeded();
     if (recovery.continuation !== undefined) {
       yield* closeRunTraceOnFailure(
@@ -2696,8 +2713,16 @@ const makeLiveSessionState = Effect.gen(function* () {
       Effect.ensuring(controlGate.release(1)),
       Effect.andThen(forkSchedulingDelivery()),
       Effect.andThen(runLiveControlLoop(input)),
+      // Startup failing synchronously fails the runtime build; failing here must be as loud, or
+      // the session would accept input that nothing processes. Later work fails until the
+      // object restarts and recovery runs again.
       Effect.catchCause((cause) =>
-        Effect.logError("EDA background startup recovery failed", { cause: Cause.pretty(cause) }),
+        Effect.gen(function* () {
+          const message = `EDA background startup recovery failed: ${Cause.pretty(cause)}`;
+          yield* markFatalIfDurable(cause);
+          yield* Ref.update(fatalInvariantViolation, (current) => current ?? message);
+          yield* Effect.logError(message);
+        }),
       ),
       Effect.withSpan("agent.session.recover.tools"),
       Effect.forkIn(runtimeScope),

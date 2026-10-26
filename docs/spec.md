@@ -897,7 +897,10 @@ sees both. Calls that were created but never started, and provider-executed call
 Re-invoked tools can run for minutes, so when recovery has any to run, startup does not wait for
 them: it takes the control gate before returning, and re-invocation, the repair batch, the
 replacement turn and the control loop then run in the background. Reads and admission proceed
-meanwhile; drains, run grants and scheduling delivery wait for the gate.
+meanwhile; drains, run grants and scheduling delivery wait for the gate. Admission and the repair
+batch share an admission gate, so no command is admitted between recovery planning its batch and
+checking that it reached a fixed point. A background recovery that fails records a fatal runtime
+state: later work fails, as after a store failure, rather than being accepted and never run.
 
 `RecoveryCompleted` is emitted only when startup recovery commits at least one
 lifecycle repair, stop application, compaction repair, message resumption, or

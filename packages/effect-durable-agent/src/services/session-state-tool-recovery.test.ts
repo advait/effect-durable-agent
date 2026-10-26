@@ -1,5 +1,8 @@
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Prompt from "effect/ai/Prompt";
@@ -7,7 +10,14 @@ import * as Response from "effect/ai/Response";
 import * as Tool from "effect/ai/Tool";
 import { assert, describe, it } from "@effect/vitest";
 
-import { reduceCommittedEvents } from "../domain/reduced-state";
+import {
+  decodeReducedStateCheckpoint,
+  encodeReducedStateCheckpoint,
+  reduceCommittedEvents,
+} from "../domain/reduced-state";
+import { LocalRunResolution } from "../domain/run-scheduling";
+import { EDAKeepAlive } from "./keep-alive";
+import { RunScheduler } from "./run-scheduler";
 import { CommandId, SessionId, ToolCallId } from "../types/core";
 import { sequentialUuidV7 } from "./id-generator";
 import type { CommittedDurableEvent } from "./session-store";
@@ -25,6 +35,7 @@ import {
   collectCommitted,
   command,
   secondCommand,
+  steerCommand,
   hasCommandCompleted,
   modelSelection,
   NoopParams,
@@ -303,6 +314,94 @@ describe("startup recovery with tool recovery policies", () => {
       );
       assert.strictEqual(toolTerminal(committed, "resumable")?.terminal?._tag, "Completed");
       assert.isTrue(hasCommandCompleted(CommandId.make(command.commandId))(committed));
+    }),
+  );
+
+  it.effect("holds admission while recovery commits its repair, so steering cannot break it", () =>
+    Effect.gen(function* () {
+      const seed = yield* crashWhileBothToolsRun;
+      const resolving = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      // Recovery pauses inside its repair (resolving the replacement run) while a steer arrives.
+      const scheduler = Layer.succeed(RunScheduler, {
+        resolve: () =>
+          Deferred.succeed(resolving, undefined).pipe(
+            Effect.andThen(Deferred.await(resume)),
+            Effect.as(LocalRunResolution.make({})),
+          ),
+        deliver: () => Effect.die("not deferred"),
+      });
+      const committed = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const state = yield* SessionState;
+          yield* state.start({ modelSelection });
+          yield* Deferred.await(resolving);
+          const steer = yield* state.admitCommand(steerCommand).pipe(Effect.forkScoped);
+          for (let i = 0; i < 20; i += 1) yield* Effect.yieldNow;
+          yield* Deferred.succeed(resume, undefined);
+          yield* Fiber.join(steer);
+          return yield* waitFor(hasCommandCompleted(CommandId.make(command.commandId)));
+        }),
+      ).pipe(
+        Effect.provide(
+          makeEdaTestLayer({
+            sessionId: SessionId.make(SESSION_ID),
+            ids: freshIds(),
+            seedEvents: seed.map((entry) => entry.event),
+            parts: [...finalText(), ...finalText()],
+            toolRegistry: registry([], false),
+            runSchedulerLayer: scheduler,
+          }),
+        ),
+      );
+      assert.strictEqual(toolTerminal(committed, "resumable")?.terminal?._tag, "Completed");
+    }),
+  );
+
+  it.effect("rejects later work when background recovery fails instead of dropping it", () =>
+    Effect.gen(function* () {
+      const seed = yield* crashWhileBothToolsRun;
+      const failingRecovery = Layer.succeed(EDAKeepAlive, {
+        withActiveWork: (label, effect) =>
+          label === "session-recovery" ? Effect.die("alarm write rejected") : effect,
+      });
+      const admitted = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const state = yield* SessionState;
+          yield* state.start({ modelSelection });
+          for (let i = 0; i < 50; i += 1) yield* Effect.yieldNow;
+          return yield* Effect.exit(state.admitCommand(secondCommand));
+        }),
+      ).pipe(
+        Effect.provide(
+          makeEdaTestLayer({
+            sessionId: SessionId.make(SESSION_ID),
+            ids: freshIds(),
+            seedEvents: seed.map((entry) => entry.event),
+            parts: finalText(),
+            toolRegistry: registry([], false),
+            keepAliveLayer: failingRecovery,
+          }),
+        ),
+      );
+      assert.isTrue(Exit.isFailure(admitted));
+    }),
+  );
+
+  it.effect("keeps a re-invocation's attempt across a reducer checkpoint", () =>
+    Effect.gen(function* () {
+      const seed = yield* crashWhileBothToolsRun;
+      const state = reduceCommittedEvents(seed);
+      const [toolCallId, tool] = Array.from(state.toolCalls.entries())[0] ?? [];
+      assert.isDefined(tool);
+      if (toolCallId === undefined || tool === undefined) return;
+      const retried = {
+        ...state,
+        toolCalls: new Map([...state.toolCalls, [toolCallId, { ...tool, attempt: 2 }]]),
+      };
+      const restored = decodeReducedStateCheckpoint(encodeReducedStateCheckpoint(retried), seed);
+      assert.strictEqual(restored.toolCalls.get(toolCallId)?.attempt, 2);
+      assert.strictEqual(restored.toolCalls.get(toolCallId)?.startedSeq, tool.startedSeq);
     }),
   );
 });
