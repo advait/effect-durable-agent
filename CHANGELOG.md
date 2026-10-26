@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.0-alpha.30
+
+- **Feature:** tool recovery policies. A tool annotated `ToolRecovery: "reinvoke"`
+  (`effect-durable-agent/services/tool-registry`) has a call that was running when the runtime
+  died re-invoked by startup recovery, with `EDAToolExecutionContext.recovery = { attempt,
+  firstStartedAtMs, firstStartedSeq }`, instead of being failed. Tools without the annotation keep
+  today's behaviour (`fail`). Recovery re-invokes before planning its repair batch, so one
+  interrupted inference can recover in a mixed state (re-invoked results plus restart failures),
+  and the replacement run's prompt sees both. At most `maxToolCallAttempts` (3) attempts per call.
+  When re-invocations are needed, startup returns without waiting for them: reads and admission
+  proceed while drains, grants and scheduling delivery wait for recovery (`agent.session.recover.tools`
+  span); admission waits only while recovery commits its repair. If that background recovery
+  fails, the runtime records it as fatal so later work fails instead of being accepted unprocessed. See `docs/spec.md` §15 "Tool recovery policies".
+- `ToolCallStarted` gains an optional `attempt` (2 or more) for re-invocations; the reducer keeps
+  the first start's `startedSeq`/`startedAtMs` and records `attempt` on the tool-call record,
+  which reducer checkpoints carry. Older readers retain the field as excess and treat the
+  extra start as a restart of the same call. The transcript keeps the first start's time (no
+  transcript revision change: logs without re-invocations project identically; after a rollback,
+  an older reader shows a re-invoked call's start as the re-invocation's).
+- While background recovery runs, an alarm's scheduling redelivery returns at once (recovery
+  delivers when it finishes), so the host re-arms its heartbeat promptly.
+- `EDAToolExecutionContext.queryEvents` accepts `afterSeq`.
+- The test kit's `makeEdaTestLayer` accepts a full `toolRegistry` shape.
+
 ## 0.1.0-alpha.29
 
 - **Fix:** the keep-alive heartbeat keeps itself armed when its alarm is delivered at exactly the

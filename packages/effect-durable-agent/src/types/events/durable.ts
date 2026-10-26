@@ -671,8 +671,16 @@ export const ToolCallRejectedEvent = durableEventSchema(
 );
 export type ToolCallRejectedEvent = typeof ToolCallRejectedEvent.Type;
 
-/** Payload recorded when framework-owned tool execution starts. */
-export const ToolCallStartedPayload = Schema.Struct({ toolCallId: ToolCallId });
+/**
+ * One execution attempt of a framework-owned tool call. The first start carries no `attempt`
+ * (attempt 1). Startup recovery re-invokes a started call whose tool declares
+ * `ToolRecovery: "reinvoke"` by committing another start with the next `attempt` before
+ * running it, so the attempt count survives a runtime that dies again mid-reinvocation.
+ */
+export const ToolCallStartedPayload = Schema.Struct({
+  toolCallId: ToolCallId,
+  attempt: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(2))),
+});
 export type ToolCallStartedPayload = typeof ToolCallStartedPayload.Type;
 export const ToolCallStartedEvent = durableEventSchema(
   toolCallStartedEventType,

@@ -272,6 +272,7 @@ export const ToolCallRecordSchema = Schema.Struct({
   ...LifecycleTimingFields,
   decision: Schema.optionalKey(ToolDecisionSchema),
   startedSeq: Schema.optionalKey(SequenceNumber),
+  attempt: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(2))),
   terminal: Schema.optionalKey(ToolTerminalSchema),
   toolCallId: ToolCallId,
 });

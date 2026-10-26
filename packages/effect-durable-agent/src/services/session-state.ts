@@ -120,6 +120,7 @@ import {
 } from "./tracing";
 import type { EDARunTrace, EDATraceLink } from "../types/tracing";
 import { TurnRunner, type TurnRunResult } from "./turn-runner";
+import { maxToolCallAttempts } from "./tool-registry";
 import type { TurnRunnerError } from "./turn-runner";
 
 interface EphemeralAnchorState {
@@ -460,6 +461,14 @@ const makeLiveSessionState = Effect.gen(function* () {
   const gate = yield* Semaphore.make(1);
   // Control actions and trusted grants share ownership; append serialization remains separate.
   const controlGate = yield* Semaphore.make(1);
+  /**
+   * Admission versus startup repair: recovery plans its repair batch from a snapshot and then
+   * checks the result reached a fixed point, so no command may be admitted in between. Recovery
+   * that finishes in the background (re-invoked tools) would otherwise race live admission.
+   */
+  const admissionGate = yield* Semaphore.make(1);
+  /** Set while startup recovery finishes in the background holding the control gate. */
+  const recoveringInBackground = yield* Ref.make(false);
   const deliveryGate = yield* Semaphore.make(1);
   const ingressSignals = yield* Queue.sliding<void>(1);
   // Checkpoints are derived caches: keep only the latest pending boundary snapshot
@@ -807,7 +816,10 @@ const makeLiveSessionState = Effect.gen(function* () {
       return [event, ...clearEvents, submitted];
     });
 
-  const submitBatch = Effect.fn(function* (input: ReadonlyArray<EDASubmittable>) {
+  const submitBatch = (input: ReadonlyArray<EDASubmittable>) =>
+    admissionGate.withPermits(1)(submitBatchAdmitted(input));
+
+  const submitBatchAdmitted = Effect.fn(function* (input: ReadonlyArray<EDASubmittable>) {
     const commandCount = input.filter(isEDACommand).length;
     yield* annotateEdaSpan({
       "eda.command.submittable_count": input.length,
@@ -1210,6 +1222,10 @@ const makeLiveSessionState = Effect.gen(function* () {
   });
 
   const retryRunSchedulingDelivery = Effect.fnUntraced(function* () {
+    // Background recovery holds the control gate for as long as re-invoked tools run, and forks
+    // delivery itself when it finishes. Waiting here would hold the host's alarm handler, and
+    // with it the keep-alive re-arm and transcript maintenance, until then.
+    if (yield* Ref.get(recoveringInBackground)) return;
     yield* deliveryGate.withPermitsIfAvailable(1)(
       Effect.gen(function* () {
         const request = yield* controlGate.withPermits(1)(
@@ -1651,6 +1667,57 @@ const makeLiveSessionState = Effect.gen(function* () {
         turn: exit.value,
       } satisfies ExecutionInspection;
     });
+
+  /**
+   * Before failing what the dead runtime left open, re-invoke each started tool call whose tool
+   * declares `ToolRecovery: "reinvoke"` and still has attempts left. Each commits its next start
+   * before running, so a runtime that dies again mid-reinvocation spends that attempt. Calls that
+   * finish here are terminal by the time recovery plans its batch; the rest are failed as before.
+   */
+  const plannedReinvocations = Effect.fnUntraced(function* (reduced: ReducedState) {
+    const calls: Array<{
+      readonly seq: SequenceNumber;
+      readonly resume: {
+        readonly attempt: number;
+        readonly firstStartedAtMs: number;
+        readonly firstStartedSeq: SequenceNumber;
+      };
+    }> = [];
+    for (const tool of planSessionRecovery(reduced).openToolCalls) {
+      const decision = tool.decision;
+      if (decision?._tag !== "Created" || decision.providerExecuted) continue;
+      if (tool.startedSeq === undefined || tool.startedAtMs === undefined) continue;
+      const attempt = (tool.attempt ?? 1) + 1;
+      if (attempt > maxToolCallAttempts) continue;
+      if ((yield* turnRunner.toolRecoveryPolicy(decision.toolName)) !== "reinvoke") continue;
+      calls.push({
+        seq: decision.seq,
+        resume: {
+          attempt,
+          firstStartedAtMs: tool.startedAtMs,
+          firstStartedSeq: tool.startedSeq,
+        },
+      });
+    }
+    return calls;
+  });
+
+  const resumeInterruptedToolCalls = Effect.fnUntraced(function* (
+    calls: Effect.Success<ReturnType<typeof plannedReinvocations>>,
+  ) {
+    yield* annotateEdaSpan({ "eda.recovery.reinvoked_tool_calls": calls.length });
+    if (calls.length === 0) return;
+    const created = yield* store.loadCommittedEventsBySeq(calls.map((call) => call.seq));
+    yield* turnRunner
+      .resumeToolCalls({
+        calls: calls.flatMap((call) => {
+          const event = created.find((entry) => entry.position.seq === call.seq);
+          return event === undefined ? [] : [{ created: event, resume: call.resume }];
+        }),
+        eventSink: sessionApi,
+      })
+      .pipe(Effect.catchTag("ToolExecutionEventNotCreated", (error) => Effect.die(error)));
+  });
 
   const recoverSession = Effect.fnUntraced(function* (
     reduced: ReducedState,
@@ -2545,11 +2612,19 @@ const makeLiveSessionState = Effect.gen(function* () {
       "eda.model.id": input.modelSelection.modelId,
     });
     yield* failIfFatal;
-    const initial = yield* currentReduced();
-    input = { ...input, modelSelection: initial.modelSelection ?? input.modelSelection };
-    const recovery = yield* withFatalRecording(
-      recoverSession(initial, startupRecoveryReason, input),
+    const { initial, recovery } = yield* admissionGate.withPermits(1)(
+      Effect.gen(function* () {
+        const initial = yield* currentReduced();
+        const recovery = yield* withFatalRecording(
+          recoverSession(initial, startupRecoveryReason, {
+            ...input,
+            modelSelection: initial.modelSelection ?? input.modelSelection,
+          }),
+        );
+        return { initial, recovery };
+      }),
     );
+    input = { ...input, modelSelection: initial.modelSelection ?? input.modelSelection };
     yield* requestStartupRecoveryCheckpointIfNeeded();
     if (recovery.continuation !== undefined) {
       yield* closeRunTraceOnFailure(
@@ -2618,9 +2693,49 @@ const makeLiveSessionState = Effect.gen(function* () {
   });
 
   const start = Effect.fn(function* (input: SessionRunInput) {
-    yield* runStartupRecovery(input);
-    yield* forkSchedulingDelivery();
-    yield* runLiveControlLoop(input).pipe(Effect.forkIn(runtimeScope));
+    const reinvocations = yield* plannedReinvocations(yield* currentReduced());
+    if (reinvocations.length === 0) {
+      yield* runStartupRecovery(input);
+      yield* forkSchedulingDelivery();
+      yield* runLiveControlLoop(input).pipe(Effect.forkIn(runtimeScope));
+      return;
+    }
+    // Re-invoked tools may run for minutes, so recovery finishes in the background while the
+    // runtime already serves reads and accepts input. Holding the control permit (taken here,
+    // before anything can interleave) keeps drains, grants and scheduling delivery waiting
+    // until the interrupted run has been recovered.
+    yield* controlGate.take(1);
+    yield* Ref.set(recoveringInBackground, true);
+    yield* Effect.gen(function* () {
+      yield* annotateRunInput(input);
+      yield* initialize(input);
+      yield* keepAlive.withActiveWork(
+        "session-recovery",
+        Effect.gen(function* () {
+          yield* withFatalRecording(resumeInterruptedToolCalls(reinvocations));
+          yield* runStartupRecoveryPass(input);
+        }),
+      );
+    }).pipe(
+      Effect.ensuring(
+        Ref.set(recoveringInBackground, false).pipe(Effect.andThen(controlGate.release(1))),
+      ),
+      Effect.andThen(forkSchedulingDelivery()),
+      Effect.andThen(runLiveControlLoop(input)),
+      // Startup failing synchronously fails the runtime build; failing here must be as loud, or
+      // the session would accept input that nothing processes. Later work fails until the
+      // object restarts and recovery runs again.
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          const message = `EDA background startup recovery failed: ${Cause.pretty(cause)}`;
+          yield* markFatalIfDurable(cause);
+          yield* Ref.update(fatalInvariantViolation, (current) => current ?? message);
+          yield* Effect.logError(message);
+        }),
+      ),
+      Effect.withSpan("agent.session.recover.tools"),
+      Effect.forkIn(runtimeScope),
+    );
   });
 
   yield* sinkRegistry.startSinkRunners({

@@ -874,6 +874,34 @@ On startup `SessionState`:
 
 The synchronous startup pass is part of the host wakeup contract: a Durable Object alarm that cold-starts a session runtime does not return from runtime construction until stale lifecycle repair has had a chance to commit durable terminal events. After that finite pass, the long-lived control loop handles live ingress and active-turn completion.
 
+#### Tool recovery policies
+
+A tool declares what recovery does with a call that had started when the runtime died, through
+the `ToolRecovery` Effect AI tool annotation (`effect-durable-agent/services/tool-registry`):
+
+- `fail` (default): the call is failed with the startup-recovery reason, as above.
+- `reinvoke`: before planning the repair batch, recovery runs the handler again with the same
+  tool-call id and params and `EDAToolExecutionContext.recovery = { attempt, firstStartedAtMs,
+  firstStartedSeq }`. Declare it only when a second invocation of the same call is safe because it
+  attaches to, or returns the outcome of, the original execution (for example an idempotency key
+  derived from the tool-call id) rather than repeating its side effects.
+
+Each re-invocation first commits another `ToolCallStarted` carrying its `attempt` (2 or more; the
+first start carries none), so the count survives a runtime that dies again mid-reinvocation; the
+call's record keeps its first start's seq and time. A call reaches at most `maxToolCallAttempts`
+(3) attempts and is failed after that. Calls a re-invocation finishes are terminal when recovery
+plans its batch, so one interrupted inference can recover in a mixed state: re-invoked calls carry
+their real result and the rest carry the restart failure, and the replacement run's first prompt
+sees both. Calls that were created but never started, and provider-executed calls, are unaffected.
+
+Re-invoked tools can run for minutes, so when recovery has any to run, startup does not wait for
+them: it takes the control gate before returning, and re-invocation, the repair batch, the
+replacement turn and the control loop then run in the background. Reads and admission proceed
+meanwhile; drains, run grants and scheduling delivery wait for the gate. Admission and the repair
+batch share an admission gate, so no command is admitted between recovery planning its batch and
+checking that it reached a fixed point. A background recovery that fails records a fatal runtime
+state: later work fails, as after a store failure, rather than being accepted and never run.
+
 `RecoveryCompleted` is emitted only when startup recovery commits at least one
 lifecycle repair, stop application, compaction repair, message resumption, or
 replacement run. An idle cold start emits no recovery event. The event is last

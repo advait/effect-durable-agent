@@ -6,9 +6,39 @@ import * as Stream from "effect/Stream";
 import * as Tool from "effect/ai/Tool";
 import * as Toolkit from "effect/ai/Toolkit";
 
-import { EventId, SessionId, ToolCallId, RunId, TurnId } from "../types/core";
+import { EventId, SequenceNumber, SessionId, ToolCallId, RunId, TurnId } from "../types/core";
 import { DurableEventEnvelope, ToolName } from "../types/events";
 import type { CommittedDurableEvent, EDASessionStoreError } from "./session-store";
+
+/**
+ * What startup recovery does with a call to this tool that had started when the runtime died.
+ *
+ * - `fail` (default): record the call as failed; the model sees the interruption and decides.
+ * - `reinvoke`: run the handler again with the same tool-call id and params, passing
+ *   {@link EDAToolExecutionContext.recovery}. Declare it only when a second invocation of the
+ *   same call is safe: it must attach to, or return the outcome of, the original execution
+ *   rather than repeat its side effects (for example an idempotency key derived from the
+ *   tool-call id). Recovery re-invokes at most {@link maxToolCallAttempts} times in total.
+ */
+export type ToolRecoveryPolicy = "fail" | "reinvoke";
+
+/** Effect AI tool annotation declaring a tool's {@link ToolRecoveryPolicy}. */
+export const ToolRecovery = Context.Reference<ToolRecoveryPolicy>(
+  "effect-durable-agent/ToolRecovery",
+  { defaultValue: () => "fail" },
+);
+
+/** Total execution attempts, including the first, that recovery allows one tool call. */
+export const maxToolCallAttempts = 3;
+
+/** The recovery policy a toolkit declares for `toolName`; `fail` for unknown tools. */
+export const toolRecoveryPolicy = (
+  toolkit: EDAModelToolkit | undefined,
+  toolName: string,
+): ToolRecoveryPolicy => {
+  const tool = toolkit?.tools[toolName];
+  return tool === undefined ? "fail" : Context.get(tool.annotations, ToolRecovery);
+};
 
 /** Runtime parameter schema associated with a provider-visible tool name. */
 export type ToolParamsSchema = Schema.Top;
@@ -23,10 +53,10 @@ export interface EDAToolExecutionContext {
   /** Run and turn that durably created this tool call. */
   readonly runId: RunId;
   readonly turnId: TurnId;
-  /** Read typed facts from this session journal. */
+  /** Read typed facts from this session journal, optionally only those after `afterSeq`. */
   readonly queryEvents: <E extends DurableEventEnvelope>(
     schema: Schema.Codec<E, unknown, never, never>,
-    options?: { readonly limit?: number },
+    options?: { readonly limit?: number; readonly afterSeq?: SequenceNumber },
   ) => Effect.Effect<ReadonlyArray<CommittedDurableEvent<E>>, EDASessionStoreError>;
   /** Session identity fixed for this runtime instance. */
   readonly sessionId: SessionId;
@@ -36,6 +66,17 @@ export interface EDAToolExecutionContext {
   readonly emitDurable: (
     event: DurableEventEnvelope,
   ) => Effect.Effect<CommittedDurableEvent, EDASessionStoreError>;
+  /**
+   * Present when startup recovery re-invokes a call that had started before the runtime died
+   * (its tool declares `ToolRecovery: "reinvoke"`). Facts the first attempt committed are in the
+   * journal after `firstStartedSeq`.
+   */
+  readonly recovery?: {
+    /** This attempt, 2 or more. */
+    readonly attempt: number;
+    readonly firstStartedAtMs: number;
+    readonly firstStartedSeq: SequenceNumber;
+  };
 }
 
 /** Registry contract used by model streaming and post-finish tool execution. */

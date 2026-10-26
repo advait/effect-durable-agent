@@ -29,7 +29,11 @@ import { EDASessionQuery } from "../services/session-query";
 import { SessionState } from "../services/session-state";
 import { ToolExecutor } from "../services/tool-executor";
 import { EDAToolRegistry } from "../services/tool-registry";
-import type { EDAModelToolkit, ToolParamsSchema } from "../services/tool-registry";
+import type {
+  EDAModelToolkit,
+  EDAToolRegistryShape,
+  ToolParamsSchema,
+} from "../services/tool-registry";
 import { InferenceRunner } from "../services/inference-runner";
 import { ModelResolver } from "../services/model-resolver";
 import type { InferenceRunnerStreamPart } from "../services/inference-runner";
@@ -173,6 +177,8 @@ export interface EdaTestLayerOptions {
   }) => void;
   /** Handler-backed Effect Toolkit; overrides `toolSchemas` when present. */
   readonly toolkit?: EDAModelToolkit;
+  /** Full registry shape (handlers receive the EDA execution context); overrides `toolkit`. */
+  readonly toolRegistry?: EDAToolRegistryShape;
   /** Test/convenience schema-only tools; execution fails unless `toolkit` is provided. */
   readonly toolSchemas?: ReadonlyMap<string, ToolParamsSchema>;
   /** Durable prefix used when constructing a fresh in-memory runtime for recovery tests. */
@@ -244,11 +250,13 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
   const Models = options.modelResolverLayer ?? ModelResolver.Fixed.pipe(Layer.provideMerge(Model));
   const CompactionExecutorLayer = options.compactionExecutorLayer ?? CompactionExecutor.Disabled;
   const Registry =
-    options.toolkit !== undefined
-      ? EDAToolRegistry.FromToolkit(options.toolkit)
-      : options.toolSchemas === undefined
-        ? EDAToolRegistry.Empty
-        : EDAToolRegistry.FromSchemas(options.toolSchemas);
+    options.toolRegistry !== undefined
+      ? EDAToolRegistry.FromShape(options.toolRegistry)
+      : options.toolkit !== undefined
+        ? EDAToolRegistry.FromToolkit(options.toolkit)
+        : options.toolSchemas === undefined
+          ? EDAToolRegistry.Empty
+          : EDAToolRegistry.FromSchemas(options.toolSchemas);
   const Compaction = CompactionRunner.Live.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
