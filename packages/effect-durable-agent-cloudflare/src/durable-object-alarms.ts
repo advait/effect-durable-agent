@@ -29,14 +29,17 @@ export class DurableObjectAlarmScheduler {
 
   /**
    * One owner's alarm, behaving like the platform alarm restricted to that owner. Like the
-   * platform's, it reports no alarm once its time has passed: a wakeup left behind when the
+   * platform's, it reports no alarm once its time has come: a wakeup left behind when the
    * platform gave up retrying a failed alarm must not look armed, or its owner would never re-arm.
+   * "Come" includes the exact millisecond: inside the alarm it fired for, the Workers clock
+   * commonly reads exactly the scheduled time, and a wakeup that still looked armed then would
+   * keep the keep-alive from re-arming before the handler clears it.
    */
   owner(owner: DurableObjectAlarmOwner): DurableObjectAlarmStorage {
     return {
       getAlarm: () => {
         const wakeup = this.#wakeup(owner);
-        return wakeup === undefined || wakeup < this.now() ? null : wakeup;
+        return wakeup === undefined || wakeup <= this.now() ? null : wakeup;
       },
       setAlarm: (scheduledTimeMs) => {
         this.#write(owner, scheduledTimeMs);

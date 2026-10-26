@@ -963,7 +963,7 @@ Current production host:
   owner's is cleared only after its work succeeds, and only if it still holds the time that fired,
   so a handler that throws or dies mid-work leaves the platform's retry attributed to every owner
   it fired for. A handler whose runtime failed rethrows without re-arming the alarm, so the
-  platform's backoff and retry cap apply. An owner's view reports a past wakeup as no alarm, so
+  platform's backoff and retry cap apply. An owner's view reports a wakeup at or before now as no alarm (inside its own alarm the Workers clock commonly reads exactly the scheduled millisecond), so
   the keep-alive re-arms during its work and after the platform gives up retrying;
 - session destruction shuts down in-memory keep-alive state and deletes the Durable Object alarm before deleting storage, then recreates the empty tables (a new log and incarnation);
 - WebSocket hibernation restores exact ACK-window state from an Effect Schema attachment.

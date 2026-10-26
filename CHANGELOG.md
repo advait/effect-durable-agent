@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0-alpha.29
+
+- **Fix:** the keep-alive heartbeat keeps itself armed when its alarm is delivered at exactly the
+  scheduled millisecond. Inside the alarm, the Workers clock commonly reads exactly the scheduled
+  time, and `DurableObjectAlarmScheduler`'s owner view reported a wakeup at `now` as still armed.
+  The keep-alive then skipped its re-arm and the handler cleared the wakeup it fired for, so
+  active work lost its heartbeat at most alarms; work whose next lease came more than 70-140 s
+  later (a long inference or tool) was evicted as before alpha.28. Measured in production on
+  alpha.28: the handler re-armed after 0 of 31 alarms delivered on time. The owner view now reports
+  a wakeup at or before `now` as no alarm. No storage, protocol or API change.
+
 ## 0.1.0-alpha.28
 
 - **Fix:** the Cloudflare keep-alive heartbeat is delivered during multi-step work instead of
