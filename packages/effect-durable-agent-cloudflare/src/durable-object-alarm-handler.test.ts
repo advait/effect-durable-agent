@@ -6,6 +6,7 @@ import {
   type EDASessionAlarmParticipants,
 } from "./durable-object-alarm-handler";
 import { DurableObjectAlarmScheduler } from "./durable-object-alarms";
+import { DurableObjectKeepAlive } from "./durable-object-keepalive";
 import { DurableObjectSessionStore } from "./durable-object-store";
 import { SqliteDurableObjectStorage } from "./testing/sqlite-durable-object-storage";
 
@@ -51,6 +52,24 @@ const failing = (message: string) => async (): Promise<never> => {
 };
 
 describe("runEDASessionAlarm", () => {
+  it("re-arms the keep-alive when the alarm fires at exactly its scheduled millisecond", async () => {
+    // Inside the alarm, the Workers clock commonly reads exactly the scheduled time. The fired
+    // wakeup must read as consumed, or the keep-alive skips its re-arm and the handler then
+    // clears the wakeup, leaving active work with no heartbeat until Cloudflare evicts it.
+    const { storage, clock, alarms, fire } = harness();
+    const keepAlive = new DurableObjectKeepAlive(alarms.owner("runtime"), undefined, {
+      intervalMs: 30_000,
+      now: () => clock.now,
+    });
+    clock.now = 1_000;
+    const lease = await keepAlive.acquire();
+    expect(storage.alarm).toBe(31_000);
+    clock.now = 31_000;
+    await fire({ runRuntime: () => keepAlive.alarm() });
+    expect(storage.alarm).toBe(61_000);
+    await lease.release();
+  });
+
   it("runs the runtime for its own wakeup and for an alarm no owner recorded", async () => {
     const recorded = harness();
     await recorded.alarms.request("runtime", 100);
