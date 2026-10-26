@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Fix:** the Cloudflare keep-alive heartbeat is delivered during multi-step work instead of
+  being postponed forever. `DurableObjectKeepAlive` deleted the alarm whenever its last lease was
+  released and re-armed it one interval ahead on the next acquire. A model run releases and
+  re-acquires between turns, so with turns shorter than the interval the alarm never fired, the
+  object received no inbound event, and Cloudflare evicted it as idle 70-140 s into the run
+  (startup recovery then failed the open inference or tool). Releasing work now leaves an armed
+  alarm in place; only the alarm handler, finding no work left, or `shutdown()` clears it. An object
+  that goes idle receives one final heartbeat. No storage, protocol or API change.
+
 ## 0.1.0-alpha.27
 
 Hosts read user-visible history only from the transcript.

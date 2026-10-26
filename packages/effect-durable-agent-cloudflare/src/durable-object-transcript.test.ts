@@ -932,6 +932,10 @@ describe("DurableObjectAlarmScheduler", () => {
     expect(storage.alarm).toBe(500);
     alarms.clearThrough("transcript", 500);
     await alarms.sync();
+    // The released keep-alive keeps its final heartbeat until that fires with no work left.
+    expect(storage.alarm).toBe(6_000);
+    clock = 6_000;
+    await keepAlive.alarm();
     expect(storage.alarm).toBeNull();
   });
 
