@@ -9,10 +9,11 @@ Status: implemented
 
 These specialize the principle leaves and **typescript-best-practices** for this repository.
 
-- **Effect v4, pinned exactly.** `effect` and `@effect/ai-*` are `4.0.3` everywhere, as
-  devDependencies and as exact peers. Effect AI and HTTP are `@stability unstable` upstream; the
-  exact pin owns that risk ([UPGRADE_LOG](../../../UPGRADE_LOG.md)). Upgrade the whole aligned set
-  together and record it in `UPGRADE_LOG.md`.
+- **Effect v4, one aligned minor.** `effect`, `@effect/ai-*` and `@effect/vitest` are pinned
+  exactly as devDependencies (`4.1.2`) and allowed patch releases as peers (`~4.1.2`). Effect AI and
+  HTTP are `@stability unstable` upstream, so a new Effect minor is an EDA release
+  ([releasing](../../../docs/releasing.md#versioning)). Upgrade the whole aligned set together and
+  record it in `UPGRADE_LOG.md`.
 - **Toolchain.** TypeScript 7 (tsgo), Vite+ (`vp fmt`, `vp pack`, `vp test`) and oxlint with
   `--deny-warnings`. `mise run install` patches oxlint for Effect diagnostics; run it before
   linting. The repository's own oxlint rules live in `packages/effect-durable-agent/tooling/oxlint`

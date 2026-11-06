@@ -32,10 +32,10 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260813.1",
-    "@effect/ai-openai": "4.0.3",
+    "@effect/ai-openai": "4.1.2",
     "@effect/tsgo": "0.51.1",
     "@types/node": "^25.7.0",
-    "effect": "4.0.3",
+    "effect": "4.1.2",
     "effect-durable-agent": "workspace:*",
     "effect-durable-agent-celld": "workspace:*",
     "effect-durable-agent-cloudflare": "workspace:*",

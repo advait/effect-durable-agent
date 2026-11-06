@@ -1,5 +1,26 @@
 # Dependency Upgrade Log
 
+**Date:** 2026-11-06
+**Project:** Effect Durable Agent
+
+## Summary
+
+- Updated the aligned Effect v4 package set from `4.0.3` to `4.1.2`, and changed its peers from an
+  exact pin to `~4.1.2`
+- Kept Effect tsgo `0.51.1`, Oxlint `1.87.0` and Vitest 4.1 (`@effect/vitest` 4.1.2 still declares
+  Vitest 5; the root manifest's single peer allowance still applies)
+
+## Migration notes
+
+- `effect/Crypto` is gone: `IdGenerator.Live` uses `SecureRandom.layerWebCrypto` and
+  `SecureRandom.uuidV7()` from `effect/crypto`, which cannot fail.
+- `Response.ResponseMetadataPart` no longer has `request`.
+- `Prompt.FilePartEncoded["data"]` adds `{ _tag: "Uint8Array", base64 }` and `{ _tag: "URL", href }`.
+- Validation: build, lint, typecheck, unit, property, replay-memory, integration and isolated
+  Worker package checks (`pnpm run ci`).
+
+---
+
 **Date:** 2026-10-12
 **Project:** Effect Durable Agent
 

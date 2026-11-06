@@ -62,11 +62,24 @@ const byteArrayDataUrl = (data: Uint8Array, mediaType: string): string => {
   return `data:${mediaType};base64,${btoa(binary)}`;
 };
 
+const jsonFileData = (data: Prompt.FilePartEncoded["data"], mediaType: string): string => {
+  if (typeof data === "string") {
+    return data;
+  }
+  if (data instanceof URL) {
+    return data.href;
+  }
+  if (data instanceof Uint8Array) {
+    return byteArrayDataUrl(data, mediaType);
+  }
+  return data._tag === "URL" ? data.href : `data:${mediaType};base64,${data.base64}`;
+};
+
 /**
  * Canonical Effect Prompt file part with an explicit JSON string encoding.
  *
  * Strings pass through unchanged, URLs use their href, and bytes become a data
- * URL. Decoding produces the normal Prompt.FilePart type.
+ * URL, whether given directly or in Effect's tagged JSON form. Decoding produces the normal Prompt.FilePart type.
  */
 export const JsonPromptFilePart = JsonPromptFilePartEncoded.pipe(
   Schema.decodeTo(
@@ -76,12 +89,7 @@ export const JsonPromptFilePart = JsonPromptFilePartEncoded.pipe(
       encode: (part) => ({
         ...part,
         "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
-        data:
-          typeof part.data === "string"
-            ? part.data
-            : part.data instanceof URL
-              ? part.data.href
-              : byteArrayDataUrl(part.data, part.mediaType),
+        data: jsonFileData(part.data, part.mediaType),
         options: part.options ?? {},
       }),
     }),

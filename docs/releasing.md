@@ -8,14 +8,28 @@ their published manifests.
 
 ## Current public baseline
 
-The current lockstep release target is `0.1.0-alpha.30`. The `alpha` npm dist-tag should resolve to
-that version for core, Cloudflare, and celld after publication. Keep `latest` at
-`0.1.0-alpha.4` until the new alpha has been verified and deliberately promoted. Consumers should
-name the exact lockstep version so dependency updates remain deliberate.
+The current lockstep release is `0.1.0`, the first stable release. The `latest` npm dist-tag
+resolves to it for core, Cloudflare, and celld; `alpha` stays at the final alpha,
+`0.1.0-alpha.30`. Consumers should name the exact lockstep version so dependency updates remain
+deliberate.
 
 Do not reuse a published version or create a GitHub release for an older tag: publishing that
 release would run the npm workflow against an immutable registry version. The Git tag alone does
 not trigger the workflow.
+
+## Versioning
+
+Releases follow semver for 0.x: a patch release (`0.1.1`) fixes behaviour without changing the
+API, and a minor release (`0.2.0`) may change the API. Every change still records its storage,
+protocol and API impact in `CHANGELOG.md`.
+
+Durable data is forward-compatible only. Every release reads event logs, checkpoints and
+transcript tables written by any earlier release, and schema migrations run forward. Rolling a
+host back to an older release after a newer one has written is not supported; fix forward with a
+new release.
+
+The Effect peers allow patch releases of the Effect minor the packages were built against
+(`~4.1.2`). Moving to a new Effect minor is a new EDA release.
 
 ## One-time trusted-publisher setup
 
@@ -47,29 +61,22 @@ registry requirements.
 
 ## Release channels
 
-While the API is in alpha, every package's `publishConfig.tag` remains `alpha`. The workflow also
-passes `--tag alpha` explicitly for prerelease versions, because package-manager support for the
-manifest default is not consistent. Consumers should install the same version of core and host. For
-an existing package, an alpha-tagged publish advances only `alpha` and does not move `latest`. npm
-may initialize `latest` when a package name is published for the first time, even when that first
-publish uses another tag; verify both tags after bootstrapping a new package name.
+A stable version publishes with `publishConfig.tag` `latest`, and a prerelease with `alpha`;
+`pnpm run release:versions` enforces the pairing, and `publish:workspace` passes the manifest's tag
+explicitly because package-manager support for the manifest default is not consistent. An
+alpha-tagged publish advances only `alpha` and does not move `latest`. npm may initialize `latest`
+when a package name is published for the first time, even when that first publish uses another
+tag; verify both tags after bootstrapping a new package name.
 
-If an alpha has been verified and should also become the default for unqualified installs, an
-authenticated maintainer can move `latest` explicitly:
+Trusted publishing authorizes `npm publish`, not `npm dist-tag`, so changing a dist-tag by hand is
+an interactive maintainer operation and may require two-factor authentication. Always name the
+exact version:
 
 ```bash
-npm dist-tag add effect-durable-agent@0.1.0-alpha.7 latest
-npm dist-tag add effect-durable-agent-cloudflare@0.1.0-alpha.7 latest
-npm dist-tag add effect-durable-agent-celld@0.1.0-alpha.7 latest
+npm dist-tag add effect-durable-agent@0.1.0 latest
+npm dist-tag add effect-durable-agent-cloudflare@0.1.0 latest
+npm dist-tag add effect-durable-agent-celld@0.1.0 latest
 ```
-
-Trusted publishing authorizes `npm publish`, not `npm dist-tag`, so changing a dist-tag is an
-interactive maintainer operation and may require two-factor authentication. Always name the exact
-version being promoted.
-
-For the first stable release, remove the prerelease suffix and change `publishConfig.tag` to
-`latest` in the version PR. Leave `alpha` pointing to the final alpha unless there is a deliberate
-reason to move or remove it.
 
 ## Release checklist
 
@@ -89,22 +96,21 @@ reason to move or remove it.
 
 5. Merge the version PR and confirm `CI` passes on `master`.
 6. Create a GitHub release targeting the merged commit. Its tag must be exactly
-   `v<package version>`; for example, `v0.1.0-alpha.7`.
+   `v<package version>`; for example, `v0.1.1`. Mark it as a pre-release only for a prerelease version.
 7. Wait for the `Publish to npm` workflow to pass. The workflow independently reruns the full
    release check and rejects a tag that does not match the core package manifest.
 8. Verify the registry metadata and dist-tags:
 
    ```bash
    for package_name in effect-durable-agent effect-durable-agent-cloudflare effect-durable-agent-celld; do
-     npm view "$package_name@0.1.0-alpha.7" name version repository.url dist.integrity --json
+     npm view "$package_name@0.1.1" name version repository.url dist.integrity --json
      npm dist-tag ls "$package_name"
    done
    ```
 
 9. Install from the public registry in a clean consumer and run its typecheck and bundle. Do not
    validate only against the repository or a local tarball.
-10. If desired for the alpha channel, move `latest` only after the registry install succeeds.
-11. Update downstream consumers, including the `goguardian/gia` submodule pin, in a separate PR.
+10. Update downstream consumers, including the `goguardian/gia` submodule pin, in a separate PR.
 
 ## Failure handling
 

@@ -5,7 +5,7 @@ Cloudflare Durable Objects host for [`effect-durable-agent`](../effect-durable-a
 Executable examples live in the repository's shared [`examples`](../../examples) directory.
 
 ```sh
-pnpm add effect-durable-agent@alpha effect-durable-agent-cloudflare@alpha
+pnpm add effect-durable-agent effect-durable-agent-cloudflare
 ```
 
 ```ts

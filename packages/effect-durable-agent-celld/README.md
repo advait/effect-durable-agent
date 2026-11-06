@@ -6,7 +6,7 @@ Start with the deployable [`examples/004-celld-no-tools`](../../examples/004-cel
 application.
 
 ```sh
-pnpm add effect-durable-agent@alpha effect-durable-agent-celld@alpha
+pnpm add effect-durable-agent effect-durable-agent-celld
 ```
 
 ```ts

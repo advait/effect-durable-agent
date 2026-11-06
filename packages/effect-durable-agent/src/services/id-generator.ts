@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import { SecureRandom } from "effect/crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -34,18 +34,6 @@ export interface IdGeneratorShape {
   readonly makeCorrelationId: () => Effect.Effect<CorrelationId>;
 }
 
-const WebCryptoLive = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => {
-      const bytes = new Uint8Array(size);
-      globalThis.crypto.getRandomValues(bytes);
-      return bytes;
-    },
-    digest: () => Effect.die(new Error("IdGenerator does not use Crypto.digest")),
-  }),
-);
-
 /** Mints framework-owned UUIDv7 lifecycle IDs for effect-durable-agent. */
 export class IdGenerator extends Context.Service<IdGenerator, IdGeneratorShape>()(
   "@effect-durable-agent/IdGenerator",
@@ -53,10 +41,10 @@ export class IdGenerator extends Context.Service<IdGenerator, IdGeneratorShape>(
   static readonly Live = Layer.effect(
     IdGenerator,
     Effect.gen(function* () {
-      const crypto = yield* Crypto.Crypto;
-      return makeIdGenerator(crypto.randomUUIDv7().pipe(Effect.orDie));
+      const random = yield* SecureRandom.SecureRandom;
+      return makeIdGenerator(random.uuidV7());
     }),
-  ).pipe(Layer.provide(WebCryptoLive));
+  ).pipe(Layer.provide(SecureRandom.layerWebCrypto));
 
   static readonly Deterministic = (ids: ReadonlyArray<string>) =>
     Layer.sync(IdGenerator, () => {
