@@ -9,21 +9,22 @@ Status: implemented
 
 ## Who uses it
 
-effect-durable-agent (EDA) is a public library: three lockstep npm packages,
+effect-durable-agent (EDA) is published publicly as three lockstep npm packages,
 `effect-durable-agent`, `effect-durable-agent-cloudflare` and `effect-durable-agent-celld`
-([releasing](../../../docs/releasing.md)). The core gets roughly 2-3k downloads a month. Its main
-deployed consumer is GoGuardian's Gia (`goguardian/gia`), which pins an exact published version
-through its pnpm catalog and runs EDA sessions in production Durable Objects. Gia carries this
-repository as a submodule but installs EDA from npm, so a change reaches Gia only through a
-release and a pin bump.
+([releasing](../../../docs/releasing.md)), but GoGuardian's Gia (`goguardian/gia`) is its only
+consumer. Gia pins an exact published version through its pnpm catalog and runs EDA sessions in
+production Durable Objects. It carries this repository as a submodule but installs EDA from npm,
+so a change reaches Gia only through a release and a pin bump. With one consumer, favour moving
+fast over compatibility ceremony: a breaking API change is fine when Gia's pin-bump PR absorbs it.
 
 ## What is one-way
 
 - **Published versions.** npm versions are immutable; never reuse one
   ([releasing](../../../docs/releasing.md#failure-handling)).
 - **Stored histories.** Event logs, reducer and sink checkpoints and transcript tables live in
-  deployed Durable Objects and must stay readable by every later version. Unknown fields are
-  retained as excess so an older reader survives a rollback; keep that true.
+  deployed Durable Objects and must stay readable by every later version. Compatibility is
+  forward-only: rolling a host back to an older version after a newer one has written is not
+  supported, so a bad release is fixed forward.
 - **Schema migrations.** `_eda_schema_migrations` migrations are forward-only
   ([spec](../../../docs/spec.md)).
 - **Wire contracts.** The WebSocket protocol ([websocket-protocol](../../../docs/websocket-protocol.md)),
