@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.0
+
+First stable release. It publishes to the `latest` npm dist-tag; `alpha` stays at
+`0.1.0-alpha.30`. See [versioning](./docs/releasing.md#versioning): 0.x semver, and durable data is
+forward-compatible only (no rollback to an older release after a newer one has written).
+
+- **Breaking:** Effect `4.0.3` to `4.1.2`. The `effect`, `@effect/ai-openai` and
+  `@effect/ai-anthropic` peers are now `~4.1.2` instead of an exact pin, so hosts may take Effect
+  patch releases without an EDA release. Hosts must upgrade their aligned Effect set to 4.1.
+- `IdGenerator.Live` mints UUIDv7s through Effect's `SecureRandom` (`effect/crypto`), which
+  replaced `effect/Crypto`.
+- Inference response metadata no longer records `request`: Effect AI 4.1 removed it from
+  `ResponseMetadataPart`. The stored field is `Schema.Unknown`; existing events read unchanged.
+- `JsonPromptFilePart` also encodes Effect's tagged JSON forms of file bytes and URLs.
+- Install instructions use the default dist-tag instead of `@alpha`.
+
+No storage format or protocol change.
+
 ## 0.1.0-alpha.30
 
 - **Feature:** tool recovery policies. A tool annotated `ToolRecovery: "reinvoke"`

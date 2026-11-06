@@ -476,7 +476,6 @@ describe("InferenceRunner", () => {
         id: "response-1",
         modelId: "model-1",
         timestamp: undefined,
-        request: undefined,
         metadata: { provider: "metadata" },
       }),
       Response.makePart("finish", {
@@ -513,7 +512,6 @@ describe("InferenceRunner", () => {
                 id: "response-1",
                 modelId: "model-1",
                 timestamp: undefined,
-                request: undefined,
                 metadata: { provider: "metadata" },
               },
               finishMetadata: { response: undefined, metadata: { finish: "metadata" } },

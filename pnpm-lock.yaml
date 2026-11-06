@@ -16,8 +16,8 @@ importers:
         specifier: 5.20260813.1
         version: 5.20260813.1
       '@effect/ai-openai':
-        specifier: 4.0.3
-        version: 4.0.3(effect@4.0.3)
+        specifier: 4.1.2
+        version: 4.1.2(effect@4.1.2)
       '@effect/tsgo':
         specifier: 0.51.1
         version: 0.51.1
@@ -25,8 +25,8 @@ importers:
         specifier: ^25.7.0
         version: 25.9.5
       effect:
-        specifier: 4.0.3
-        version: 4.0.3
+        specifier: 4.1.2
+        version: 4.1.2
       effect-durable-agent:
         specifier: workspace:*
         version: link:packages/effect-durable-agent
@@ -73,20 +73,20 @@ importers:
         specifier: 5.20260813.1
         version: 5.20260813.1
       '@effect/ai-openai':
-        specifier: 4.0.3
-        version: 4.0.3(effect@4.0.3)
+        specifier: 4.1.2
+        version: 4.1.2(effect@4.1.2)
       '@effect/tsgo':
         specifier: 0.51.1
         version: 0.51.1
       '@effect/vitest':
-        specifier: 4.0.3
-        version: 4.0.3(effect@4.0.3)(vitest@4.1.10(@types/node@25.9.5)(@vitest/browser-preview@4.1.11(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0))(vitest@4.1.10))(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0)))
+        specifier: 4.1.2
+        version: 4.1.2(effect@4.1.2)(vitest@4.1.10(@types/node@25.9.5)(@vitest/browser-preview@4.1.11(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0))(vitest@4.1.10))(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0)))
       '@types/node':
         specifier: ^25.7.0
         version: 25.9.5
       effect:
-        specifier: 4.0.3
-        version: 4.0.3
+        specifier: 4.1.2
+        version: 4.1.2
       esbuild:
         specifier: ^0.28.1
         version: 0.28.1
@@ -131,11 +131,11 @@ importers:
         specifier: 5.20260813.1
         version: 5.20260813.1
       '@effect/ai-openai':
-        specifier: 4.0.3
-        version: 4.0.3(effect@4.0.3)
+        specifier: 4.1.2
+        version: 4.1.2(effect@4.1.2)
       effect:
-        specifier: 4.0.3
-        version: 4.0.3
+        specifier: 4.1.2
+        version: 4.1.2
       vite-plus:
         specifier: 0.3.0
         version: 0.3.0(@arethetypeswrong/core@0.18.5)(@types/node@25.9.5)(esbuild@0.28.1)(publint@0.3.22)(tsx@4.21.0)(typescript@7.0.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0))(yaml@2.9.0)
@@ -156,17 +156,17 @@ importers:
         specifier: 5.20260813.1
         version: 5.20260813.1
       '@effect/ai-anthropic':
-        specifier: 4.0.3
-        version: 4.0.3(effect@4.0.3)
+        specifier: 4.1.2
+        version: 4.1.2(effect@4.1.2)
       '@effect/ai-openai':
-        specifier: 4.0.3
-        version: 4.0.3(effect@4.0.3)
+        specifier: 4.1.2
+        version: 4.1.2(effect@4.1.2)
       '@effect/vitest':
-        specifier: 4.0.3
-        version: 4.0.3(effect@4.0.3)(vitest@4.1.10(@types/node@25.9.5)(@vitest/browser-preview@4.1.11(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0))(vitest@4.1.10))(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0)))
+        specifier: 4.1.2
+        version: 4.1.2(effect@4.1.2)(vitest@4.1.10(@types/node@25.9.5)(@vitest/browser-preview@4.1.11(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0))(vitest@4.1.10))(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0)))
       effect:
-        specifier: 4.0.3
-        version: 4.0.3
+        specifier: 4.1.2
+        version: 4.1.2
       vite-plus:
         specifier: 0.3.0
         version: 0.3.0(@arethetypeswrong/core@0.18.5)(@types/node@25.9.5)(esbuild@0.28.1)(publint@0.3.22)(tsx@4.21.0)(typescript@7.0.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0))(yaml@2.9.0)
@@ -258,15 +258,15 @@ packages:
     resolution: {integrity: sha512-IchNf6dN4tHoMFIn/7OE8LWZ19Y6q/67Bmf6vnGREv8RSbBVb9LPJxEcnwrcwX6ixSvaiGoomAUvu4YSxXrVgw==}
     engines: {node: '>=12'}
 
-  '@effect/ai-anthropic@4.0.3':
-    resolution: {integrity: sha512-c0rKev8Bg9iwBTiuANlq+2DV3XUnLeNbb8ZPzU5KPpzvuNOBpc2yZpFqjlxZa3V7azE4iKT+YeSGJ62fQNk6Fw==}
+  '@effect/ai-anthropic@4.1.2':
+    resolution: {integrity: sha512-HeFop5b4QY5YKKWXmdM1FJdqIqk91wueqt6hcGGTd9bASpQX2Pw2tjIzCsu+HxZgOKVW2EDQ9G1MpVOC+Tvs8g==}
     peerDependencies:
-      effect: ^4.0.3
+      effect: ^4.1.2
 
-  '@effect/ai-openai@4.0.3':
-    resolution: {integrity: sha512-jdD/5uryLdlnf2XEUe1yAPSKzsYGpgBX65azWAaLtcMPk4FlP5xq3JnLfVOtOLAgiRMJ9RaMmd/7GVUeW5q3hA==}
+  '@effect/ai-openai@4.1.2':
+    resolution: {integrity: sha512-u2RkBOj718eQQmZan3mJh0PJDLzhbZ4qFmMc/uSJhS0jmUoiaQI8SsCzENpNk0TRkt8lxEK4urohpeV5/xDWBQ==}
     peerDependencies:
-      effect: ^4.0.3
+      effect: ^4.1.2
 
   '@effect/tsgo-darwin-arm64@0.51.1':
     resolution: {integrity: sha512-Jx+1RB3pz1B2zYs1EmxybwDOq9KRpfdu/rn1XTULNMZmqUJZuvTQU9CRqB0g/ZgIa6MeNBZEYvmAu4Dq2/QVWA==}
@@ -307,10 +307,10 @@ packages:
     resolution: {integrity: sha512-i6mA6cNah+0mkPdu8qZILCO3Pnd9kWo03/s82Ju+1DFhdL28HFagi+1PRGxqgq1uMaHziWQ+ciKvOmIoks2RdA==}
     hasBin: true
 
-  '@effect/vitest@4.0.3':
-    resolution: {integrity: sha512-jsIkpssf0CFuOeycW2sQZkWx0qzlsRv+JIkzd9qQpoFDcHC9JZFSdIjEBAhsdp20pDy4Y/b2vT/ew7wXZxvEig==}
+  '@effect/vitest@4.1.2':
+    resolution: {integrity: sha512-JJPwAHkJHxvM/woW9mMW/khjasAHcmwWdOMAgMy16rfqsxcVhFDnrRsvN9VI2+kMv8zDCCyBE2q1n5hzZlfE0w==}
     peerDependencies:
-      effect: ^4.0.3
+      effect: ^4.1.2
       vitest: '>=5.0.0 <6.0.0'
 
   '@emnapi/core@1.11.1':
@@ -1746,8 +1746,8 @@ packages:
   dom-accessibility-api@0.5.16:
     resolution: {integrity: sha512-X7BJ2yElsnOJ30pZF4uIIDfBEVgF4XEBxL9Bxhy6dnrm5hkzqmsWHGTiHqRiITNhMyFLyAiWndIJP7Z1NTteDg==}
 
-  effect@4.0.3:
-    resolution: {integrity: sha512-LoWn/Uwwx0JjHSDmBAAahx8sB+klzM6vsZovnbYowBNw6B4QScJLRLBByO61plvNiycx7HPN8FnsWUCu0eXW5w==}
+  effect@4.1.2:
+    resolution: {integrity: sha512-d3Oah1WyKxFLFh19yWheS5IXIVaITzxZ71JkE1rkUozq/6EcJSU5nPk5bF2QrSygZ3SQoiNQB8TsxFriyMeMaQ==}
 
   error-stack-parser-es@1.0.5:
     resolution: {integrity: sha512-5qucVt2XcuGMcEGgWI7i+yZpmpByQ8J1lHhcL7PwqCwu9FPP3VUXzT4ltHe5i2z9dePwEHcDVOAfSnHsOlCXRA==}
@@ -2342,13 +2342,13 @@ snapshots:
     dependencies:
       '@jridgewell/trace-mapping': 0.3.9
 
-  '@effect/ai-anthropic@4.0.3(effect@4.0.3)':
+  '@effect/ai-anthropic@4.1.2(effect@4.1.2)':
     dependencies:
-      effect: 4.0.3
+      effect: 4.1.2
 
-  '@effect/ai-openai@4.0.3(effect@4.0.3)':
+  '@effect/ai-openai@4.1.2(effect@4.1.2)':
     dependencies:
-      effect: 4.0.3
+      effect: 4.1.2
 
   '@effect/tsgo-darwin-arm64@0.51.1':
     optional: true
@@ -2381,9 +2381,9 @@ snapshots:
       '@effect/tsgo-win32-arm64': 0.51.1
       '@effect/tsgo-win32-x64': 0.51.1
 
-  '@effect/vitest@4.0.3(effect@4.0.3)(vitest@4.1.10(@types/node@25.9.5)(@vitest/browser-preview@4.1.11(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0))(vitest@4.1.10))(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0)))':
+  '@effect/vitest@4.1.2(effect@4.1.2)(vitest@4.1.10(@types/node@25.9.5)(@vitest/browser-preview@4.1.11(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0))(vitest@4.1.10))(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0)))':
     dependencies:
-      effect: 4.0.3
+      effect: 4.1.2
       vitest: 4.1.10(@types/node@25.9.5)(@vitest/browser-preview@4.1.11(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0))(vitest@4.1.10))(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(tsx@4.21.0)(yaml@2.9.0))
 
   '@emnapi/core@1.11.1':
@@ -3270,7 +3270,7 @@ snapshots:
 
   dom-accessibility-api@0.5.16: {}
 
-  effect@4.0.3: {}
+  effect@4.1.2: {}
 
   error-stack-parser-es@1.0.5: {}
 

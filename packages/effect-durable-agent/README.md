@@ -179,16 +179,16 @@ versions are not a supported combination; keep the versions identical when upgra
 
 ## Get started
 
-Install the core and one host from the public alpha channel:
+Install the core and one host:
 
 ```bash
-pnpm add effect-durable-agent@alpha effect-durable-agent-cloudflare@alpha
+pnpm add effect-durable-agent effect-durable-agent-cloudflare
 ```
 
 For celld, select its host package at the same version instead:
 
 ```bash
-pnpm add effect-durable-agent@alpha effect-durable-agent-celld@alpha
+pnpm add effect-durable-agent effect-durable-agent-celld
 ```
 
 The smallest Cloudflare host is a concrete Durable Object subclass:

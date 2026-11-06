@@ -1,6 +1,6 @@
 {
   "name": "effect-durable-agent-celld",
-  "version": "0.1.0-alpha.30",
+  "version": "0.1.0",
   "description": "celld host for effect-durable-agent.",
   "keywords": [
     "agents",
@@ -48,20 +48,20 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/",
-    "tag": "alpha"
+    "tag": "latest"
   },
   "dependencies": {
     "effect-durable-agent": "workspace:*",
     "effect-durable-agent-cloudflare": "workspace:*"
   },
   "peerDependencies": {
-    "@effect/ai-openai": "4.0.3",
-    "effect": "4.0.3"
+    "@effect/ai-openai": "~4.1.2",
+    "effect": "~4.1.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260813.1",
-    "@effect/ai-openai": "4.0.3",
-    "effect": "4.0.3",
+    "@effect/ai-openai": "4.1.2",
+    "effect": "4.1.2",
     "vite-plus": "0.3.0",
     "vitest": "^4.1.8"
   }

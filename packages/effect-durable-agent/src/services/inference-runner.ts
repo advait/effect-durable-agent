@@ -807,7 +807,6 @@ const makeResponseMetadata = (part: Response.ResponseMetadataPart) => ({
   id: part.id,
   modelId: part.modelId,
   timestamp: part.timestamp,
-  request: part.request,
   metadata: part.metadata,
 });
 

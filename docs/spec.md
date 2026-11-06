@@ -43,8 +43,8 @@ package manifests plus local `node_modules` before changing API-shaped docs.
 
 | Package | Version | Current role |
 | --- | --- | --- |
-| `effect` | `4.0.3` | Core Effect modules and `effect/ai`. |
-| `@effect/ai-openai` | `4.0.3` | OpenAI provider adapter. |
+| `effect` | `~4.1.2` | Core Effect modules and `effect/ai`. |
+| `@effect/ai-openai` | `~4.1.2` | OpenAI provider adapter. |
 
 Important version facts:
 
