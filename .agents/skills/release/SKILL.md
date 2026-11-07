@@ -37,18 +37,46 @@ to npm. The full publishing procedure and failure handling are in
 
 ## Publishing a version
 
-1. A version PR sets the same new, never-published version in all three package manifests,
-   refreshes `pnpm-lock.yaml` and adds the `CHANGELOG.md` entry. A stable version also sets every
-   `publishConfig.tag` to `latest`; `pnpm run release:versions` enforces the tag.
-2. `pnpm install --frozen-lockfile && pnpm run release:check` passes locally; review and land it
-   as above.
-3. Create a GitHub release on the merged commit, tag exactly `v<version>`, marked prerelease only
-   for a prerelease version.
-4. Watch `Publish to npm` (`.github/workflows/publish.yml`) to green. On failure follow
-   [releasing](../../../docs/releasing.md#failure-handling); never retry by moving the tag.
-5. Run the **verify** skill's registry lane for all three packages.
-6. Open a separate PR in `goguardian/gia` bumping the catalog pin and
-   `gia-cf/package.json`'s `effect-durable-agent-cloudflare`, landed through Gia's own **release**
-   skill.
+Publishing is one sequence. Once the go-ahead names the version, run every step below in order
+without handing back between them: a finished wait (CI, the publish run) is the cue for the next
+step, never a stopping point. The only stops are a failure, a step this skill says needs the
+maintainer, or the hand-back after step 7.
 
-Hand back the merged SHA, the release URL, the registry evidence and the Gia PR.
+1. **Version PR.** Set the same new, never-published version in all three package manifests,
+   refresh `pnpm-lock.yaml` and add the `CHANGELOG.md` entry. A stable version also sets every
+   `publishConfig.tag` to `latest`; `pnpm run release:versions` enforces the tag.
+2. **Land it.** `pnpm install --frozen-lockfile && pnpm run release:check` passes locally; review
+   and merge as above. When the version PR is stacked on another PR, merge the lower one without
+   `--delete-branch`, retarget the version PR to `master`, then delete the branch: deleting a base
+   branch closes the PRs stacked on it.
+3. **Wait for `master` CI** on the merge commit to succeed:
+   `gh run list -R advait/effect-durable-agent --branch master --workflow CI --json headSha,conclusion`.
+4. **Create the GitHub release.** A merged version PR publishes nothing by itself. Only a release
+   triggers `publish.yml`:
+
+   ```bash
+   git show origin/master:CHANGELOG.md | awk '/^## <version>$/{f=1;next} /^## /{if(f)exit} f' > "$tmp/notes.md"
+   gh release create v<version> -R advait/effect-durable-agent --target <merge sha> \
+     --title "<version>" --notes-file "$tmp/notes.md" --latest   # --prerelease instead of --latest for a prerelease
+   ```
+
+5. **Wait for `Publish to npm`** (`gh run list -R advait/effect-durable-agent --workflow publish.yml`,
+   the run whose branch is `v<version>`) to succeed. On failure follow
+   [releasing](../../../docs/releasing.md#failure-handling); never retry by moving the tag.
+6. **Verify the registry** with the **verify** skill's registry lane for all three packages.
+7. **Gia.** Open a separate PR in `goguardian/gia` bumping the catalog pin and
+   `gia-cf/package.json`'s `effect-durable-agent-cloudflare`, landed through Gia's own **release**
+   skill. Hand the version to another agent instead when the maintainer names one doing that work.
+
+**Done means all of these hold**; check them before handing back, and if any fails, the release
+is not done:
+
+```bash
+gh release view v<version> -R advait/effect-durable-agent --json tagName,isPrerelease,url
+for p in effect-durable-agent effect-durable-agent-cloudflare effect-durable-agent-celld; do
+  npm view "$p@<version>" version && npm view "$p" dist-tags --json
+done
+```
+
+Hand back the merged SHA, the release URL, the publish run URL, the registry evidence and the Gia
+PR (or who it was handed to).
