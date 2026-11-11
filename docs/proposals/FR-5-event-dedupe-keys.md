@@ -59,6 +59,27 @@ share a natural key collide, which is the bug the docs-site review found. With
 An app that wants "first of X or Y wins" can give both the same type or put the choice in a
 reducer.
 
+## Choosing a key
+
+The store can only enforce the key it is given. The typed docs-site code
+(`docs-site/research/handoff-types/`, branch `t3/handoff-effect-types` at `3f68e50a1`) found two
+ways to pick a wrong one. Both belong in the documentation for this feature.
+
+- **Two facts from one natural key.** `FormSubmitted` and `HandoffRequested` both derive from
+  `formId`. With a hand-made id the event type has to be hashed in, or the second fact is dropped.
+  That code hashes `[namespace, kind, ...parts]` for this reason. Its `test/eda.test.ts` proves on
+  EDA's in-memory runtime that both facts are stored and that a replayed batch adds no rows. The
+  type in the triple makes this the default.
+- **A fact that can happen again.** A key says "this happens once". `SalesforceWorkSettled` was
+  keyed on `effectId`. A cleanup item that stays owed after an `Abandoned` outcome settles a
+  second time, the second report collapsed into the first, and the item stayed owed forever. The
+  property test in `test/rules.property.test.ts` found it. The key became `effectId` plus the
+  outcome tag. The same holds for a heartbeat or a recurring timer, which needs its due time in
+  the key.
+
+The rule for the docs is short. The key names one occurrence. If the fact can recur for the same
+subject, the key includes what distinguishes the occurrences.
+
 ## Public API
 
 ### Envelope

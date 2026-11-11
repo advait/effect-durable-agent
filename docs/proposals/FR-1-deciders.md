@@ -165,6 +165,28 @@ Registration fails at construction on a duplicate name or a name that starts wit
 A decider needs ids that it cannot mint. The caller mints them and passes them in the input. That
 is deliberate. A retry carries the same input, so it carries the same ids.
 
+### Tools decide too
+
+`EDAToolExecutionContext` gains the same call, bound to the session.
+
+```ts
+readonly decide: <Input, Result, Rejection>(
+  decider: EDADecider<string, Input, Result, Rejection>,
+  input: Input,
+) => Effect.Effect<EDADeciderOutcome<Result, Rejection>, EDASessionStoreError | EDADeciderError>;
+```
+
+A tool that emits a fact only when state allows it has the same race as ingress. The docs-site
+`end_conversation` tool may end the chat only in an AI-owned phase. In 0.1.0 a tool gets no reducer
+state at all, so the typed docs-site handlers fold the whole journal with `ctx.queryEvents` on
+every call and then emit, with nothing tying the two together. With `ctx.decide` the handler
+passes `toolCallId` in the input and uses it as the idempotency key. A call re-invoked under
+`ToolRecovery: "reinvoke"` then finds the marker and returns the first result.
+
+A decider called from a tool should return facts, not commands. A `StopTurn` admitted from inside
+the run it stops is legal and confusing. [FR-9](FR-9-tool-ends-run.md) is the way for a tool to
+end its run.
+
 ### Rejection is not durable
 
 `Reject` commits nothing. A later call with the same key decides again. A caller that wants a
@@ -223,6 +245,12 @@ newer state. Take docs-site `postMessage`. The first call sees an AI-owned chat 
 `UserMessagePosted` with an outbox item. The same message now goes to the AI and to Salesforce. The
 marker records that this command was decided once, at one point in the log.
 
+The typed docs-site code confirms the hazard in the other direction. Its `route` is pure and
+decides by the phase at retry time, so a message first sent to the human agent goes to the AI on a
+retry after the agent left (`docs-site/research/handoff-types/REVIEW.md`, "Commands and ingress",
+question 2, on branch `t3/handoff-effect-types` at `3f68e50a1`). Its stopgap is a bounded set of
+routed message ids in reducer state. The marker replaces that set.
+
 **Why the idempotency key is required.** Every ingress call in Gia and in the docs-site design
 already has one. One code path is simpler than two, and an ingress call without a retry story is a
 defect waiting for a timeout.
@@ -246,7 +274,9 @@ In `SessionState`, next to `submitBatchAdmitted`. Call it `decideAdmitted`.
    `decide_threw`.
 5. On `Reject`, return `Rejected`. Nothing is committed and the control loop is not woken.
 6. On `Accept`:
-   - Encode `result`. Encode every draft through `events`. Check the namespace rule. Check that the
+   - Encode `result`. Encode every draft through `events`, and append the encoded form. This is
+     the write path that minor finding 3 asks for, so a decider's events may use any schema.
+     Then check the namespace rule. Check that the
      encoded result is at most 16 KiB. A failure is `invalid_output`.
    - Admit each command with the existing `prepareCommandAdmission`. A
      `SessionCommandAdmissionConflict` fails the whole call.
@@ -329,6 +359,8 @@ Test fixtures that need arbitrary framework events seed the store with `InMemory
 ## Tests
 
 - **Service contract**, new `session-state-decider.test.ts` beside `session-state-admission.test.ts`:
+  - a tool that calls `ctx.decide` with its `toolCallId` as the key, is interrupted and re-invoked,
+    commits one marker;
   - accept commits the marker and the items contiguously in one append and wakes the control loop
     when a command is present;
   - reject commits nothing and the head does not move;

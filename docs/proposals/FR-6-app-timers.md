@@ -54,14 +54,15 @@ EDATimerSink.make({
 ```
 
 - On each run the sink reads `select`. For every timer with `dueAtMs <= now` it stages `fire(timer)`
-  with `dedupeKey = timerId`. Then it calls `ctx.wakeAt` for the earliest timer still in the
-  future.
+  with a `dedupeKey` of `timerId` plus `dueAtMs`. Then it calls `ctx.wakeAt` for the earliest
+  timer still in the future.
 - The app's reducer removes a timer when it folds the fired fact, or when the thing it guarded
   happened first. Cancelling is a reducer transition. There is no cancel call.
 - The fired fact is the app's own event in the app's namespace. EDA adds no framework event.
 
 **Crash semantics.** After any crash the sink reads state again and recomputes. A timer that fired
-but whose fact was staged twice collapses on its `dedupeKey`. A timer is never lost, because it
+but whose fact was staged twice collapses on its `dedupeKey`. The due time is in the key so that
+a timer re-armed under the same id fires again. A timer is never lost, because it
 exists as long as the reducer says it does.
 
 **Invariants.** Reducers stay clock-free. The clock is read only in the sink. No alarm owner is

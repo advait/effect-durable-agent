@@ -36,6 +36,14 @@ conversation. No `StopTurn` is involved, so the queue is not paused, and after `
 queued message starts a new run. Routing cannot stop it, because the message was admitted before
 the end. Only the run-start boundary can.
 
+The typed docs-site code hit this case and could not design it away. Its state has a variant
+`QuietRun.Winding` for "a run EDA started although a person owns the chat", and its simulation
+reaches it (`docs-site/research/handoff-types/REVIEW.md`, "Reducer state", question 1, branch
+`t3/handoff-effect-types` at `3f68e50a1`). The same review explains why the app cannot react.
+A reducer cannot emit facts, and a sink can stage events but cannot submit commands. So nothing
+level-triggered in the app can send `StopTurn` for a stray run. The app can only hide the run's
+output.
+
 The wider need is also real. A session that waits for an approval or for subagents should not start a
 run because an unrelated message arrived. That is the `waiting` dispatch state in the resumables
 design, which the maintainer has already written and prototyped (`origin/agent/durable-resumables`,

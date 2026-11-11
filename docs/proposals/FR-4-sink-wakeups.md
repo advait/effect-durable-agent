@@ -89,9 +89,11 @@ A function that builds an `EDASink` from the pieces in the request's sketch (`se
 
 - Attempt counts and next-attempt times live in the sink checkpoint (`ctx.checkpoint`).
 - `reconcile` runs before a re-execution of an item whose last attempt was ambiguous.
-- `onSettled` stages a fact with `dedupeKey` equal to the item key
+- `onSettled` stages a fact with a `dedupeKey` of the item key plus the outcome tag
   ([FR-5](FR-5-event-dedupe-keys.md)), so a crash between the staged append and the cursor commit
-  cannot settle an item twice.
+  cannot settle an item twice. The outcome is part of the key because an item can settle more
+  than once. The typed docs-site code keeps a cleanup item owed after `Abandoned`, and with the
+  item key alone its second settlement collapsed into the first and the item stayed owed forever.
 - It calls `wakeAt` for the earliest next attempt.
 
 **Migration for Gia.** Optional. The capacity sink can replace its unbounded in-process retry with

@@ -16,6 +16,9 @@ here lands with Gia moving in the same step, and is validated in Gia before it i
 - **Against two consumers.** A feature belongs in EDA when gia-cf and docs-site both have the
   problem, or when the runtime is the only place it can be solved. One consumer and a guess is
   not enough.
+- **Against typed code.** A second agent wrote the docs-site design as Effect Schema code against
+  EDA 0.1.0 (`docs-site/research/handoff-types/` in the Gia repository, branch
+  `t3/handoff-effect-types`). Where its tests found something, the file cites the test.
 - **From the problem.** Each file compares at least two designs. Several sketched APIs were
   replaced by something smaller.
 
@@ -33,8 +36,11 @@ here lands with Gia moving in the same step, and is validated in Gia before it i
 | [FR-8 Tool awaits input](FR-8-tool-awaits-input.md) | Do not build as sketched. It contradicts the accepted resumables design. Two consumers already ship the workaround. | Document the pattern, add a `ToolByCallId` transcript mapping target, and rely on FR-1 and FR-9. | P3 | Small, 1 to 2 days |
 | [FR-9 Tool ends run](FR-9-tool-ends-run.md) | Build. Runtime feature, and a one-branch policy change. | A `ToolContinuation: "end_run"` annotation recorded on `ToolCallCompleted`, read by the pure continuation policy and by recovery. | P1, next | Small to medium, 2 days |
 
-The two [minor findings](MINOR-FINDINGS.md) are both true. The first ships with FR-1 as an
-allowlist. The second is closed by FR-5 and a documentation change.
+There are four [minor findings](MINOR-FINDINGS.md), two from the request and two from the typed
+docs-site code. All are true. The first ships with FR-1 as an allowlist. The second is closed by
+FR-5 and a documentation change. The third loses data silently (a `Redacted` email is stored as
+the string `<redacted>`) and gets a loud failure in the same release. The fourth is closed by
+FR-1's `ctx.decide` and a read-only `ctx.snapshot`.
 
 ## Build order
 
