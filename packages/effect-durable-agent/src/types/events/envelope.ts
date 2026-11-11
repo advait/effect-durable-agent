@@ -53,10 +53,21 @@ export const EventEnvelope = Schema.Struct({
 });
 export type EventEnvelope = typeof EventEnvelope.Type;
 
+/**
+ * App-owned natural key for one occurrence of a fact. A session log holds at most one event per
+ * `(namespace, type, dedupeKey)`; a later append with the same triple returns the first event.
+ */
+export const EventDedupeKey = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(512),
+).pipe(Schema.brand("EventDedupeKey"));
+export type EventDedupeKey = typeof EventDedupeKey.Type;
+
 /** Common envelope narrowed to committed durable events. */
 export const DurableEventEnvelope = Schema.Struct({
   ...EventEnvelope.fields,
   durability: Schema.Literal("durable"),
+  dedupeKey: Schema.optionalKey(EventDedupeKey),
 });
 export type DurableEventEnvelope = typeof DurableEventEnvelope.Type;
 
@@ -87,6 +98,14 @@ export type PositionedEvent<E = EventEnvelope> = {
   readonly position: typeof Position.Type;
   readonly event: E;
 };
+
+/**
+ * Largest serialized JSON payload, in UTF-8 bytes, that `submit` accepts for an app-owned event.
+ *
+ * It sits below every host's per-row cap, so an oversized event is refused before the append as a
+ * non-fatal admission conflict rather than as a store error that would stop the runtime.
+ */
+export const maxAppEventBytes = 1_048_576;
 
 /** Built-in framework event namespace. */
 export const effectDurableAgentNamespace = "effect-durable-agent";

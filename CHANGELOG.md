@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+- **Feature:** dedupe keys for durable events. `DurableEventEnvelope` gains an optional
+  `dedupeKey: EventDedupeKey` (1-512 characters, exported from `effect-durable-agent/types/events`).
+  A session log holds at most one event per `(namespace, type, dedupeKey)`. `EDASessionStore.append`
+  resolves each entry, in order, to the event with its `eventId`, else to the event with its
+  dedupe triple, else inserts it; a collapsed entry returns the first event's id, payload and
+  position, writes nothing and does not advance the head. Callers set the key wherever they build a
+  durable event, including `ctx.emitDurable` in tools and `ctx.stageDurable` in sinks. See
+  `docs/spec.md` §8, §9 and §13.
+- **Breaking:** `EDASessionStoreShape` gains `findEventByDedupeKey({ namespace, type, dedupeKey })`.
+  A custom store implementation must add it; `registerAppEvents` decodes its result like
+  `findCommandAdmission`.
+- **Fix:** `SessionState` folds and publishes each committed position once. A batch that repeated
+  an event (the same `eventId` twice, or now the same dedupe key) was folded and published twice,
+  so live reducer state differed from a replay of the log.
+- **Fix:** `submit` refuses an app event whose serialized payload exceeds the new
+  `maxAppEventBytes` (1 MiB) with a `SessionCommandAdmissionConflict` of code `event_too_large`,
+  before the append. Before, an event over the store's row cap failed as a store error, which made
+  the live runtime fatal, so every later submit failed too. `SessionCommandAdmissionConflict.code`
+  gains the `event_too_large` literal.
+- `ctx.stageDurable` logs a warning for a staged event without a `dedupeKey`: the runner commits
+  staged events and the sink cursor in separate transactions, so a crash between them restages the
+  event.
+
+Storage: Durable Object migration 4 adds the nullable `_eda_event_log.dedupe_key` column and the
+partial unique index `_eda_event_log_dedupe_key_idx` on `(namespace, type, dedupe_key)`. No stored
+event is rewritten; existing rows have a `NULL` key, and their replay is unchanged. A 0.1.0 reader
+of a migrated log ignores the column, and with it the key. Protocol: one optional envelope field on
+the wire (WebSocket frames and RPC). API: the optional envelope field, `EventDedupeKey`,
+`maxAppEventBytes`, the store-port method and the new conflict code. No transcript interpretation
+change.
+
 ## 0.1.0
 
 First stable release. It publishes to the `latest` npm dist-tag; `alpha` stays at

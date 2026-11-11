@@ -20,9 +20,10 @@ import { LocalRunResolution } from "../domain/run-scheduling";
 import { EDAKeepAlive } from "./keep-alive";
 import { RunScheduler } from "./run-scheduler";
 import { CommandId, SessionId, ToolCallId } from "../types/core";
+import { DurableEventEnvelope, EventDedupeKey, UnixEpochMillis, schemaV1 } from "../types/events";
 import { sequentialUuidV7 } from "./id-generator";
-import type { CommittedDurableEvent } from "./session-store";
-import { EDASessionStore } from "./session-store";
+import { EDASessionStore, selectCommittedEvent, type CommittedDurableEvent } from "./session-store";
+import { durableEventEnvelope } from "../types/events/durable";
 import { SessionState } from "./session-state";
 import {
   ToolRecovery,
@@ -66,10 +67,22 @@ interface Invocation {
   readonly recovery: EDAToolExecutionContext["recovery"];
 }
 
-/** A registry whose handlers record each invocation; `block` keeps them running until released. */
+const ToolFact = Schema.Struct({
+  ...DurableEventEnvelope.fields,
+  namespace: Schema.Literal("test.tool"),
+  type: Schema.Literal("FactObserved"),
+  payload: Schema.Struct({ attempt: Schema.Number }),
+});
+
+/**
+ * A registry whose handlers record each invocation; `block` keeps them running until released.
+ * With `emitKeyedFact`, `resumable` first emits a fact keyed by its tool call, as a tool that may
+ * be re-invoked should.
+ */
 const registry = (
   invocations: Array<Invocation>,
   block: boolean | Deferred.Deferred<void>,
+  emitKeyedFact = false,
 ): EDAToolRegistryShape => ({
   getModelToolkit: () => Effect.succeed(toolkit),
   getParamsSchema: () => Effect.succeed(NoopParams),
@@ -80,6 +93,21 @@ const registry = (
         toolCallId: context.toolCallId,
         recovery: context.recovery,
       });
+      if (emitKeyedFact && toolName === "resumable") {
+        yield* context.emitDurable(
+          ToolFact.make({
+            namespace: "test.tool",
+            type: "FactObserved",
+            schemaVersion: schemaV1,
+            durability: "durable",
+            eventId: yield* context.makeEventId(),
+            sessionId: context.sessionId,
+            createdAtMs: UnixEpochMillis.make(1_715_000_000_000),
+            dedupeKey: EventDedupeKey.make(context.toolCallId),
+            payload: { attempt: context.recovery?.attempt ?? 1 },
+          }),
+        );
+      }
       if (block === true) return yield* Effect.never;
       if (block !== false) yield* Deferred.await(block);
       return { tool: String(toolName), attempt: context.recovery?.attempt ?? 1 };
@@ -125,27 +153,39 @@ const waitFor = (predicate: (committed: ReadonlyArray<CommittedDurableEvent>) =>
     return yield* Effect.die(new Error("timed out waiting for durable events"));
   });
 
+const toolFacts = (committed: ReadonlyArray<CommittedDurableEvent>) =>
+  committed.filter((entry) => selectCommittedEvent(ToolFact, entry) !== undefined);
+
 /** Run until both tools have durably started, then take the log as a dead runtime left it. */
-const crashWhileBothToolsRun = Effect.scoped(
-  Effect.gen(function* () {
-    const state = yield* SessionState;
-    yield* state.start({ modelSelection });
-    yield* state.admitCommand(command);
-    return yield* waitFor((committed) => startedCount(committed) === 2);
-  }),
-).pipe(
-  Effect.provide(
-    makeEdaTestLayer({
-      sessionId: SessionId.make(SESSION_ID),
-      ids: freshIds(),
-      parts: bothToolsThenText(),
-      toolRegistry: registry([], true),
+const crashWhileBothToolsRunWith = (emitKeyedFact: boolean) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const state = yield* SessionState;
+      yield* state.start({ modelSelection });
+      yield* state.admitCommand(command);
+      return yield* waitFor(
+        (committed) =>
+          startedCount(committed) === 2 && (!emitKeyedFact || toolFacts(committed).length === 1),
+      );
     }),
-  ),
-);
+  ).pipe(
+    Effect.provide(
+      makeEdaTestLayer({
+        sessionId: SessionId.make(SESSION_ID),
+        ids: freshIds(),
+        parts: bothToolsThenText(),
+        toolRegistry: registry([], true, emitKeyedFact),
+      }),
+    ),
+  );
+const crashWhileBothToolsRun = crashWhileBothToolsRunWith(false);
 
 /** Start a fresh runtime over `seed` and run until the command completes. */
-const recover = (seed: ReadonlyArray<CommittedDurableEvent>, invocations: Array<Invocation>) => {
+const recover = (
+  seed: ReadonlyArray<CommittedDurableEvent>,
+  invocations: Array<Invocation>,
+  emitKeyedFact = false,
+) => {
   const prompts: Array<Prompt.RawInput> = [];
   return Effect.scoped(
     Effect.gen(function* () {
@@ -158,9 +198,10 @@ const recover = (seed: ReadonlyArray<CommittedDurableEvent>, invocations: Array<
       makeEdaTestLayer({
         sessionId: SessionId.make(SESSION_ID),
         ids: freshIds(),
-        seedEvents: seed.map((entry) => entry.event),
+        // Seed the stored envelopes; a decoded foreign event would lose its namespace.
+        seedEvents: seed.map((entry) => durableEventEnvelope(entry.event)),
         parts: finalText(),
-        toolRegistry: registry(invocations, false),
+        toolRegistry: registry(invocations, false, emitKeyedFact),
         onStreamText: ({ prompt }) => prompts.push(prompt),
       }),
     ),
@@ -213,6 +254,22 @@ describe("startup recovery with tool recovery policies", () => {
       const prompt = JSON.stringify(prompts[0]);
       assert.include(prompt, '"attempt":2');
       assert.include(prompt, "runtime restarted before lifecycle completed");
+    }),
+  );
+
+  it.effect("collapses a fact a re-invoked tool emits again under its tool-call key", () =>
+    Effect.gen(function* () {
+      const seed = yield* crashWhileBothToolsRunWith(true);
+      const invocations: Array<Invocation> = [];
+      const { committed } = yield* recover(seed, invocations, true);
+
+      assert.strictEqual(invocations[0]?.recovery?.attempt, 2);
+      assert.deepStrictEqual(
+        toolFacts(committed).map((entry) => entry.position.seq),
+        toolFacts(seed).map((entry) => entry.position.seq),
+      );
+      assert.strictEqual(toolFacts(committed).length, 1);
+      assert.strictEqual(toolTerminal(committed, "resumable")?.terminal?._tag, "Completed");
     }),
   );
 

@@ -192,6 +192,12 @@ const referenceWindow = (
 
 const withoutIncarnation = ({ incarnation: _incarnation, ...window }: TranscriptWindow) => window;
 
+/** Remove migration 4's column and index, as a log written before dedupe keys lacks them. */
+const dropDedupeKeys = (storage: SqliteDurableObjectStorage): void => {
+  storage.rows("DROP INDEX _eda_event_log_dedupe_key_idx");
+  storage.rows("ALTER TABLE _eda_event_log DROP COLUMN dedupe_key");
+};
+
 const eventCount = (storage: SqliteDurableObjectStorage): number | undefined =>
   storage.rows<{ count: number }>("SELECT COUNT(*) AS count FROM _eda_event_log")[0]?.count;
 
@@ -617,7 +623,8 @@ describe("Durable Object transcript upgrades and edge failures", () => {
     ]) {
       storage.rows(`DROP TABLE ${table}`);
     }
-    storage.rows("DELETE FROM _eda_schema_migrations WHERE id IN (2, 3)");
+    dropDedupeKeys(storage);
+    storage.rows("DELETE FROM _eda_schema_migrations WHERE id IN (2, 3, 4)");
     expect(storage.rows("SELECT id FROM _eda_schema_migrations")).toEqual([{ id: 1 }]);
 
     const upgraded = makeHarness({ current: gia }, undefined, storage);
@@ -625,6 +632,7 @@ describe("Durable Object transcript upgrades and edge failures", () => {
       { id: 1 },
       { id: 2 },
       { id: 3 },
+      { id: 4 },
     ]);
     expect(eventCount(storage)).toBe(log.events.length);
     expect(upgraded.service.hasPendingWork()).toBe(true);
@@ -641,13 +649,15 @@ describe("Durable Object transcript upgrades and edge failures", () => {
     v2.append(log.events.slice(0, 20));
     storage.rows("ALTER TABLE _eda_transcript_meta DROP COLUMN slice_failures");
     storage.rows("ALTER TABLE _eda_alarm_wakeups DROP COLUMN failures");
-    storage.rows("DELETE FROM _eda_schema_migrations WHERE id = 3");
+    dropDedupeKeys(storage);
+    storage.rows("DELETE FROM _eda_schema_migrations WHERE id IN (3, 4)");
 
     const upgraded = makeHarness({ current: gia }, undefined, storage);
     expect(storage.rows("SELECT id FROM _eda_schema_migrations ORDER BY id")).toEqual([
       { id: 1 },
       { id: 2 },
       { id: 3 },
+      { id: 4 },
     ]);
     upgraded.append(log.events.slice(20));
     expect(storedProjection(storage)).toEqual(referenceProjection(gia, log.events));

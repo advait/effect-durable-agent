@@ -274,6 +274,20 @@ type EventEnvelope = {
 
 `EventFactory` is the framework construction path: it attaches session identity, mints `eventId`, and stamps `createdAtMs`. Framework-owned decoding routes by `(namespace, type, schemaVersion)`. Current framework schemas are `schemaVersion = 1`.
 
+Durable events (`DurableEventEnvelope`, which every framework durable schema spreads) also carry an
+optional `dedupeKey: EventDedupeKey`, a 1-512 character string. It is an app-owned natural key for
+one occurrence of a fact, such as a webhook delivery id or a Salesforce entry id. A session log
+holds at most one event per `(namespace, type, dedupeKey)`; see the append rule in §9. Ephemeral
+events never carry it, and reducers never read it.
+
+Choose the key so it names one occurrence:
+
+- The type is part of the scope, so two different facts derived from one natural key (a form
+  submission and the handoff it requests) can share the key and both land.
+- A fact that can happen again for the same subject needs what distinguishes the occurrences in
+  the key: an outcome tag, a due time for a recurring timer, an attempt. Otherwise the second
+  occurrence collapses into the first.
+
 ### Current durable framework events
 
 - Command: `CommandAdmitted`, `CommandStarted`, `CommandCompleted`, `CommandFailed`, `CommandCancelled`
@@ -314,6 +328,7 @@ interface EDASessionStore {
   eventsAfter(afterSeq): Stream<CommittedDurableEvent, EDASessionStoreError>
   loadCommittedEventsBySeq(seqs): Effect<ReadonlyArray<CommittedDurableEvent>, EDASessionStoreError>
   findCommandAdmission(input): Effect<CommittedDurableEvent | undefined, EDASessionStoreError>
+  findEventByDedupeKey({ namespace, type, dedupeKey }): Effect<CommittedDurableEvent | undefined, EDASessionStoreError>
   loadSummaryArtifact(summaryId): Effect<CompactionSummaryArtifact | undefined, EDASessionStoreError>
   loadReducerCheckpoint(name): Effect<EDAReducerCheckpoint | undefined, EDASessionStoreError>
   saveReducerCheckpoint(checkpoint): Effect<void, EDASessionStoreError>
@@ -328,7 +343,10 @@ Production uses Cloudflare Durable Object SQLite. One Durable Object stores one 
 Foundational tables:
 
 - `_eda_schema_migrations` — applied host/store migrations.
-- `_eda_event_log` — ordered durable occurrences; `seq INTEGER PRIMARY KEY AUTOINCREMENT`.
+- `_eda_event_log` — ordered durable occurrences; `seq INTEGER PRIMARY KEY AUTOINCREMENT`. Its
+  nullable `dedupe_key` column (forward migration 4) has the partial unique index
+  `_eda_event_log_dedupe_key_idx` on `(namespace, type, dedupe_key) WHERE dedupe_key IS NOT NULL`.
+  The store writes the envelope's key there, not in `fact_json`, and puts it back on every read.
 - `_eda_command_state` — command status and command idempotency lookup.
 - `_eda_command_inputs` — submitted command bodies kept out of event-log JSON.
 - `_eda_context_messages` — model-visible message bodies.
@@ -359,9 +377,23 @@ Foreign/app namespace events are currently stored as full logical payloads in `_
 
 Each durable append is one synchronous store transaction. In the Cloudflare host this means `ctx.storage.transactionSync(() => { ... })` around synchronous `ctx.storage.sql.exec(...)` calls only.
 
+Each entry, in order, resolves to exactly one event:
+
+1. If an event with its `eventId` exists, that event.
+2. Else, if the entry has a `dedupeKey` and an event with the same `(namespace, type, dedupeKey)`
+   exists, that event.
+3. Else a newly inserted event.
+
+An entry that resolves to an existing event, including one earlier in the same batch, returns that
+event's own `eventId`, payload, `createdAtMs` and position. First write wins: the entry's bytes are
+discarded, nothing is written, the durable head does not move, and the entry is not folded or
+published again. A caller can tell that an entry collapsed because the returned `eventId` differs
+from the one it submitted. `SessionState` folds and publishes each returned position once, so a
+batch that repeats an event leaves live state equal to a replay of the log.
+
 Inside append:
 
-1. Insert event-log rows; SQLite allocates `seq`.
+1. Insert event-log rows for new entries; SQLite allocates `seq`.
 2. Write framework sidecar bodies/projections.
 3. Update synchronous command metadata.
 4. Maintain the transcript once for the batch (only newly inserted events), when the store was
@@ -373,7 +405,11 @@ No `await`, model/tool calls, publishing, or external I/O may occur inside the t
 ### Current limits
 
 - Serialized JSON payloads are guarded below Cloudflare’s 2 MB SQL value/row limit (current hard cap around 1.5 MB).
-- Oversized command inputs, messages, summaries, app events, and tool/app results fail before commit; callers should store large data by reference.
+- `submit` refuses an app event whose serialized payload exceeds `maxAppEventBytes` (1 MiB, below
+  every host's row cap) before the append, with a `SessionCommandAdmissionConflict` of code
+  `event_too_large`. That is not a store error, so the runtime stays usable. A store that still
+  refuses a row is a storage fault and is fatal for the live runtime.
+- Oversized command inputs, messages, summaries, and tool/app results fail before commit; callers should store large data by reference.
 - Storage pruning/BaseState is not implemented. Compaction changes model context; it does not delete retained event/body rows.
 
 ---
@@ -632,7 +668,8 @@ Durable lane:
 - calls `process(batch, ctx)`
 - exposes `ctx.checkpoint.get(schema, initial)` and `ctx.checkpoint.save(schema, state)` for typed sink-owned state
 - serializes state-only saves with cursor commits, including writes from scoped background sink work
-- commits staged durable events after successful processing
+- commits staged durable events after successful processing, in a transaction separate from the
+  cursor commit
 - atomically commits the current sink-owned payload when advancing the cursor after processing/staged commits
 - requires an infallible typed error channel; each sink owns bounded retry and terminal-failure handling
 
@@ -641,6 +678,13 @@ Ephemeral lane:
 - live-only, best-effort
 - optional interests and buffer policy
 - no cursor and no correctness guarantee
+
+Staged events are at-least-once too. The runner appends them and then commits the cursor; a crash
+between the two redelivers the batch and the sink stages its events again. So a staged event
+carries a `dedupeKey` derived from what caused it, such as the `eventId` of the event it reacts to,
+and the redelivered copy collapses in the store. `ctx.stageDurable` logs a warning for a staged
+event without a key. Tools re-invoked by recovery (`ToolRecovery: "reinvoke"`) are in the same
+position and can key `ctx.emitDurable` facts by `toolCallId`.
 
 Durable external side effects remain at-least-once across process loss. They must be idempotent because a host can die after a remote success but before the local checkpoint write. Expected failures do not bubble to the runner: the sink retries transient failures with its own bounded policy, handles and logs terminal failures, and returns with an error channel of `never`. An unexpected defect is logged and skipped so it cannot hold a host keep-alive lease forever. Existing cursor rows whose payload predates typed checkpoint state retain their cursor and initialize sink-owned state from the supplied default. A stateful sink and the checkpoint-aware runner must roll out together because an older runner can replace the payload while advancing its cursor.
 

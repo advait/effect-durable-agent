@@ -357,6 +357,27 @@ const submitMessage = async (
     }),
   );
 
+/** Submit one app fact with a dedupe key through the session's batch RPC. */
+const submitKeyedFact = async (
+  host: HostProcess,
+  sessionId: string,
+  input: { readonly eventId: string; readonly dedupeKey: string },
+) =>
+  await decodeJson<{
+    readonly committed: {
+      readonly event: { readonly eventId: string; readonly dedupeKey?: string };
+      readonly position: { readonly seq: number };
+    };
+    readonly snapshot: { readonly lastSeq: number };
+  }>(
+    await fetch(`${host.baseUrl}/sessions/${sessionId}/facts`, {
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal: AbortSignal.timeout(30_000),
+    }),
+  );
+
 /** Submit a message, then read the session's history from its (enabled) transcript. */
 const submitAndReadHistory = async (
   host: HostProcess,
@@ -651,6 +672,31 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         await host.stop();
       }
     }, 240_000);
+
+    it("collapses a keyed app event submitted again after a hard restart", async () => {
+      const host = await startHost(kind);
+      const sessionId =
+        kind === "cloudflare"
+          ? "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b7a"
+          : "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b7a";
+      try {
+        const first = await submitKeyedFact(host, sessionId, {
+          eventId: "018f6bd5-2f2a-7b1e-8f1a-000000000001",
+          dedupeKey: "delivery-1",
+        });
+        await host.restart({ hard: true });
+        const redelivered = await submitKeyedFact(host, sessionId, {
+          eventId: "018f6bd5-2f2a-7b1e-8f1a-000000000002",
+          dedupeKey: "delivery-1",
+        });
+
+        expect(first.committed.event.dedupeKey).toBe("delivery-1");
+        expect(redelivered.committed).toEqual(first.committed);
+        expect(redelivered.snapshot.lastSeq).toBe(first.snapshot.lastSeq);
+      } finally {
+        await host.stop();
+      }
+    }, 120_000);
 
     it("maintains transcripts in the real platform's transactions and serves them storage-only", async () => {
       const host = await startHost(kind);

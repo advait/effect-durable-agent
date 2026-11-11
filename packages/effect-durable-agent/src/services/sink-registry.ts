@@ -80,7 +80,11 @@ export interface EDASinkContext {
   readonly emitEphemeral: (
     event: EphemeralEventEnvelope,
   ) => Effect.Effect<PositionedEvent, EDASessionStoreError>;
-  /** Stage durable events; the runner commits them after the sink succeeds. */
+  /**
+   * Stage durable events; the runner commits them after the sink succeeds, in a transaction
+   * separate from the cursor commit. A crash between the two redelivers the batch, so give each
+   * staged event a `dedupeKey` derived from what caused it; one without a key logs a warning.
+   */
   readonly stageDurable: (event: DurableEventEnvelope) => Effect.Effect<void>;
   /** Fork background sink work into the session scope. */
   readonly forkScoped: (effect: Effect.Effect<unknown, unknown>) => Effect.Effect<void>;
@@ -277,6 +281,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
     }> = [];
 
     const baseContext = (
+      sinkName: string,
       staged: Array<DurableEventEnvelope>,
       publishEphemeral: (
         event: EphemeralEventEnvelope,
@@ -289,7 +294,18 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
       events: eventFactory,
       makeEventId: ids.makeEventId,
       emitEphemeral: publishEphemeral,
-      stageDurable: (event) => Effect.sync(() => staged.push(event)),
+      stageDurable: (event) =>
+        Effect.gen(function* () {
+          // Staged events and the cursor commit separately; only a key collapses a restaged event.
+          if (event.dedupeKey === undefined) {
+            yield* Effect.logWarning("EDA sink staged a durable event without a dedupeKey", {
+              sink: sinkName,
+              namespace: event.namespace,
+              type: event.type,
+            });
+          }
+          staged.push(event);
+        }),
       forkScoped: (effect) => effect.pipe(Effect.forkIn(scope), Effect.asVoid),
     });
 
@@ -397,7 +413,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
               events: eventsForSink,
               throughSeq,
             };
-            const context = baseContext(staged, publishEphemeral, scope, checkpoint);
+            const context = baseContext(sink.name, staged, publishEphemeral, scope, checkpoint);
             const delivery = Effect.gen(function* () {
               if (sink.durable === undefined) return;
               if (sink.state === "none") return yield* sink.durable.process(rawBatch, context);
@@ -467,7 +483,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
         if (sink.ephemeral === undefined) return;
         if (sink.state !== "none") yield* ensureProjection();
         yield* sink.ephemeral
-          .process(event, baseContext([], publishEphemeral, scope, checkpoint))
+          .process(event, baseContext(sink.name, [], publishEphemeral, scope, checkpoint))
           .pipe(
             Effect.catchCause((cause) =>
               Cause.hasInterruptsOnly(cause)

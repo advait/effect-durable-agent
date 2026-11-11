@@ -15,13 +15,24 @@ import {
 } from "effect-durable-agent/services/compaction";
 import { makeEDAToolkit } from "effect-durable-agent/services/tool-registry";
 import { CommandIdempotencyKey, SubmitMessageCommand } from "effect-durable-agent/types/commands";
-import { SessionId } from "effect-durable-agent/types/core";
+import { EventId, SessionId } from "effect-durable-agent/types/core";
+import {
+  DurableEventEnvelope,
+  EventDedupeKey,
+  EventNamespace,
+  EventType,
+  UnixEpochMillis,
+  schemaV1,
+} from "effect-durable-agent/types/events";
 import { makeRootEDATraceMetadata } from "effect-durable-agent/types/tracing";
 import type {
   EDASessionDurableObject,
   EDASessionDurableObjectOptions,
 } from "../../packages/effect-durable-agent-cloudflare/dist/index.js";
-import { encodeEdaRpcCommand } from "../../packages/effect-durable-agent-cloudflare/dist/index.js";
+import {
+  encodeEdaRpcCommand,
+  encodeEdaRpcSubmittables,
+} from "../../packages/effect-durable-agent-cloudflare/dist/index.js";
 
 declare const EDA_CONFORMANCE_BLOCK_MODEL: boolean;
 /** The one session this launch leaves out of the transcript rollout ring ("" for none). */
@@ -180,7 +191,7 @@ export const conformanceWorker = {
     }
 
     const match =
-      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|transcript-body|transcript-summary|runtime-builds|arm-unrecorded-alarm|kv-incarnation|transcript-upgrade)\/?$/.exec(
+      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|transcript-body|transcript-summary|runtime-builds|arm-unrecorded-alarm|kv-incarnation|transcript-upgrade|facts)\/?$/.exec(
         url.pathname,
       );
     if (match === null) {
@@ -285,6 +296,34 @@ export const conformanceWorker = {
     const body: unknown = await request.json();
     if (typeof body !== "object" || body === null) {
       return json({ error: "Expected an object body" }, 400);
+    }
+
+    if (operation === "facts") {
+      // One app fact with a caller-chosen event id and dedupe key.
+      const eventId = "eventId" in body && typeof body.eventId === "string" ? body.eventId : "";
+      const dedupeKey =
+        "dedupeKey" in body && typeof body.dedupeKey === "string" ? body.dedupeKey : "";
+      // The RPC stub types this result as `never`; it is the encoded committed-event array.
+      const committed: ReadonlyArray<unknown> = await session.submitBatch({
+        ...scoped,
+        items: encodeEdaRpcSubmittables([
+          DurableEventEnvelope.make({
+            namespace: EventNamespace.make("conformance"),
+            type: EventType.make("FactObserved"),
+            schemaVersion: schemaV1,
+            durability: "durable",
+            eventId: EventId.make(eventId),
+            sessionId,
+            createdAtMs: UnixEpochMillis.make(Date.now()),
+            dedupeKey: EventDedupeKey.make(dedupeKey),
+            payload: { eventId },
+          }),
+        ]),
+      });
+      return json({
+        committed: committed[0],
+        snapshot: snapshotSummary(await session.snapshot(scoped)),
+      });
     }
     const text = "text" in body && typeof body.text === "string" ? body.text : undefined;
     const idempotencyKey =

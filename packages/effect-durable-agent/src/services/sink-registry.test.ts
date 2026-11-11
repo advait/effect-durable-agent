@@ -1,6 +1,7 @@
 import { durableEventEnvelope } from "../types/events/durable";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
@@ -552,6 +553,10 @@ describe("EDASinkRegistry", () => {
 
   it("commits sink-staged durable events before advancing the sink checkpoint", async () => {
     let deliveredEventId = 9_002;
+    const warnings: Array<unknown> = [];
+    const captureWarnings = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn") warnings.push(message);
+    });
     const sink: EDASink = {
       name: "test.final-reply-sink",
       durable: {
@@ -614,6 +619,7 @@ describe("EDASinkRegistry", () => {
           ),
         ),
       ),
+      Effect.provide(Logger.layer([captureWarnings])),
     );
 
     const { events, afterSecond } = await Effect.runPromise(program);
@@ -626,6 +632,18 @@ describe("EDASinkRegistry", () => {
 
     expect(delivered).toHaveLength(1);
     expect(deliveredAfterSecond).toHaveLength(2);
+    // Neither staged event carries a dedupe key, so a crash before the cursor commit would
+    // duplicate it; the runner says so.
+    expect(warnings).toEqual(
+      Array.from({ length: 2 }, () => [
+        "EDA sink staged a durable event without a dedupeKey",
+        {
+          sink: "test.final-reply-sink",
+          namespace: "example.inbox",
+          type: "ExternalReplyDelivered",
+        },
+      ]),
+    );
   });
 });
 
