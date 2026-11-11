@@ -205,24 +205,47 @@ key.
 | Invariant | Why it holds | Test |
 | --- | --- | --- |
 | At most one event per `(namespace, type, dedupeKey)` in a log. | The unique index, and the rule-2 read inside the append transaction. | Store contract. |
-| A collapsed entry does not advance the head, is not folded again and is not published again. | `SessionState.publishFreshDurables` folds only `seq > lastSeq`. A collapsed entry returns its old position. | Service contract. |
+| A collapsed entry does not advance the head, is not folded again and is not published again. | `SessionState.publishFreshDurables` folds only `seq > lastSeq`, once per `seq` (see the fix below). A collapsed entry returns its old position. | Service contract. |
 | A collapsed entry does not touch the transcript or the sidecar tables. | Projections and transcript maintenance run only for `inserted` events. | Store contract. |
 | Sink cursors are unaffected. | No new event means no head advance and no notification. | Service contract. |
 | Replay is unchanged. | The key is data on the event. Reducers never read it. | Existing replay tests still pass. |
 | An event without a key behaves exactly as in 0.1.0. | Rule 2 is skipped. | Existing suites. |
+
+## A defect in 0.1.0 that this feature would widen
+
+`publishFreshDurables` keeps every returned entry whose `seq` is above the old head. It does not
+remove repeats. When one batch holds the same event twice, the store returns the same position
+twice, and `SessionState` folds and publishes that event twice. The live reducer state then
+differs from what a replay computes. The review proved it on 0.1.0 with a duplicate `eventId`, on
+both stores.
+
+```text
+same-batch collapse {"returnedSeqs":[1,1],"logRows":1,"liveCount":2,"replayCount":1,"publishedSeqs":[1,1]}
+```
+
+Today this needs a caller that repeats an `eventId` inside one batch, which is rare. Dedupe keys
+make it ordinary, because two facts with one key in one batch is a normal thing to submit. FR-1's
+atomicity argument also rests on live state being the fold of the log.
+
+The fix is part of this feature. `publishFreshDurables` keeps one entry per `seq` before it folds
+and publishes. The service-contract test below covers it.
 
 ## Tests
 
 Each test goes to the suite that owns the behavior in `docs/testing.md`.
 
 - **Store contract.** `durable-object-store.test.ts` gains a table that runs against both the
-  SQLite store and `EDASessionStore.InMemory`. Rows: same key and same type collapses; same key
+  SQLite store and `EDASessionStore.InMemory`. The rows are these. Same key and same type collapses; same key
   and different type inserts both; same key and different namespace inserts both; a duplicate
   inside one batch collapses; `eventId` match wins over key match; a collapsed entry writes no
   sidecar or transcript rows; `findEventByDedupeKey` returns the first event; a key of 513
   characters fails to decode.
 - **Migration.** The same file opens a database created at schema version 3 with events in it,
   runs the migration, appends a keyed event and reads every old event back unchanged.
+- **Service contract, same batch.** `session-state.test.ts` submits one batch that holds the same
+  key twice, and one that holds the same `eventId` twice. The event is folded once and published
+  once, and the live reducer state equals a replay of the log. Run on the in-memory store and on
+  SQLite.
 - **Service contract.** `session-state.test.ts` proves a collapsed app event is not published to
   `LiveEventBus` a second time and that `snapshot().state.lastSeq` does not move.
 - **Sink replay.** `sink-replay.test.ts` gains the crash this feature exists for: a sink stages a
@@ -240,18 +263,24 @@ Each test goes to the suite that owns the behavior in `docs/testing.md`.
 - The sink section states the contract that closes minor finding 2: the runner commits staged
   events and the cursor in two transactions, so a staged event needs a `dedupeKey` derived from
   what caused it.
-- `CHANGELOG.md` under the next version: storage (migration 4), protocol (one optional envelope
-  field on the wire), API (one optional field, one store-port method).
+- `CHANGELOG.md` under the next version, with its three impacts. Storage has migration 4. The
+  protocol has one optional envelope field on the wire. The API has one optional field and one
+  store-port method.
 
 ## Gia adoption
 
 These land in Gia after the pin bump. Each is small and each removes code.
 
-1. `cron-session.server.ts`. Delete `cronMetadataEventIdFromSessionId` and
-   `cronSessionConfiguredEventIdFromSessionId`. Mint both ids and give both events
-   `dedupeKey: "session-seed"`. The type scopes the key, so one literal serves both. A launch that
-   started before the deploy and retries after it can append one extra seed event, because the old
-   row has no key. Check that the metadata reducer keeps the first before relying on that.
+1. `cron-session.server.ts`, in two releases. First, keep `cronMetadataEventIdFromSessionId` and
+   `cronSessionConfiguredEventIdFromSessionId` and add `dedupeKey: "session-seed"` to both events.
+   The type scopes the key, so one literal serves both. Later, when no launch from before that
+   deploy can still retry, delete the two functions and mint the ids.
+
+   The first draft deleted the functions at once and accepted one extra seed event for a launch
+   that retries across the deploy. The review ran that against Gia's real metadata reducer. The
+   reducer replaces the metadata on every seed, so the extra seed erased a Slack thread binding
+   made in between (`afterMode: "proactive"`, `afterThread: null`). Keeping the old ids avoids it,
+   because the store matches on `eventId` before the key.
 2. `slack.server.ts`. Give the staged `GiaSlackThreadBindingCommitted` a `dedupeKey` equal to the
    `eventId` of the delivery event that caused it.
 3. Slack ingress. It moves onto a decider in FR-1, which dedupes the whole batch. No event keys are

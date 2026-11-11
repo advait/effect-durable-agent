@@ -1,4 +1,4 @@
-# FR-1. Deciders: decide and commit under one gate
+# FR-1. Deciders, which decide and commit under one gate
 
 Status: proposal, approved to build. Nothing here is implemented.
 Targets: the release after `0.1.0` (proposed `0.2.0`).
@@ -10,9 +10,9 @@ Ingress often has to choose what to append from the session's current state. Rou
 the AI or to the human agent. Seed the session only if it has no seed. Stop the run only if it is
 still the caller's run.
 
-In EDA 0.1.0 the app does this in two calls: `snapshot()`, then `submit(items)`. Nothing ties them
-together. `spec.md` §7 already states the rule this breaks: "decisions that mutate state happen
-inside the serialized session boundary". EDA follows that rule for its own commands and gives apps
+In EDA 0.1.0 the app does this in two calls, `snapshot()` and then `submit(items)`. Nothing ties
+them together. `spec.md` §7 already states the rule this breaks. It says "decisions that mutate
+state happen inside the serialized session boundary". EDA follows that rule for its own commands and gives apps
 no way to follow it.
 
 A lock in the app does not close the gap. The docs-site proposal plans a promise lock in the
@@ -48,7 +48,7 @@ This is a runtime feature. It cannot be an optional helper, because the gate is 
 between the read and the write. Its costs fall on every caller. Each one writes a retry loop. A
 conflict fires on any event, including ones the decision does not read. It takes two round trips,
 and in Gia each is a Worker to Durable Object RPC that serializes the whole snapshot. It also
-leaves retries unsafe: a retried call decides again on newer state, so it can emit different
+leaves retries unsafe. A retried call decides again on newer state, so it can emit different
 events the second time.
 
 A decider is a pure function of state, so it is a unit test and a model-checking target with no
@@ -242,7 +242,7 @@ character, so a legal 256-character key produced a 647 or 1,671 character dedupe
 needed.
 
 The marker is in the log because the log is the source of truth. `CommandAdmitted` sets the
-precedent: the fact is an event, and an index serves the lookup.
+precedent. The fact is an event, and an index serves the lookup.
 
 **Why a marker and not keys on the decided events.** Without it, a retry runs `decide` again on
 newer state. Take docs-site `postMessage`. The first call sees an AI-owned chat and admits a
@@ -281,6 +281,8 @@ In `SessionState`, next to `submitBatchAdmitted`. Call it `decideAdmitted`.
 6. On `Accept`:
    - Encode `result`. Encode every draft through `events`, and append the encoded form. This is
      the write path that minor finding 3 asks for, so a decider's events may use any schema.
+     Decode each encoded draft with the runtime's registered `appEvents` schema as well (see
+     "Two schemas" below).
      Then check the namespace rule. Check that the encoded result is at most 16 KiB and that
      each encoded draft is within `maxAppEventBytes` (see "Size limit" below). A failure is
      `invalid_output`.
@@ -294,6 +296,20 @@ In `SessionState`, next to `submitBatchAdmitted`. Call it `decideAdmitted`.
 No decider error is an `EDASessionStoreError`. That matters, because `withAppendGate` records a
 store error as fatal for the live runtime. A bad input or a throwing decider must leave the runtime
 usable.
+
+### Two schemas
+
+A decider declares `events`. The runtime also has the `appEvents` schema that the store decodes
+with. They are separate values and can disagree. The review built a draft that the decider's
+schema accepted and the registered schema refused. `registerAppEvents.append` raised it as an
+`EDASessionStoreError` inside the gate, the runtime went fatal, and the next valid submit failed.
+
+So `SessionState` receives the registered `appEvents` codec directly, and checks every app event
+with it before the append. For `decide` a failure is `invalid_output`. For `submit` it is a
+`SessionCommandAdmissionConflict` with code `invalid_event`. The check inside
+`registerAppEvents.append` stays as a second line and should never fire. Registration also fails
+at construction when a decider's `events` schema names a namespace that `appEvents` does not
+register.
 
 ### Size limit
 
@@ -394,6 +410,9 @@ events seed the store with `InMemorySeeded`.
     where state has changed so that `decide` would now return different items;
   - a key with a line feed or of 257 characters is `invalid_input`, and a key of 256 double
     quotes is accepted and replays;
+  - a draft that the decider's `events` schema accepts and the registered `appEvents` schema
+    refuses is `invalid_output`, the same event through `submit` is `invalid_event`, and a valid
+    submit succeeds afterwards;
   - a draft over `maxAppEventBytes` is `invalid_output`, and so is the same event through
     `submit` as `event_too_large`, both on the real SQLite store;
   - Gia's seed batch (`SessionConfigured`, `SystemMessageCommitted`, a `SubmitMessage`) is
@@ -404,7 +423,7 @@ events seed the store with `InMemorySeeded`.
     through `submit`.
 - **Model test.** `session-state-control.model.test.ts` gains a `Decide` action in its generated
   command and control sequences, interleaved with tool `emitDurable` and staged sink events. The
-  oracle is replay determinism: for every `DeciderAccepted` at `seq` s, fold the log through s - 1,
+  oracle is replay determinism. For every `DeciderAccepted` at `seq` s, fold the log through s - 1,
   call `decide` with that state, the recorded input and the marker's `createdAtMs`, and require
   exactly the items that follow the marker. This is the atomicity claim as a property.
 - **Crash sweep.** `session-state-crash-simulation.test.ts` gains a scenario with a decision that
@@ -413,7 +432,7 @@ events seed the store with `InMemorySeeded`.
 - **Transcript.** `transcript-scenarios.ts` gains a log that contains a marker. The property
   oracle and the fingerprint guard pass unchanged.
 - **Host conformance.** `testing/host-conformance/suite.ts` calls the `decide` RPC on workerd and
-  celld: accept, hard restart, replay.
+  celld (accept, hard restart, replay).
 - **Types.** A type test next to `durable-object.type-test.ts` proves a decider cannot return a
   draft outside its `events` schema and that `decodeDecideOutcome` returns the declared types.
 - **Package.** `mise run package:check` covers the new subpath in the `exports` map.
@@ -428,7 +447,7 @@ Define `gia.slack.ReceiveMessage` beside the Slack ingress reducer in
 `gia-cf/server/features/session-core/`.
 
 - **Input.** The normalized message, the event key, and an optional `seed` with what the Worker
-  loads today: prompt profile, model, source metadata, optional history capture.
+  loads today (prompt profile, model, source metadata, optional history capture).
 - **Key.** Today's `slackCommandIdempotencyKey`.
 - **Decide.**
   - If the metadata reducer shows no session and `seed` is absent, reject with `NeedsSeed`.
@@ -438,7 +457,11 @@ Define `gia.slack.ReceiveMessage` beside the Slack ingress reducer in
 - **Caller.** `submitEDAGiaSlackMessagesEffect` calls `decide` without a seed. On `NeedsSeed` it
   loads the profile and calls again with it.
 
-What this removes: the `agent.snapshot()` RPC on every Slack event, `mintEventIdsEffect` and the
+The double seed is worse than a duplicate row. Gia's metadata reducer replaces the metadata on
+every seed event, so a second seed erases a Slack thread binding made after the first. The review
+showed that with a cron retry (see FR-5), and the Slack race has the same shape.
+
+This removes the `agent.snapshot()` RPC on every Slack event, `mintEventIdsEffect` and the
 event-id bookkeeping, the double-seed race, and the duplicate author, attachment and receipt
 events on a Slack redelivery.
 
@@ -467,8 +490,8 @@ one EDA version.
    with the Gia **verify** skill. Record the commands and results in EDA PR 2. This branch is
    evidence only. It never merges.
 4. **Version PR.** `0.2.0` in all three manifests, lockfile, `CHANGELOG.md`. It is a minor
-   release: new API, one breaking rule (framework events through `submit`), one forward-only
-   storage migration.
+   release. It has new API, one breaking rule (framework events through `submit`) and one
+   forward-only storage migration.
 5. **Publish.** Only with the maintainer's go-ahead that names `v0.2.0`. Merge, wait for CI on
    `master`, create the GitHub release, wait for `Publish to npm`, verify the registry.
 6. **Gia PR A, the pin.** `effect-durable-agent` to `0.2.0` in the catalog and the submodule at the
