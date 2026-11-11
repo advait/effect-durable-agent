@@ -98,7 +98,7 @@ export interface EDADeciderDefinition<
   Result,
   Rejection,
 > {
-  /** Stable, namespaced, at most 128 characters. It is stored in the log. */
+  /** Stable. Matches /^[A-Za-z0-9._-]{1,128}$/. It is stored in the log. */
   readonly name: Name;
   readonly input: Schema.Codec<Input, unknown, never, never>;
   /** The events this decider may emit. Drafts are checked against it before the append. */
@@ -106,7 +106,7 @@ export interface EDADeciderDefinition<
   /** Stored in the log and returned again on a retry. Keep it small and backward readable. */
   readonly result: Schema.Codec<Result, unknown, never, never>;
   readonly rejection: Schema.Codec<Rejection, unknown, never, never>;
-  /** Required. At most 256 characters. One acceptance per (name, key) in a session. */
+  /** Required. 1 to 256 characters, no line feed. One acceptance per (name, key) in a session. */
   readonly idempotencyKey: (input: Input) => string;
   /** Pure and synchronous. No clock, no ids, no I/O. It runs inside the append gate. */
   readonly decide: (view: EDADeciderView, input: Input) => EDADecision<E, Result, Rejection>;
@@ -233,8 +233,13 @@ export const DeciderAcceptedPayload = Schema.Struct({
 });
 ```
 
-Its envelope carries `dedupeKey = JSON.stringify([decider, idempotencyKey])`. FR-5's index makes
-it unique and gives the lookup. No new table is needed.
+Its envelope carries `dedupeKey = decider + "\n" + idempotencyKey`. A decider name cannot hold a
+line feed, so the first line feed always ends the name and two different pairs cannot share a
+key. The longest key is 128 + 1 + 256 = 385 characters, inside `EventDedupeKey`'s 512. The first
+draft used `JSON.stringify([decider, idempotencyKey])`. JSON escaping can double or sextuple a
+character, so a legal 256-character key produced a 647 or 1,671 character dedupe key that
+`EventDedupeKey` rejects. FR-5's index makes the key unique and gives the lookup. No new table is
+needed.
 
 The marker is in the log because the log is the source of truth. `CommandAdmitted` sets the
 precedent: the fact is an event, and an index serves the lookup.
@@ -264,7 +269,7 @@ attempt legitimately carries more input than the first.
 In `SessionState`, next to `submitBatchAdmitted`. Call it `decideAdmitted`.
 
 1. Outside any gate, look the decider up, compute `key = idempotencyKey(input)`, and check the
-   name and key lengths. A failure is `EDADeciderError` with `unknown_decider` or `invalid_input`.
+   key against the rule above (1 to 256 characters, no line feed). A failure is `EDADeciderError` with `unknown_decider` or `invalid_input`.
 2. Take `admissionGate`, then `withAppendGate`. These are the two gates `submitBatch` takes, in the
    same order. Startup recovery holds `admissionGate` while it plans and commits its repair, so a
    decision never reads state that recovery is about to change.
@@ -276,8 +281,9 @@ In `SessionState`, next to `submitBatchAdmitted`. Call it `decideAdmitted`.
 6. On `Accept`:
    - Encode `result`. Encode every draft through `events`, and append the encoded form. This is
      the write path that minor finding 3 asks for, so a decider's events may use any schema.
-     Then check the namespace rule. Check that the
-     encoded result is at most 16 KiB. A failure is `invalid_output`.
+     Then check the namespace rule. Check that the encoded result is at most 16 KiB and that
+     each encoded draft is within `maxAppEventBytes` (see "Size limit" below). A failure is
+     `invalid_output`.
    - Admit each command with the existing `prepareCommandAdmission`. A
      `SessionCommandAdmissionConflict` fails the whole call.
    - Commit `[DeciderAccepted, ...items in order]` with `commitDurableEntriesWithinGate`. That is
@@ -288,6 +294,20 @@ In `SessionState`, next to `submitBatchAdmitted`. Call it `decideAdmitted`.
 No decider error is an `EDASessionStoreError`. That matters, because `withAppendGate` records a
 store error as fatal for the live runtime. A bad input or a throwing decider must leave the runtime
 usable.
+
+### Size limit
+
+The store refuses a row over its JSON cap (1,500,000 bytes in the Cloudflare store), and it
+refuses with an `EDASessionStoreError`. Inside `withAppendGate` that is fatal. The review proved
+it: a schema-valid draft 11 bytes over the cap failed the decision, and the next small `submit`
+failed with the same error. Plain `submit` has the same defect in 0.1.0.
+
+So the size check moves in front of the store. Core exports `maxAppEventBytes` (1 MiB, below
+every host's cap). `submit` and `decide` both measure each app event's serialized payload before
+the append. `submit` fails with a `SessionCommandAdmissionConflict` whose code is
+`event_too_large`. `decide` fails with `invalid_output`. Neither is a store error, so neither is
+fatal. A store that still refuses a row after this check has a real storage fault, and fatal is
+the right answer for that.
 
 ## Why the decision is atomic
 
@@ -348,13 +368,19 @@ This is minor finding 1 from the request, and deciders need it. `submitBatchAdmi
 envelope through, so app code can submit `RunCompleted` or a forged `DeciderAccepted` today.
 
 `submit` and decider drafts reject an event in the `effect-durable-agent` namespace unless its type
-is on an allowlist. The allowlist is `SystemMessageCommitted` and `AssistantMessageImported`. Gia
-submits the first on every session seed (`system-prompt.ts`) and the second in its scenario
+is on an allowlist. The allowlist is `SystemMessageCommitted`, `SessionConfigured` and
+`AssistantMessageImported`. Gia submits the first two in the seed batch of every new session
+(`system-prompt.ts`, and `makeEDAGiaSessionConfigured` in `model.ts`, called from `submission.ts`,
+`slack-ingress.server.ts` and `subagents/launch.server.ts`). It submits the third in its scenario
 fixtures. The rejection is a new `SessionCommandAdmissionConflict` code, `framework_event`, so it
 is not fatal to the runtime.
 
-The implementer greps Gia for other framework events passed to `submit` before fixing the list.
-Test fixtures that need arbitrary framework events seed the store with `InMemorySeeded`.
+The first draft of this rule left out `SessionConfigured`. The review applied the rule as written
+and it rejected the seed batch of every new web, cron, Slack and subagent session. A grep is
+therefore not enough to fix the list. The gate is step 3 of the release plan: Gia's full test
+suite runs against the packed build with the rule on, and any `framework_event` rejection there
+is a missing allowlist entry or a Gia change to make. Test fixtures that need arbitrary framework
+events seed the store with `InMemorySeeded`.
 
 ## Tests
 
@@ -366,6 +392,12 @@ Test fixtures that need arbitrary framework events seed the store with `InMemory
   - reject commits nothing and the head does not move;
   - a replay returns the stored result, does not call `decide`, and commits nothing, in a case
     where state has changed so that `decide` would now return different items;
+  - a key with a line feed or of 257 characters is `invalid_input`, and a key of 256 double
+    quotes is accepted and replays;
+  - a draft over `maxAppEventBytes` is `invalid_output`, and so is the same event through
+    `submit` as `event_too_large`, both on the real SQLite store;
+  - Gia's seed batch (`SessionConfigured`, `SystemMessageCommitted`, a `SubmitMessage`) is
+    accepted through `submit` and as decider drafts;
   - `decide_threw`, `invalid_input`, `invalid_output` and an inner `queue_paused` conflict each
     commit nothing, and a following `submit` succeeds, which proves the runtime is not fatal;
   - a draft in the framework namespace outside the allowlist is rejected, and so is the same event
@@ -410,8 +442,8 @@ What this removes: the `agent.snapshot()` RPC on every Slack event, `mintEventId
 event-id bookkeeping, the double-seed race, and the duplicate author, attachment and receipt
 events on a Slack redelivery.
 
-`SystemMessageCommitted` is a framework event in that batch. It is on the allowlist, and its draft
-keeps its fixed `eventId`.
+`SystemMessageCommitted` and `SessionConfigured` are framework events in that batch. Both are on
+the allowlist. The system prompt's draft keeps its fixed `eventId`.
 
 ### Second candidate, as a follow-up
 
@@ -443,7 +475,9 @@ one EDA version.
    `v0.2.0` commit. Move `effect-durable-agent-cloudflare` into the catalog and make gia-cf and
    docs-site both use `catalog:` for both packages. Extend `gia-cf/scripts/check-eda-release.mjs`
    to read the docs-site manifest too, so a second version cannot appear. No adoption code. This
-   deploy writes nothing that 0.1.0 cannot read, so it can be rolled back.
+   deploy writes nothing that 0.1.0 cannot read, so it can be rolled back. It is not a no-op.
+   The namespace rule, the size limit and the payload check from minor finding 3 are active on
+   unchanged Gia code. Step 3 is what proves they reject nothing Gia sends.
 7. **Gia PR B, the adoption.** The FR-5 changes and the Slack decider. After its first accepted
    decision in production, rolling back to PR A is safe and rolling back to 0.1.0 is not.
 8. **Production check for PR B.** One Slack message to Gia and one cron run. In the session's log,
