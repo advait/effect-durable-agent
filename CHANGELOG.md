@@ -9,8 +9,11 @@
   evicted within the interval, the next alarm cold-started it and the cycle repeated, for ended
   and never-used sessions alike: 2,880 alarm invocations a day per object. `start` now runs the
   first drain before it returns and forks the loop after it, so a runtime build, and the alarm
-  handler that awaits it, sees that lease released. A drain failure still stops the loop and logs
-  as before. Work the drain starts, such as a turn, holds its own lease, so a session with work in
+  handler that awaits it, sees that lease released. A first-drain failure now fails the runtime
+  build, as a startup recovery failure already did: the alarm handler rethrows, so the platform
+  retries the alarm, and the next call rebuilds. Before, it stopped the control loop and left the
+  build standing. Startup that re-invokes interrupted tools still runs in the background, under
+  its `session-recovery` lease. Work the drain starts, such as a turn, holds its own lease, so a session with work in
   flight still gets its heartbeat. A cold build waits for that first drain; it is short unless the
   drain reaches a compaction boundary. No storage, protocol or API change. Existing looping objects
   stop at their next alarm after the host deploys this release.

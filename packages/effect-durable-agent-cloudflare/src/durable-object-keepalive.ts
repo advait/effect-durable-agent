@@ -50,7 +50,8 @@ export interface DurableObjectKeepAliveLease {
  * takes after {@link alarm} cleared the heartbeat arms it again, the next alarm cold-starts the
  * object again, and an idle object wakes every interval forever. The EDA runtime therefore
  * finishes its startup work (recovery and the first control drain) before its build resolves,
- * which is before the host calls {@link alarm}.
+ * which is before the host calls {@link alarm}. Startup that re-invokes interrupted tools runs in
+ * the background instead, under a lease the handler re-arms for.
  *
  * The active lease count is intentionally not durable: if the object is evicted
  * or crashes, the fibers the leases represented are gone too, and normal EDA

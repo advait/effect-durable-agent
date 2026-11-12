@@ -2946,10 +2946,15 @@ const makeLiveSessionState = Effect.gen(function* () {
       // The first drain settles before start returns. A host deciding whether a cold-started
       // session is idle (a Durable Object alarm) must see that drain's keep-alive lease released;
       // a lease taken after the decision re-arms the heartbeat, and the object wakes forever.
-      // Work the drain starts, such as a turn, holds its own lease.
-      if (Exit.isSuccess(yield* Effect.exit(drainAndLog(input)))) {
-        yield* runLiveControlLoop(input).pipe(Effect.forkIn(runtimeScope));
-      }
+      // Work the drain starts, such as a turn, holds its own lease. Like recovery, a failed first
+      // drain fails the build, so the host retries it and pending work keeps its wakeup. A model
+      // or tool error is a startup defect here, as in background recovery.
+      yield* drainAndLog(input).pipe(
+        Effect.catch((error) =>
+          error._tag === "EDASessionStoreError" ? Effect.fail(error) : Effect.die(error),
+        ),
+      );
+      yield* runLiveControlLoop(input).pipe(Effect.forkIn(runtimeScope));
       return;
     }
     // Re-invoked tools may run for minutes, so recovery finishes in the background while the
