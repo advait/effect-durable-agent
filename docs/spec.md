@@ -126,7 +126,7 @@ These are the current implementation rules worth preserving during edits:
 5. **Pure decisions stay pure.** Reducers, dispatch policy, run continuation policy, and inference-state transitions do not read clocks, refs, stores, services, sockets, or model streams.
 6. **Effect owns resources and interruption.** Runners, tools, subscribers, sinks, and finalizers are scoped workflows.
 7. **Started boundaries must terminalize.** In a live process, abnormal exits commit matching failure/interruption/cancellation terminals. Host eviction is repaired by recovery.
-8. **No lifecycle events from app code.** Applications emit app events and tool results; framework lifecycle boundaries remain framework-owned.
+8. **No lifecycle events from app code.** Applications emit app events and tool results; framework lifecycle boundaries remain framework-owned. `submit` and decider drafts enforce it: a framework event other than `SessionConfigured`, `SystemMessageCommitted` or `AssistantMessageImported` is refused (§8).
 9. **Durable store transactions do not suspend.** The Cloudflare SQLite append kernel is synchronous and contains no external I/O.
 10. **Reducer checkpoints are caches.** Missing/stale checkpoints are repaired by replaying durable events after the checkpoint cursor.
 11. **Prompt prefixes are immutable outside compaction.** After model-facing context has been sent, later turns append rather than rewrite it. Compaction creates a new context version.
@@ -141,6 +141,8 @@ Current methods:
 
 - `submit(command)` — admit one command and return the committed `CommandAdmitted` event.
 - `submit(items)` — commit an ordered durable batch of commands and/or app durable events.
+- `decide(decider, input)` — run a registered decider: read the committed state and append its
+  decision as one step (§13 "Deciders").
 - `submitAndBlock(command)` — admit a command and wait for its terminal command event.
 - `blockOnCommand(commandId, afterSeq?)` — wait for `CommandCompleted | CommandFailed | CommandCancelled`.
 - `snapshot()` — read current framework/app reducer snapshot (`{ state, reducerStates }`).
@@ -223,7 +225,7 @@ The ingress signal is only a wakeup. The durable event log and authoritative in-
 
 ### Control loop ownership
 
-`SessionState` owns the command-control loop. It starts commands, creates run/turn scopes, applies stop/steer/interrupt policy, observes active turn fibers, and terminalizes runs/commands. It does not hand state-dependent mutation to callers after `snapshot()`; decisions that mutate state happen inside the serialized session boundary.
+`SessionState` owns the command-control loop. It starts commands, creates run/turn scopes, applies stop/steer/interrupt policy, observes active turn fibers, and terminalizes runs/commands. It does not hand state-dependent mutation to callers after `snapshot()`; decisions that mutate state happen inside the serialized session boundary. Applications get the same boundary through deciders (§13): `decide` reads the fold of the log and appends under the admission and append gates `submit` takes.
 
 Current routing highlights:
 
@@ -302,7 +304,18 @@ Choose the key so it names one occurrence:
 - Stop: `StopTurnRequested`, `StopTurnApplied`
 - Compaction: `CompactionRequested`, `CompactionStarted`, `SummaryCreated`, `ContextRebased`, `CompactionCompleted`, `CompactionFailed`
 
+- Decider: `DeciderAccepted { decider, idempotencyKey, result }`, committed first in each accepted
+  decision's batch with `dedupeKey` = decider name, a line feed, and the idempotency key.
+  `ReducedState`, recovery and the transcript ignore it.
+
 Reserved but not currently emitted in normal runtime paths: `ContextProjected`, `BaseStateRequested`, `BaseStateCreated`, `BaseStateFailed`.
+
+App code may write only three framework event types, through `submit` or as decider drafts:
+`SessionConfigured`, `SystemMessageCommitted` and `AssistantMessageImported` (a session seed and
+imported history). Any other event in the `effect-durable-agent` namespace is refused before the
+append: `submit` fails with a `SessionCommandAdmissionConflict` of code `framework_event`, a
+decider with `invalid_output`. Tests that need other framework events seed the store
+(`EDASessionStore.InMemorySeeded`).
 
 ### Current ephemeral framework events
 
@@ -405,10 +418,22 @@ No `await`, model/tool calls, publishing, or external I/O may occur inside the t
 ### Current limits
 
 - Serialized JSON payloads are guarded below Cloudflare’s 2 MB SQL value/row limit (current hard cap around 1.5 MB).
-- `submit` refuses an app event whose serialized payload exceeds `maxAppEventBytes` (1 MiB, below
-  every host's row cap) before the append, with a `SessionCommandAdmissionConflict` of code
-  `event_too_large`. That is not a store error, so the runtime stays usable. A store that still
-  refuses a row is a storage fault and is fatal for the live runtime.
+- Every app-written durable event (`submit`, decider drafts, `ctx.emitDurable`, `ctx.stageDurable`)
+  passes the same checks before the append, none of them a store error, so a refusal leaves the
+  runtime usable:
+  - the payload is JSON-native: it survives `JSON.parse(JSON.stringify(payload))` unchanged (no
+    `Redacted`, `Option`, `Date` or class instance; a property whose value is `undefined` passes).
+    The store keeps JSON only, so anything else would be written as whatever `JSON.stringify` makes
+    of it. Code `payload_not_json`;
+  - the serialized payload is at most `maxAppEventBytes` (1 MiB, below every host's row cap). Code
+    `event_too_large`;
+  - an event in a namespace the runtime's `appEvents` registers decodes with that schema. Code
+    `invalid_event`.
+
+  `submit` and `ctx.emitDurable` fail with a `SessionCommandAdmissionConflict` of that code, a
+  decider with `EDADeciderError` `invalid_output`, and `ctx.stageDurable` dies with the conflict
+  (the sink runner logs it and skips the batch). A store that still refuses a row is a storage
+  fault and is fatal for the live runtime.
 - Oversized command inputs, messages, summaries, and tool/app results fail before commit; callers should store large data by reference.
 - Storage pruning/BaseState is not implemented. Compaction changes model context; it does not delete retained event/body rows.
 
@@ -573,7 +598,13 @@ Current `EDAToolExecutionContext` provides:
 - `sessionId`
 - `toolCallId`
 - `makeEventId()`
-- `emitDurable(event)` for app durable facts
+- `emitDurable(event)` for app durable facts, under the app event checks of §9
+- `queryEvents(schema, options)` for typed journal reads
+- `snapshot()` for `{ state, reducerStates }`, as `EDARuntime.snapshot` returns it. It can be stale
+  by the time the tool emits.
+- `decide(decider, input)` for a fact that depends on state (§13 "Deciders"). Pass the
+  `toolCallId` in the input and use it as the idempotency key, so a call re-invoked under
+  `ToolRecovery: "reinvoke"` finds the first acceptance. Return facts, not commands.
 
 There is no current public direct tool `emitEphemeral`, per-tool retry policy object, coalescer registration, or detached background scope in the tool context.
 
@@ -654,6 +685,52 @@ The current examples show the intended shape:
 - `examples/002-slack-bridge` — idempotent Slack ingress, reducer correlation across framework/app events, and durable sink delivery.
 - `examples/003-sandbox-lifecycle` — framework tool events + app sandbox events reduced into one UI model, including SSR handoff math.
 - `examples/004-celld-no-tools` — deployable celld host with Durable Objects-compatible SQLite, alarms, RPC, and WebSockets.
+
+### Deciders
+
+A decider (`effect-durable-agent/services/decider`) is a registered, pure, synchronous decision
+over the session's committed state, for ingress that chooses what to append from state: route a
+message, seed a session only once, stop only the caller's run, accept an approval only while it is
+pending. `EDADecider.define` takes a stable `name` (`/^[A-Za-z0-9._-]{1,128}$/`, not `_eda.`),
+`input`, `events`, `result` and `rejection` schemas, a required `idempotencyKey(input)` (1-256
+characters, no line feed) and `decide(view, input)`. The view is `{ sessionId, nowMs, state,
+reducerStates }`. The decision is `Accept { items, result }` or `Reject { rejection }`; items are
+commands (`submit` accepts them, with the same idempotency and paused-queue checks) and event
+drafts of the `events` schema without `eventId`, `sessionId`, `createdAtMs`, `trace` or
+`durability`. The runtime mints the id (a draft may fix it), stamps `nowMs` and takes the trace from
+the call. Ids a decision needs come in its input, so a retry carries the same ones.
+
+Register deciders once with the runtime options' `deciders`; construction fails on a duplicate or
+invalid name, or when a decider's `events` names an app namespace `appEvents` does not register.
+`EDARuntime.decide`, a tool's `ctx.decide` and the host's `decide` RPC share that registry, and
+refuse an unregistered decider (`unknown_decider`).
+
+`SessionState.decide`:
+
+1. Outside any gate, check the decider is registered and compute and check the key
+   (`invalid_input`).
+2. Take the admission gate, then the append gate, as `submitBatch` does.
+3. If a `DeciderAccepted` marker with the key exists, decode its `result` and return `Accepted`
+   with `replayed: true`. `decide` is not called; the input of a retry is not compared.
+4. Read the state and the clock once and call `decide` (`decide_threw` if it throws).
+5. On `Reject`, return it. Nothing is committed and the control loop is not woken.
+6. On `Accept`, encode the result (at most 16 KiB of JSON) and every draft with `events`, apply the
+   app event checks of §9 and the framework-namespace rule of §8 to each draft (`invalid_output`),
+   admit each command, and commit `[DeciderAccepted, ...items]` as one store append.
+7. Wake the control loop if the batch held a command, and return `Accepted` with the marker's seq.
+
+Inside the gate `state` is exactly the fold of the committed log (every durable append and every
+write of `state` runs under the append gate), so the decision reads what the append follows. A
+crash before or during the append commits nothing, so a retry decides on current state; after it,
+a retry finds the marker. No decider error is a store error, so none makes the runtime fatal.
+`decide` holds the append gate, so it delays every append in the session while it runs: keep it a
+pure computation. A decision guarantees which facts and commands entered the log together; a
+command it admits still runs later on the control loop.
+
+The host RPC `decide({ sessionId, trace, decider, input })` (`edaSessionRpc.decide`) decodes
+`input` with the decider's schema and returns the outcome encoded with its `result` or
+`rejection` schema; `encodeDecideInput` and `decodeDecideOutcome` keep the caller's types. It is
+trusted ingress, like `submitBatch`.
 
 ### Sinks
 

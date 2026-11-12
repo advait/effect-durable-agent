@@ -378,6 +378,29 @@ const submitKeyedFact = async (
     }),
   );
 
+/** Call the conformance routing decider through the host's `decide` RPC. */
+const decideRoute = async (
+  host: HostProcess,
+  sessionId: string,
+  input: { readonly key: string; readonly text: string; readonly commandId: string },
+) =>
+  await decodeJson<{
+    readonly outcome: {
+      readonly _tag: string;
+      readonly result?: { readonly headBefore: number };
+      readonly acceptedSeq?: number;
+      readonly replayed?: boolean;
+    };
+    readonly snapshot: { readonly lastSeq: number };
+  }>(
+    await fetch(`${host.baseUrl}/sessions/${sessionId}/decide`, {
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal: AbortSignal.timeout(30_000),
+    }),
+  );
+
 /** Submit a message, then read the session's history from its (enabled) transcript. */
 const submitAndReadHistory = async (
   host: HostProcess,
@@ -693,6 +716,35 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         expect(first.committed.event.dedupeKey).toBe("delivery-1");
         expect(redelivered.committed).toEqual(first.committed);
         expect(redelivered.snapshot.lastSeq).toBe(first.snapshot.lastSeq);
+      } finally {
+        await host.stop();
+      }
+    }, 120_000);
+
+    it("replays a decision after a hard restart without deciding or committing again", async () => {
+      const host = await startHost(kind);
+      const sessionId =
+        kind === "cloudflare"
+          ? "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b8a"
+          : "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b8a";
+      const input = {
+        key: "route-1",
+        text: "route me",
+        commandId: "018f6bd5-2f2a-7b1e-8f1a-000000000101",
+      };
+      try {
+        const first = await decideRoute(host, sessionId, input);
+        await host.restart({ hard: true });
+        const retried = await decideRoute(host, sessionId, { ...input, text: "a retry" });
+
+        expect(first.outcome).toEqual({
+          _tag: "Accepted",
+          result: { headBefore: 0 },
+          acceptedSeq: 1,
+          replayed: false,
+        });
+        expect(retried.outcome).toEqual({ ...first.outcome, replayed: true });
+        expect(retried.snapshot.lastSeq).toBe(first.snapshot.lastSeq);
       } finally {
         await host.stop();
       }

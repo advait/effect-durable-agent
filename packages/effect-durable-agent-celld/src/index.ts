@@ -29,7 +29,9 @@ export const getEDASessionCellByName = <T extends EDASessionCell<object>>(
 ): DurableObjectStub<T> => namespace.getByName(sessionId);
 
 export {
+  decodeDecideOutcome,
   edaRuntimeConfig,
+  encodeDecideInput,
   encodeEdaRpcCommand,
   encodeEdaRpcSubmittables,
   makeEDADurableObjectOpenAiModelLayer as makeEDACelldOpenAiModelLayer,

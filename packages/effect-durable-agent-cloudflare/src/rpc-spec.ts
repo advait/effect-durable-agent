@@ -40,6 +40,25 @@ export const SessionBatchInput = Schema.Struct({
   ...SessionScopedInput.fields,
   items: Schema.Array(EDARpcSubmittable),
 });
+/**
+ * One call to a registered decider, by name. `input` is the decider's input encoded with its
+ * `input` schema (`encodeDecideInput`). Trusted ingress, like `submitBatch`: the host authorizes.
+ */
+export const SessionDecideInput = Schema.Struct({
+  ...SessionScopedInput.fields,
+  decider: Schema.NonEmptyString,
+  input: Schema.Unknown,
+});
+/** The decider's outcome, its result or rejection encoded with its schemas (`decodeDecideOutcome`). */
+export const SessionDecideResult = Schema.Union([
+  Schema.TaggedStruct("Accepted", {
+    result: Schema.Json,
+    acceptedSeq: SequenceNumber,
+    replayed: Schema.Boolean,
+  }),
+  Schema.TaggedStruct("Rejected", { rejection: Schema.Json }),
+]);
+export type SessionDecideResult = typeof SessionDecideResult.Type;
 /** Waits for one command terminal after an optional durable replay position. */
 export const SessionBlockInput = Schema.Struct({
   ...SessionScopedInput.fields,
@@ -113,6 +132,7 @@ export const SessionTranscriptSummaryResult = Schema.Union([
 export const edaSessionRpc = {
   submit: { input: SessionCommandInput, output: CommittedDurableEvent },
   submitBatch: { input: SessionBatchInput, output: Schema.Array(CommittedDurableEvent) },
+  decide: { input: SessionDecideInput, output: SessionDecideResult },
   submitAndBlock: { input: SessionCommandInput, output: CommittedCommandTerminalEvent },
   blockOnCommand: { input: SessionBlockInput, output: CommittedCommandTerminalEvent },
   grantRun: { input: SessionGrantRunInput, output: RunGrantResult },

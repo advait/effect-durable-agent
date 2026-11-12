@@ -33,6 +33,66 @@ the wire (WebSocket frames and RPC). API: the optional envelope field, `EventDed
 `maxAppEventBytes`, the store-port method and the new conflict code. No transcript interpretation
 change.
 
+- **Feature:** deciders (`effect-durable-agent/services/decider`). `EDADecider.define` declares a
+  pure, synchronous decision over the session's committed state with its `input`, `events`,
+  `result` and `rejection` schemas and a required `idempotencyKey`. Register deciders once with the
+  new `deciders` option of `makeEDARuntimeLayer`, the Cloudflare and celld runtime and Durable
+  Object options, and `makeEdaTestLayer`, then call one with `EDARuntime.decide(decider, input)`, a
+  tool's `ctx.decide`, or the new `decide` RPC. The decision reads the fold of the log and appends
+  under the same admission and append gates `submit` takes, so no tool, sink or control-loop write
+  lands in between. An acceptance commits a `DeciderAccepted` marker first in its batch, with
+  `dedupeKey` = decider name, a line feed and the key; a retry with the same key returns the stored
+  result with `replayed: true` and commits nothing. A rejection commits nothing. Drafts are encoded
+  with the decider's `events` schema and checked against the registered `appEvents`; the result is
+  capped at 16 KiB (`maxDeciderResultBytes`). Failures are `EDADeciderError` (`unknown_decider`,
+  `invalid_input`, `decide_threw`, `invalid_output`), never store errors, so the runtime stays
+  usable. Construction fails on a duplicate name, a name outside `/^[A-Za-z0-9._-]{1,128}$/` or
+  under `_eda.`, or a decider that emits an app namespace `appEvents` does not register. See
+  `docs/spec.md` §6, §7, §12 and §13.
+- **Feature:** the Cloudflare host exposes `decide`. `edaSessionRpc.decide`
+  (`SessionDecideInput`, `SessionDecideResult`), `EDASessionController.decide`,
+  `EDASessionDurableObject.decide(raw)`, and `encodeDecideInput` / `decodeDecideOutcome` for the
+  caller's side of the RPC (also re-exported by celld). It is trusted ingress, like `submitBatch`.
+- **Feature:** tools get `ctx.decide` and `ctx.snapshot()`. `snapshot` returns
+  `{ state, reducerStates }` like `EDARuntime.snapshot` and can be stale by the time the tool
+  emits; a tool whose fact depends on state uses `decide` with its `toolCallId` as the key.
+- **Breaking:** `submit` and decider drafts refuse framework events. An event in the
+  `effect-durable-agent` namespace is refused unless its type is `SessionConfigured`,
+  `SystemMessageCommitted` or `AssistantMessageImported`, with a `SessionCommandAdmissionConflict`
+  of code `framework_event` (`invalid_output` for a draft). Before, app code could append
+  `RunCompleted` or any lifecycle event. Test fixtures that need other framework events seed the
+  store with `EDASessionStore.InMemorySeeded`.
+- **Breaking:** app event payloads must be JSON-native. `submit`, `ctx.emitDurable` and
+  `ctx.stageDurable` refuse a payload that does not survive `JSON.parse(JSON.stringify(payload))`
+  unchanged (`Redacted`, `Option`, `Date`, a class instance, `undefined` in an array, a non-finite
+  number): `submit` and `emitDurable` fail with a `SessionCommandAdmissionConflict` of code
+  `payload_not_json`, and `stageDurable` dies with it, so the sink runner logs it and skips the
+  batch. Before, the store wrote whatever `JSON.stringify` made of such a value: a `Redacted` email
+  was stored as `"<redacted>"`. An object property whose value is `undefined` is still accepted.
+  Encode such values before writing; encode-on-write for `submit` is planned.
+- **Breaking:** `submit` checks registered app events against the runtime's `appEvents` schema
+  before the append and refuses a mismatch with code `invalid_event`. Before, a mismatch failed
+  inside the append as a store error and made the runtime fatal. `ctx.emitDurable` and
+  `ctx.stageDurable` apply the same schema and `maxAppEventBytes` checks.
+- **Breaking:** `ctx.emitDurable` can fail with `SessionCommandAdmissionConflict`, and
+  `EDAToolExecutionContext` gains the required `decide` and `snapshot` members, so a hand-built
+  tool context (a test fake) must add them. `SessionCommandAdmissionConflict.code` gains
+  `framework_event`, `invalid_event` and `payload_not_json`, which also reach RPC callers.
+- `EDADeciderDefinition.decide` takes its types from the schemas, never from its return value. A
+  literal nested in the returned object widens (`payload: { to: "ai" }` checks as `string`), so
+  build nested values with their schema's `make` or write them `as const`.
+
+Storage: no new table or migration. A `DeciderAccepted` marker is an ordinary framework event in
+`_eda_event_log`, keyed through the `dedupe_key` column and index of migration 4. **One-way:** a 0.1.0 runtime
+cannot decode `DeciderAccepted`, so once a session has accepted a decision it cannot be served by
+0.1.0. Deploy this release first and adopt deciders in a later deploy. Protocol: raw event sockets
+and RPC replies can carry the new `DeciderAccepted` framework event (transcript sockets never do),
+the new `decide` RPC, and the new conflict codes. API: the `services/decider` subpath,
+`EDARuntimeShape.decide`, the `deciders` options, the tool context members, the host RPC and
+helpers, and the admission rules above. No transcript interpretation change: the interpreter and
+`ReducedState` ignore the marker, and `transcriptSemanticRevision` and the recorded fingerprints
+are unchanged.
+
 ## 0.1.0
 
 First stable release. It publishes to the `latest` npm dist-tag; `alpha` stays at

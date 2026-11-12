@@ -65,6 +65,7 @@ import {
 } from "effect-durable-agent/services/session-store";
 import { EDAReducer, EDAReducerRegistry } from "effect-durable-agent/services/reducer-registry";
 import { SessionEventObserver } from "effect-durable-agent/services/session-event-observer";
+import { EDADecider, EDADeciderError } from "effect-durable-agent/services/decider";
 import {
   SessionCommandAdmissionConflict,
   SessionState,
@@ -1819,6 +1820,7 @@ const withSqliteSession = <A, E>(
     readonly store: EDASessionStoreShape;
     readonly published: ReadonlyArray<number>;
   }) => Effect.Effect<A, E, EDAReducerRegistry>,
+  deciders: ReadonlyArray<EDADecider> = [],
 ) =>
   Effect.gen(function* () {
     const storage = new SqliteDurableObjectStorage();
@@ -1835,6 +1837,8 @@ const withSqliteSession = <A, E>(
         makeEdaTestLayer({
           sessionId: SessionId.make(SESSION_ID),
           reducers: [counterReducer],
+          appEvents: CounterEvent,
+          deciders,
           wrapStore: () => store,
           sessionEventObserverLayer: SessionEventObserver.FromHandler((event) =>
             Effect.sync(() => {
@@ -1923,6 +1927,75 @@ describe("SessionState over DurableObjectSessionStore on SQLite", () => {
       overCap: "event_too_large",
       small: "accepted",
       loggedIds: [EVENT_ID_C],
+    });
+  });
+});
+
+// Claude Opus 5.5's review (adversary/fr1-fr5-interrogate@b2c303a,
+// adversary-fr1-decider-fatal.test.ts): a schema-valid decider draft over the store's row cap.
+describe("deciders over DurableObjectSessionStore on SQLite", () => {
+  it("refuses an oversized draft as invalid_output without making the runtime fatal", async () => {
+    const overStoreCap = "x".repeat(durableObjectSerializedJsonHardCapBytes);
+    const justOver = "x".repeat(maxAppEventBytes - 22 + 1);
+    const bigNote = EDADecider.define({
+      name: "test.counter.BigNote",
+      input: Schema.Struct({ key: Schema.String, note: Schema.String }),
+      events: CounterEvent,
+      result: Schema.Null,
+      rejection: Schema.Never,
+      idempotencyKey: (input) => input.key,
+      decide: (_view, input) => ({
+        _tag: "Accept",
+        items: [
+          {
+            namespace: "test.counter",
+            type: "Incremented",
+            schemaVersion: schemaV1,
+            payload: { amount: 1, note: input.note },
+          },
+        ],
+        result: null,
+      }),
+    });
+    const result = await Effect.runPromise(
+      withSqliteSession(
+        ({ session, store }) =>
+          Effect.gen(function* () {
+            const reason = (exit: Exit.Exit<unknown, unknown>) => {
+              if (Exit.isSuccess(exit)) return "accepted";
+              if (hasEDASessionStoreError(exit.cause)) return "store error";
+              const error = exit.cause.reasons
+                .map((entry) => (Cause.isFailReason(entry) ? entry.error : undefined))
+                .find((entry) => entry instanceof EDADeciderError);
+              return error?.reason ?? String(exit.cause);
+            };
+            const overStore = yield* Effect.exit(
+              session.decide(bigNote, { key: "a", note: overStoreCap }),
+            );
+            const overCap = yield* Effect.exit(
+              session.decide(bigNote, { key: "b", note: justOver }),
+            );
+            const small = yield* Effect.exit(session.decide(bigNote, { key: "c", note: "" }));
+            const submitted = yield* Effect.exit(session.submitBatch([counterFact(EVENT_ID_C)]));
+            const log = yield* collect(store);
+            return {
+              overStore: reason(overStore),
+              overCap: reason(overCap),
+              small: reason(small),
+              submitted: Exit.isSuccess(submitted),
+              loggedTypes: log.map((entry) => entry.event.type),
+            };
+          }),
+        [bigNote],
+      ),
+    );
+
+    expect(result).toEqual({
+      overStore: "invalid_output",
+      overCap: "invalid_output",
+      small: "accepted",
+      submitted: true,
+      loggedTypes: ["DeciderAccepted", "Foreign", "Foreign"],
     });
   });
 });
