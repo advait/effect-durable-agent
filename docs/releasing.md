@@ -8,7 +8,7 @@ their published manifests.
 
 ## Current public baseline
 
-The current lockstep release is `0.1.0`, the first stable release. The `latest` npm dist-tag
+The current lockstep release is `0.2.0`. The `latest` npm dist-tag
 resolves to it for core, Cloudflare, and celld; `alpha` stays at the final alpha,
 `0.1.0-alpha.30`. Consumers should name the exact lockstep version so dependency updates remain
 deliberate.
@@ -73,9 +73,9 @@ an interactive maintainer operation and may require two-factor authentication. A
 exact version:
 
 ```bash
-npm dist-tag add effect-durable-agent@0.1.0 latest
-npm dist-tag add effect-durable-agent-cloudflare@0.1.0 latest
-npm dist-tag add effect-durable-agent-celld@0.1.0 latest
+npm dist-tag add effect-durable-agent@0.2.0 latest
+npm dist-tag add effect-durable-agent-cloudflare@0.2.0 latest
+npm dist-tag add effect-durable-agent-celld@0.2.0 latest
 ```
 
 ## Release checklist

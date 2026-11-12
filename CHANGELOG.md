@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
+
+Adds dedupe keys for durable events (FR-5) and deciders (FR-1), and admission rules for every
+app-written event. Minor release with breaking changes: the framework-namespace rule, the
+JSON-native payload rule, new conflict codes on the wire, and the `stageDurable` and sink
+`process` signatures. Storage: Durable Object migration 4 (forward-only). **One-way:** a 0.1.0
+runtime cannot decode `DeciderAccepted`, so after a host's first accepted decision it cannot roll
+back to 0.1.0.
 
 - **Feature:** dedupe keys for durable events. `DurableEventEnvelope` gains an optional
   `dedupeKey: EventDedupeKey` (1-512 characters, exported from `effect-durable-agent/types/events`).
