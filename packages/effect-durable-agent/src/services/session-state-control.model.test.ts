@@ -1,6 +1,7 @@
 import * as fc from "fast-check";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as Prompt from "effect/ai/Prompt";
 import * as Response from "effect/ai/Response";
@@ -25,7 +26,7 @@ import { EDADecider, type EDADeciderOutcome } from "./decider";
 import { EDAReducer, getEDAReducerState } from "./reducer-registry";
 import { EDASink } from "./sink-registry";
 import { EDASessionStore } from "./session-store";
-import type { CommittedDurableEvent } from "./session-store";
+import type { CommittedDurableEvent, EDASessionStoreShape } from "./session-store";
 import { sequentialUuidV7 } from "./id-generator";
 import { EDASessionQuery } from "./session-query";
 import { SessionState } from "./session-state";
@@ -170,6 +171,32 @@ const toolFact = (index: number) =>
     payload: { count: -1, head: -1, origin: `tool ${index}` },
   });
 
+/** A store append the scenario holds open, inside the append gate, until it releases it. */
+interface HeldAppend {
+  readonly eventId: string;
+  readonly reached: Deferred.Deferred<void>;
+  readonly release: Deferred.Deferred<void>;
+}
+
+/** Holds the append that carries `held.current`'s event at the store, the boundary the test owns. */
+const holdingStore =
+  (held: { current: HeldAppend | undefined }) =>
+  (inner: EDASessionStoreShape): EDASessionStoreShape => ({
+    ...inner,
+    append: (batch) =>
+      Effect.gen(function* () {
+        const hold = held.current;
+        if (
+          hold !== undefined &&
+          batch.entries.some((entry) => entry.event.eventId === hold.eventId)
+        ) {
+          yield* Deferred.succeed(hold.reached, undefined);
+          yield* Deferred.await(hold.release);
+        }
+        return yield* inner.append(batch);
+      }),
+  });
+
 interface DecideRecord {
   readonly key: string;
   readonly input: DecideInput;
@@ -293,6 +320,7 @@ const interpretAction = (input: {
   readonly startedStreams: ReadonlyArray<number>;
   readonly released: Set<number>;
   readonly decisions: Array<DecideRecord>;
+  readonly held: { current: HeldAppend | undefined };
 }) =>
   Effect.gen(function* () {
     if (input.action === "decide" || input.action === "retryDecide") {
@@ -302,14 +330,24 @@ const interpretAction = (input: {
           ? earlier.key
           : `key-${input.actionIndex}`;
       const decideInput = { key, text: `decide ${input.actionIndex}` };
-      // A tool emits a fact concurrently with the decision.
-      const [outcome] = yield* Effect.all(
-        [
-          input.dispatcher.decide(modelDecider, decideInput),
-          input.dispatcher.appendAppDurable(toolFact(input.actionIndex)),
-        ],
-        { concurrency: "unbounded" },
-      );
+      // A tool's fact is mid-append, inside the gate, when the decision starts. The decision must
+      // read the state that append commits, never the state from before it.
+      const fact = toolFact(input.actionIndex);
+      const hold: HeldAppend = {
+        eventId: fact.eventId,
+        reached: yield* Deferred.make<void>(),
+        release: yield* Deferred.make<void>(),
+      };
+      input.held.current = hold;
+      const emitting = yield* Effect.forkChild(input.dispatcher.appendAppDurable(fact));
+      yield* Deferred.await(hold.reached);
+      const deciding = yield* Effect.forkChild(input.dispatcher.decide(modelDecider, decideInput));
+      // Let the decision run until it waits on the gate the held append owns.
+      for (let step = 0; step < 10; step += 1) yield* Effect.yieldNow;
+      yield* Deferred.succeed(hold.release, undefined);
+      yield* Fiber.join(emitting);
+      const outcome = yield* Fiber.join(deciding);
+      input.held.current = undefined;
       input.decisions.push({ key, input: decideInput, outcome });
       yield* settleAfterAction(input.dispatcher);
       return;
@@ -341,6 +379,7 @@ const runScenario = (actions: ReadonlyArray<ModelAction>) =>
     const admissions: Array<CommandAdmission> = [];
     const decisions: Array<DecideRecord> = [];
     const commandCounter = { value: 0 };
+    const held: { current: HeldAppend | undefined } = { current: undefined };
     const streams = gates.map((gate, index) => modelStream(index, gate));
 
     return yield* Effect.scoped(
@@ -360,6 +399,7 @@ const runScenario = (actions: ReadonlyArray<ModelAction>) =>
             startedStreams,
             released,
             decisions,
+            held,
           });
         }
 
@@ -380,6 +420,7 @@ const runScenario = (actions: ReadonlyArray<ModelAction>) =>
             reducers: [factCounter],
             deciders: [modelDecider],
             sinks: [echoSink],
+            wrapStore: holdingStore(held),
           }),
         ),
       ),
