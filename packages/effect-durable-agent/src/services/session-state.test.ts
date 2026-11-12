@@ -22,6 +22,7 @@ import { CommandId, EventId, RunId, SequenceNumber, SessionId, TurnId } from "..
 import {
   CommandAdmittedEvent,
   DurableEventEnvelope,
+  EventDedupeKey,
   EventType,
   EphemeralEventEnvelope,
   PositionedEvent,
@@ -34,8 +35,16 @@ import {
   schemaV1,
   turnCompletedEventType,
 } from "../types/events";
-import { EDASessionStore, EDASessionStoreError, type EDASessionStoreShape } from "./session-store";
+import {
+  EDASessionStore,
+  EDASessionStoreError,
+  registerAppEvents,
+  type EDASessionStoreShape,
+} from "./session-store";
 import { LiveEventBus } from "./live-event-bus";
+import { EDASessionQuery } from "./session-query";
+import { EDAReducer, EDAReducerRegistry } from "./reducer-registry";
+import { SessionEventObserver } from "./session-event-observer";
 import { EDAPromptProjector } from "./prompt-projector";
 import { SessionState } from "./session-state";
 import { makeEdaExportingTracer, type EDAExportedSpan } from "./tracing";
@@ -176,7 +185,144 @@ const waitForFrameworkCheckpoint = (store: EDASessionStoreShape, throughSeq: Seq
     return yield* Effect.die(new Error("Timed out waiting for framework checkpoint"));
   });
 
+const CounterEvent = Schema.Struct({
+  ...DurableEventEnvelope.fields,
+  namespace: Schema.Literal("test.counter"),
+  type: Schema.Literal("Incremented"),
+  payload: Schema.Struct({ amount: Schema.Number }),
+});
+
+const counterReducer = EDAReducer.forEvents(CounterEvent, {
+  name: "test.counter",
+  initial: 0,
+  stateSchema: Schema.Number,
+  reduce: (total, entry) => total + entry.event.payload.amount,
+});
+
+const counterFact = (eventId: string, dedupeKey?: string) =>
+  CounterEvent.make({
+    namespace: "test.counter",
+    type: "Incremented",
+    schemaVersion: schemaV1,
+    durability: "durable",
+    eventId: EventId.make(eventId),
+    sessionId: SessionId.make(SESSION_ID),
+    createdAtMs: UnixEpochMillis.make(1_715_000_000_000),
+    payload: { amount: 1 },
+    ...(dedupeKey === undefined ? {} : { dedupeKey: EventDedupeKey.make(dedupeKey) }),
+  });
+
+/** Submit batches in order, then compare what was folded and published live with a replay of the log. */
+const submitAndCompareWithReplay = (
+  ...batches: ReadonlyArray<ReadonlyArray<DurableEventEnvelope>>
+) => {
+  const published: Array<number> = [];
+  return Effect.gen(function* () {
+    const session = yield* SessionState;
+    const store = yield* EDASessionStore;
+    const reducers = yield* EDAReducerRegistry;
+    const returned = (yield* Effect.forEach(batches, (batch) => session.submitBatch(batch))).flat();
+    const log = yield* collectCommitted(store);
+    const live = yield* session.snapshotData();
+    return {
+      returnedSeqs: returned.map((entry) => entry.position.seq),
+      logRows: log.length,
+      liveCount: live.reducerStates.get(counterReducer.name),
+      replayCount: reducers.reduce(reducers.initial, log).get(counterReducer.name),
+      lastSeq: live.reduced.lastSeq,
+      publishedSeqs: published,
+    };
+  }).pipe(
+    Effect.provide(
+      makeEdaTestLayer({
+        sessionId: SessionId.make(SESSION_ID),
+        reducers: [counterReducer],
+        wrapStore: (store) => registerAppEvents(store, CounterEvent),
+        sessionEventObserverLayer: SessionEventObserver.FromHandler((event) =>
+          Effect.sync(() => {
+            published.push(event.position.seq);
+          }),
+        ),
+      }),
+    ),
+  );
+};
+
 describe("SessionState", () => {
+  // Same-batch repeat reproduction from gpt-6-astra's review (review/docs-chat-frs-adversarial@121ac4d).
+  it.each([
+    ["eventId", [counterFact(EVENT_ID), counterFact(EVENT_ID)]],
+    ["dedupe key", [counterFact(EVENT_ID, "k"), counterFact(EPHEMERAL_EVENT_ID, "k")]],
+  ])("folds and publishes an event repeated by %s within one batch once", async (_, batch) => {
+    const result = await Effect.runPromise(submitAndCompareWithReplay(batch));
+
+    expect(result).toEqual({
+      returnedSeqs: [1, 1],
+      logRows: 1,
+      liveCount: 1,
+      replayCount: 1,
+      lastSeq: 1,
+      publishedSeqs: [1],
+    });
+  });
+
+  it("neither publishes nor advances the head for an app event collapsed by its dedupe key", async () => {
+    const result = await Effect.runPromise(
+      submitAndCompareWithReplay(
+        [counterFact(EVENT_ID, "k")],
+        [counterFact(EPHEMERAL_EVENT_ID, "k")],
+      ),
+    );
+
+    expect(result).toEqual({
+      returnedSeqs: [1, 1],
+      logRows: 1,
+      liveCount: 1,
+      replayCount: 1,
+      lastSeq: 1,
+      publishedSeqs: [1],
+    });
+  });
+
+  it("keeps an event's dedupe key on live publication, event pages and replay", async () => {
+    const published: Array<unknown> = [];
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const session = yield* SessionState;
+        const query = yield* EDASessionQuery;
+        yield* session.submitBatch([counterFact(EVENT_ID, "delivery-1")]);
+        const page = yield* query.readEventPage(SequenceNumber.make(0), 10);
+        const replay = yield* (yield* query.eventsAfter(SequenceNumber.make(0))).pipe(
+          Stream.take(1),
+          Stream.runCollect,
+        );
+        return {
+          published,
+          page: page.events.map((entry) => entry.event),
+          replay: Array.from(replay, (entry) => entry.event),
+        };
+      }),
+    ).pipe(
+      Effect.provide(
+        makeEdaTestLayer({
+          sessionId: SessionId.make(SESSION_ID),
+          reducers: [counterReducer],
+          wrapStore: (store) => registerAppEvents(store, CounterEvent),
+          sessionEventObserverLayer: SessionEventObserver.FromHandler((event) =>
+            Effect.sync(() => {
+              published.push(event.event);
+            }),
+          ),
+        }),
+      ),
+    );
+
+    const result = await Effect.runPromise(program);
+
+    const keyed = [expect.objectContaining({ dedupeKey: "delivery-1" })];
+    expect(result).toEqual({ published: keyed, page: keyed, replay: keyed });
+  });
+
   it("starts a legacy admitted submit without migrating persisted session state", async () => {
     const prompts: Array<Prompt.RawInput> = [];
     const projectedStates: Array<ReducedState> = [];

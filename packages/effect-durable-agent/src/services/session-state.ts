@@ -67,6 +67,7 @@ import {
   NonNegativeInt,
   PositionedEvent,
   SystemPromptText,
+  maxAppEventBytes,
   turnFailedEventType,
   type ToolCallFailedPayload,
   type TurnFailedEvent,
@@ -298,7 +299,7 @@ export type SessionStateError = EDASessionStoreError | TurnRunnerError;
 export class SessionCommandAdmissionConflict extends Schema.TaggedError<SessionCommandAdmissionConflict>()(
   "SessionCommandAdmissionConflict",
   {
-    code: Schema.Literals(["queue_paused", "paused_queue_changed"]),
+    code: Schema.Literals(["queue_paused", "paused_queue_changed", "event_too_large"]),
     message: Schema.String,
     pausedMessageIds: Schema.Array(MessageId),
   },
@@ -586,8 +587,14 @@ const makeLiveSessionState = Effect.gen(function* () {
   ): Effect.Effect<PublishedDurables | undefined> =>
     Effect.gen(function* () {
       const current = yield* Ref.get(state);
+      // A batch can resolve two entries to one position (a repeated `eventId` or dedupe key);
+      // fold and publish each position once so live state stays the fold of the log.
       const fresh = Array.from(
-        committed.filter((entry) => entry.position.seq > current.reduced.lastSeq),
+        new Map(
+          committed
+            .filter((entry) => entry.position.seq > current.reduced.lastSeq)
+            .map((entry) => [entry.position.seq, entry] as const),
+        ).values(),
       ).sort((a, b) => a.position.seq - b.position.seq);
 
       if (fresh.length === 0) {
@@ -826,6 +833,9 @@ const makeLiveSessionState = Effect.gen(function* () {
       "eda.command.count": commandCount,
       "eda.event.app_owned_count": input.length - commandCount,
     });
+    for (const item of input) {
+      if (!isEDACommand(item)) yield* refuseOversizedEvent(item);
+    }
     const committed = yield* withAppendGate(
       Effect.gen(function* () {
         const preparedByIdempotencyKey = new Map<string, DurableEventEnvelope>();
@@ -2871,6 +2881,35 @@ const commandWithId = (command: EDACommand, commandId: CommandId): EDACommand =>
     default:
       throw assertNeverError(command, "EDA command");
   }
+};
+
+const payloadJsonEncoder = new TextEncoder();
+
+/** UTF-8 size of the payload's JSON; a payload JSON cannot encode is left to the store to refuse. */
+const serializedPayloadBytes = (payload: unknown): number => {
+  try {
+    const json = JSON.stringify(payload) as string | undefined;
+    return json === undefined ? 0 : payloadJsonEncoder.encode(json).byteLength;
+  } catch {
+    return 0;
+  }
+};
+
+/**
+ * Refuse an app event whose serialized payload exceeds `maxAppEventBytes` before it reaches the
+ * store, whose own row cap would fail as a store error and stop the runtime.
+ */
+const refuseOversizedEvent = (event: DurableEventEnvelope) => {
+  const bytes = serializedPayloadBytes(event.payload);
+  return bytes <= maxAppEventBytes
+    ? Effect.void
+    : Effect.fail(
+        new SessionCommandAdmissionConflict({
+          code: "event_too_large",
+          message: `Event ${event.namespace}/${event.type} ${event.eventId} payload is ${bytes} bytes; the limit is ${maxAppEventBytes} bytes`,
+          pausedMessageIds: [],
+        }),
+      );
 };
 
 const rememberPreparedCommand = (

@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import * as Prompt from "effect/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
@@ -94,6 +95,36 @@ describe("event envelope", () => {
 
     expect(decoded).toEqual(validEnvelope);
     expect(Schema.is(EventEnvelope)(decoded)).toBe(true);
+  });
+
+  it.each([
+    ["without a dedupe key", undefined, true],
+    ["with a dedupe key", "salesforce-entry-1", true],
+    ["with a 512-character dedupe key", "k".repeat(512), true],
+    ["with an empty dedupe key", "", false],
+    ["with a 513-character dedupe key", "k".repeat(513), false],
+  ])("decodes a durable envelope %s", (_, dedupeKey, accepted) => {
+    const key = dedupeKey === undefined ? {} : { dedupeKey };
+    const app = Schema.decodeUnknownExit(DurableEventEnvelope)({
+      ...validEnvelope,
+      namespace: "docs.chat",
+      ...key,
+    });
+    const framework = Effect.runSyncExit(
+      decodeUnknownEDADurableEvent({ ...validCommandAdmittedEvent, ...key }),
+    );
+
+    expect([app._tag, framework._tag]).toEqual(
+      accepted ? ["Success", "Success"] : ["Failure", "Failure"],
+    );
+    if (Exit.isSuccess(app) && Exit.isSuccess(framework)) {
+      expect(Schema.encodeSync(DurableEventEnvelope)(app.value)).toEqual({
+        ...validEnvelope,
+        namespace: "docs.chat",
+        ...key,
+      });
+      expect(durableEventEnvelope(framework.value).dedupeKey).toBe(dedupeKey);
+    }
   });
 
   it("decodes CommandAdmitted as the first concrete durable event", () => {

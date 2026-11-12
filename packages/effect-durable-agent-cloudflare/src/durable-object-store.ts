@@ -39,6 +39,7 @@ import {
   EDASessionStore,
   EDASessionStoreError,
   type EDAReducerCheckpoint,
+  type FindEventByDedupeKeyInput,
   type EDASessionStoreShape,
   type SaveReducerCheckpointInput,
 } from "effect-durable-agent/services/session-store";
@@ -78,7 +79,12 @@ interface DurableObjectEventRow {
   readonly created_at_ms: number;
   readonly trace_json: string;
   readonly fact_json: string;
+  readonly dedupe_key: string | null;
 }
+
+/** Every `_eda_event_log` column a committed event is rebuilt from. */
+const eventLogColumns =
+  "seq, event_id, namespace, type, schema_version, created_at_ms, trace_json, fact_json, dedupe_key";
 
 interface DurableObjectEventHeadRow {
   readonly head: number | null;
@@ -124,6 +130,8 @@ const durableObjectSessionStoreSchemaVersion = 1;
 const durableObjectTranscriptSchemaVersion = 2;
 /** Forward migration adding the consecutive-failure counts that bound builder retries. */
 const durableObjectBuilderFailuresSchemaVersion = 3;
+/** Forward migration adding app dedupe keys, unique per `(namespace, type, dedupe_key)`. */
+const durableObjectDedupeKeySchemaVersion = 4;
 
 /**
  * Bound one synchronous DO SQLite event-log read/decode to a small CPU and memory slice.
@@ -289,6 +297,19 @@ const migrateDurableObjectSessionStore = (storage: DurableObjectSessionStorage) 
             durableObjectBuilderFailuresSchemaVersion,
           );
         }
+
+        if (currentVersion < durableObjectDedupeKeySchemaVersion) {
+          // Every existing row has a NULL key, so the partial index starts empty.
+          sql.exec("ALTER TABLE _eda_event_log ADD COLUMN dedupe_key TEXT");
+          sql.exec(`
+            CREATE UNIQUE INDEX IF NOT EXISTS _eda_event_log_dedupe_key_idx
+              ON _eda_event_log(namespace, type, dedupe_key) WHERE dedupe_key IS NOT NULL
+          `);
+          sql.exec(
+            "INSERT INTO _eda_schema_migrations (id) VALUES (?)",
+            durableObjectDedupeKeySchemaVersion,
+          );
+        }
       }),
     catch: (error) => durableStoreError("migrating DurableObjectSessionStore", error),
   });
@@ -314,7 +335,8 @@ const makeDurableObjectSessionStore = (
   };
 
   /**
-   * Insert one append entry or return its existing idempotent event position.
+   * Insert one append entry or return the existing event it resolves to: the same `eventId`
+   * first, then the same `(namespace, type, dedupeKey)`.
    *
    * The event row is the sequence allocator. Artifact/projection writes happen
    * only for newly inserted events, preventing duplicate appends from advancing
@@ -326,7 +348,15 @@ const makeDurableObjectSessionStore = (
   ): CommittedDurableEvent => {
     const { event } = entry;
     ensureSession(event);
-    const existing = readCommittedByEventIdOptional(sql, sessionId, event.eventId);
+    const existing =
+      readCommittedByEventIdOptional(sql, sessionId, event.eventId) ??
+      (event.dedupeKey === undefined
+        ? undefined
+        : readCommittedByDedupeKeyOptional(sql, sessionId, {
+            namespace: event.namespace,
+            type: event.type,
+            dedupeKey: event.dedupeKey,
+          }));
     if (existing !== undefined) {
       return existing;
     }
@@ -341,8 +371,9 @@ const makeDurableObjectSessionStore = (
           schema_version,
           created_at_ms,
           trace_json,
-          fact_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          fact_json,
+          dedupe_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `,
       encoded.eventId,
       encoded.namespace,
@@ -351,6 +382,7 @@ const makeDurableObjectSessionStore = (
       encoded.createdAtMs,
       encoded.traceJson,
       encoded.factJson,
+      encoded.dedupeKey,
     );
     const row = readEventLogRowByEventId(sql, event.eventId);
     applySynchronousProjections(sql, entry, SequenceNumber.make(row.seq), encoded.factJson);
@@ -413,6 +445,11 @@ const makeDurableObjectSessionStore = (
         },
         catch: (error) => durableStoreError("finding command admission", error),
       }),
+    findEventByDedupeKey: (input) =>
+      Effect.try({
+        try: () => readCommittedByDedupeKeyOptional(sql, sessionId, input),
+        catch: (error) => durableStoreError("finding event by dedupe key", error),
+      }),
     loadSummaryArtifact: (summaryId) =>
       Effect.try({
         try: () => readSummaryPayloadOptional(sql, summaryId),
@@ -455,7 +492,7 @@ export const makeDurableObjectEventLog = (
     sql
       .exec<DurableObjectEventRow>(
         `
-          SELECT seq, event_id, namespace, type, schema_version, created_at_ms, trace_json, fact_json
+          SELECT ${eventLogColumns}
           FROM _eda_event_log
           WHERE seq > ?
           ORDER BY seq ASC
@@ -520,7 +557,7 @@ const readCommittedEventPage = (
       const events = sql
         .exec<DurableObjectEventRow>(
           `
-            SELECT seq, event_id, namespace, type, schema_version, created_at_ms, trace_json, fact_json
+            SELECT ${eventLogColumns}
             FROM _eda_event_log
             WHERE seq > ? AND seq <= ?
             ORDER BY seq ASC
@@ -566,7 +603,7 @@ const readEventLogRowByEventId = (
   sql
     .exec<DurableObjectEventRow>(
       `
-        SELECT seq, event_id, namespace, type, schema_version, created_at_ms, trace_json, fact_json
+        SELECT ${eventLogColumns}
         FROM _eda_event_log
         WHERE event_id = ?
       `,
@@ -582,11 +619,31 @@ const readCommittedByEventIdOptional = (
   const row = sql
     .exec<DurableObjectEventRow>(
       `
-        SELECT seq, event_id, namespace, type, schema_version, created_at_ms, trace_json, fact_json
+        SELECT ${eventLogColumns}
         FROM _eda_event_log
         WHERE event_id = ?
       `,
       eventId,
+    )
+    .toArray()[0];
+  return row === undefined ? undefined : rowToCommittedDurableEvent(sql, row, sessionId);
+};
+
+const readCommittedByDedupeKeyOptional = (
+  sql: DurableObjectSqlStorage,
+  sessionId: SessionId,
+  input: FindEventByDedupeKeyInput,
+): CommittedDurableEvent | undefined => {
+  const row = sql
+    .exec<DurableObjectEventRow>(
+      `
+        SELECT ${eventLogColumns}
+        FROM _eda_event_log
+        WHERE namespace = ? AND type = ? AND dedupe_key = ?
+      `,
+      input.namespace,
+      input.type,
+      input.dedupeKey,
     )
     .toArray()[0];
   return row === undefined ? undefined : rowToCommittedDurableEvent(sql, row, sessionId);
@@ -676,7 +733,7 @@ export const readDurableObjectCommittedEvent = (
   const row = sql
     .exec<DurableObjectEventRow>(
       `
-        SELECT seq, event_id, namespace, type, schema_version, created_at_ms, trace_json, fact_json
+        SELECT ${eventLogColumns}
         FROM _eda_event_log
         WHERE seq = ?
       `,
@@ -718,6 +775,7 @@ const rowToCommittedDurableEvent = (
     createdAtMs: row.created_at_ms,
     trace: JSON.parse(row.trace_json),
     payload: readLogicalPayload(sql, row),
+    ...(row.dedupe_key === null ? {} : { dedupeKey: row.dedupe_key }),
   }),
 });
 
@@ -729,6 +787,7 @@ interface EncodedEventLogRow {
   readonly createdAtMs: number;
   readonly traceJson: string;
   readonly factJson: string;
+  readonly dedupeKey: string | null;
 }
 
 const encodeEventLogRow = (event: DurableEventEnvelope): EncodedEventLogRow => {
@@ -744,6 +803,7 @@ const encodeEventLogRow = (event: DurableEventEnvelope): EncodedEventLogRow => {
       eventLogFactPayload(encoded.namespace, encoded.type, encoded.payload),
       "_eda_event_log.fact_json",
     ),
+    dedupeKey: encoded.dedupeKey ?? null,
   };
 };
 

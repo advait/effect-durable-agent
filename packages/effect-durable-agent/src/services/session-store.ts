@@ -27,6 +27,9 @@ import {
 } from "../types/core";
 import {
   DurableEventEnvelope,
+  EventDedupeKey,
+  EventNamespace,
+  EventType,
   commandAdmittedEventType,
   contextRebasedEventType,
   summaryCreatedEventType,
@@ -142,14 +145,28 @@ export interface FindCommandAdmissionInput {
   readonly idempotencyKey?: CommandIdempotencyKey;
 }
 
+/** Indexed lookup of the one event a session log holds for a dedupe triple. */
+export interface FindEventByDedupeKeyInput {
+  readonly namespace: EventNamespace;
+  readonly type: EventType;
+  readonly dedupeKey: EventDedupeKey;
+}
+
 /** Semantic durable store contract for one EDA session. */
 export interface EDASessionStoreShape {
   /**
    * Append durable logical events atomically, preserving input order.
    *
-   * Implementations must be idempotent by `eventId`: duplicates return the
-   * original committed position and do not advance the durable head. Live publish
-   * remains outside the store and is owned by `SessionState` after this succeeds.
+   * Each entry, in order and inside the one append transaction, resolves to:
+   * 1. the committed event with the same `eventId`, if one exists; else
+   * 2. the committed event with the same `(namespace, type, dedupeKey)`, if the entry has a
+   *    `dedupeKey` and one exists; else
+   * 3. a newly inserted event.
+   *
+   * An entry that resolves to an existing event (including one earlier in the same batch) returns
+   * that event's own id, payload and position, writes nothing and does not advance the durable
+   * head. First write wins. Live publish remains outside the store and is owned by
+   * `SessionState` after this succeeds.
    */
   readonly append: (
     batch: DurableAppendBatch,
@@ -165,6 +182,10 @@ export interface EDASessionStoreShape {
   /** Lookup an admitted command without replaying the full journal. */
   readonly findCommandAdmission: (
     input: FindCommandAdmissionInput,
+  ) => Effect.Effect<CommittedDurableEvent | undefined, EDASessionStoreError>;
+  /** Lookup the event committed for a `(namespace, type, dedupeKey)` triple. */
+  readonly findEventByDedupeKey: (
+    input: FindEventByDedupeKeyInput,
   ) => Effect.Effect<CommittedDurableEvent | undefined, EDASessionStoreError>;
   /** Load one compacted summary artifact body by id, if it has been saved. */
   readonly loadSummaryArtifact: (
@@ -257,6 +278,7 @@ const seedCommittedEvents = (
   events: ReadonlyArray<DurableEventEnvelope>,
 ): ReadonlyArray<CommittedDurableEvent> => {
   const seen = new Set<string>();
+  const seenKeys = new Set<string>();
   return events.map((event, index) => {
     if (event.sessionId !== sessionId) {
       throw new Error(
@@ -267,6 +289,13 @@ const seedCommittedEvents = (
       throw new Error(`Duplicate seed eventId ${event.eventId}`);
     }
     seen.add(event.eventId);
+    if (event.dedupeKey !== undefined) {
+      const triple = JSON.stringify([event.namespace, event.type, event.dedupeKey]);
+      if (seenKeys.has(triple)) {
+        throw new Error(`Duplicate seed dedupe key ${triple}`);
+      }
+      seenKeys.add(triple);
+    }
     return {
       position: durablePosition(SequenceNumber.make(index + 1)),
       event: decodeDurableEventSync(DurableEventEnvelope.make(event)),
@@ -325,7 +354,14 @@ const makeInMemoryStore = (
 
         for (const entry of batch.entries) {
           const { event } = entry;
-          const existing = nextEntries.find((entry) => entry.event.eventId === event.eventId);
+          const { dedupeKey, namespace, type } = event;
+          const existing =
+            nextEntries.find((entry) => entry.event.eventId === event.eventId) ??
+            (dedupeKey === undefined
+              ? undefined
+              : nextEntries.find((entry) =>
+                  dedupeTripleMatches(entry, { namespace, type, dedupeKey }),
+                ));
           if (existing !== undefined) {
             committedEvents.push(existing);
             continue;
@@ -399,6 +435,10 @@ const makeInMemoryStore = (
           committed.find((entry) => commandAdmissionMatches(entry, input)),
         ),
       ),
+    findEventByDedupeKey: (input) =>
+      Ref.get(data).pipe(
+        Effect.map(({ committed }) => committed.find((entry) => dedupeTripleMatches(entry, input))),
+      ),
     loadSummaryArtifact: (summaryId) =>
       Ref.get(data).pipe(Effect.map(({ summaries }) => summaries.get(summaryId))),
     loadReducerCheckpoint: (name) =>
@@ -441,6 +481,19 @@ const makeInMemoryTranscriptStore = (
     Effect.map(({ transcript }) => transcript.versions.map((version) => version.meta)),
   ),
 });
+
+/** Compare the stored envelope, so a foreign event matches by its own namespace and type. */
+const dedupeTripleMatches = (
+  entry: CommittedDurableEvent,
+  input: FindEventByDedupeKeyInput,
+): boolean => {
+  const envelope = durableEventEnvelope(entry.event);
+  return (
+    envelope.dedupeKey === input.dedupeKey &&
+    envelope.namespace === input.namespace &&
+    envelope.type === input.type
+  );
+};
 
 const commandAdmissionMatches = (
   entry: CommittedDurableEvent,
@@ -545,6 +598,14 @@ export const registerAppEvents = (
     findCommandAdmission: (input) =>
       store
         .findCommandAdmission(input)
+        .pipe(
+          Effect.flatMap((entry) =>
+            entry === undefined ? Effect.succeed(undefined) : decodeEntryEffect(entry),
+          ),
+        ),
+    findEventByDedupeKey: (input) =>
+      store
+        .findEventByDedupeKey(input)
         .pipe(
           Effect.flatMap((entry) =>
             entry === undefined ? Effect.succeed(undefined) : decodeEntryEffect(entry),

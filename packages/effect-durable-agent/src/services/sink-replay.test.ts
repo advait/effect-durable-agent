@@ -1,5 +1,6 @@
 import { assert, makeMethods } from "@effect/vitest";
 import { describe, it } from "vite-plus/test";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -23,8 +24,10 @@ import { makeEDARuntimeLayer } from "./runtime-layer";
 import { SessionState } from "./session-state";
 import { makeEdaExportingTracer, type EDAExportedSpan } from "./tracing";
 import { durablePosition, EventId, SequenceNumber, SessionId } from "../types/core";
+import { durableEventEnvelope } from "../types/events/durable";
 import {
   DurableEventEnvelope,
+  EventDedupeKey,
   EventType,
   EventNamespace,
   UnixEpochMillis,
@@ -37,7 +40,12 @@ import { EDAKeepAlive } from "./keep-alive";
 import { LiveEventBus } from "./live-event-bus";
 import { EDAReducer, EDAReducerRegistry } from "./reducer-registry";
 import { SessionContext } from "./session-context";
-import { EDASessionStore, EDASessionStoreError, type EDASessionStoreShape } from "./session-store";
+import {
+  EDASessionStore,
+  EDASessionStoreError,
+  type CommittedDurableEvent,
+  type EDASessionStoreShape,
+} from "./session-store";
 import { EDASinkName, SinkCheckpointStore } from "./sink-checkpoint-store";
 import {
   EDASinkRegistry,
@@ -96,9 +104,19 @@ const projectionAt = (count: number) => ({
 });
 const unexpected = () => Effect.die(new Error("unexpected mutation"));
 
+const seededStore = EDASessionStore.InMemorySeeded(
+  sessionId,
+  Array.from({ length: 132 }, (_, i) => event(i + 1)),
+);
+
 const harness = (
   sinks: ReadonlyArray<EDASink>,
   wrap: (store: EDASessionStoreShape) => EDASessionStoreShape = (store) => store,
+  // A restart test passes the same log and cursors to each process.
+  durable: {
+    readonly store: Layer.Layer<EDASessionStore>;
+    readonly checkpoints: Layer.Layer<SinkCheckpointStore>;
+  } = { store: seededStore, checkpoints: SinkCheckpointStore.InMemory },
 ) => {
   const store = Layer.effect(
     EDASessionStore,
@@ -109,14 +127,7 @@ const harness = (
         eventsAfter: (seq) => inner.eventsAfter(seq).pipe(Stream.rechunk(16)),
       });
     }),
-  ).pipe(
-    Layer.provide(
-      EDASessionStore.InMemorySeeded(
-        sessionId,
-        Array.from({ length: 132 }, (_, i) => event(i + 1)),
-      ),
-    ),
-  );
+  ).pipe(Layer.provide(durable.store));
   const session = SessionContext.Live(sessionId);
   const ids = IdGenerator.Sequential;
   const dependencies = Layer.mergeAll(
@@ -124,7 +135,7 @@ const harness = (
     session,
     ids,
     LiveEventBus.Noop,
-    SinkCheckpointStore.InMemory,
+    durable.checkpoints,
     EDAKeepAlive.Noop,
     EDAReducerRegistry.Live([counter, history]),
     EventFactory.Live.pipe(Layer.provide(Layer.merge(session, ids))),
@@ -597,6 +608,122 @@ describe("paged sink startup replay", () => {
           );
         }),
     );
+});
+
+describe("sink staged-event recovery", () => {
+  makeMethods(it).effect(
+    "collapses an event restaged after a crash between its append and the cursor commit",
+    () =>
+      Effect.gen(function* () {
+        let processes = 0;
+        const shared = yield* Layer.build(Layer.merge(seededStore, SinkCheckpointStore.InMemory));
+        const checkpoints = Context.get(shared, SinkCheckpointStore);
+        yield* checkpoints.commit(EDASinkName.make("binder"), SequenceNumber.make(131), undefined);
+        const durable = {
+          store: Layer.succeed(EDASessionStore, Context.get(shared, EDASessionStore)),
+          checkpoints: Layer.succeed(SinkCheckpointStore, Context.get(shared, SinkCheckpointStore)),
+        };
+        const binder: EDASink = {
+          name: "binder",
+          durable: {
+            process: (batch, ctx) =>
+              Effect.forEach(
+                batch.events.filter(
+                  (entry) => durableEventEnvelope(entry.event).namespace !== "test.sink",
+                ),
+                (entry) =>
+                  Effect.gen(function* () {
+                    yield* ctx.stageDurable(
+                      DurableEventEnvelope.make({
+                        namespace: EventNamespace.make("test.sink"),
+                        type: EventType.make("BindingCommitted"),
+                        schemaVersion: schemaV1,
+                        durability: "durable",
+                        sessionId,
+                        // A restarted process mints a fresh id, as UUIDv7 ids do in production.
+                        eventId: EventId.make(sequentialUuidV7(1_000 * processes + 1)),
+                        createdAtMs: UnixEpochMillis.make(1715000000000),
+                        // The key is derived from the event that caused the staged fact.
+                        dedupeKey: EventDedupeKey.make(entry.event.eventId),
+                        payload: { causedBy: entry.position.seq },
+                      }),
+                    );
+                  }),
+                { discard: true },
+              ),
+          },
+        };
+        /** One process lifetime: start the runner and stop at `until`. */
+        const runProcess = (
+          append: (
+            store: EDASessionStoreShape,
+            registry: typeof EDASinkRegistry.Service,
+          ) => (
+            events: ReadonlyArray<DurableEventEnvelope>,
+          ) => Effect.Effect<ReadonlyArray<CommittedDurableEvent>, EDASessionStoreError>,
+          until: Deferred.Deferred<void>,
+        ) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              processes += 1;
+              const store = yield* EDASessionStore;
+              const registry = yield* EDASinkRegistry;
+              yield* registry.startSinkRunners({
+                initialProjection: projectionAt(132),
+                scope: yield* Effect.scope,
+                publishEphemeral: unexpected,
+                appendDurableBatch: append(store, registry),
+              });
+              yield* Deferred.await(until);
+            }).pipe(Effect.provide(harness([binder], undefined, durable))),
+          );
+
+        const appendedBeforeCrash = yield* Deferred.make<void>();
+        yield* runProcess(
+          (store) => (events) =>
+            Effect.gen(function* () {
+              yield* store.append({ entries: events.map((event) => ({ event })) });
+              yield* Deferred.succeed(appendedBeforeCrash, undefined);
+              return yield* Effect.never;
+            }),
+          appendedBeforeCrash,
+        );
+        const cursorAfterCrash = (yield* checkpoints.load(EDASinkName.make("binder"))).afterSeq;
+
+        const caughtUp = yield* Deferred.make<void>();
+        yield* Effect.gen(function* () {
+          yield* waitFor(() =>
+            checkpoints
+              .load(EDASinkName.make("binder"))
+              .pipe(Effect.map((checkpoint) => checkpoint.afterSeq === 133)),
+          );
+          yield* Deferred.succeed(caughtUp, undefined);
+        }).pipe(Effect.forkScoped);
+        yield* runProcess(
+          (store, registry) => (events) =>
+            Effect.gen(function* () {
+              const committed = yield* store.append({
+                entries: events.map((event) => ({ event })),
+              });
+              for (const entry of committed)
+                yield* registry.notifyDurableHeadAdvanced(entry.position.seq);
+              return committed;
+            }),
+          caughtUp,
+        );
+
+        const log = yield* Context.get(shared, EDASessionStore)
+          .eventsAfter(SequenceNumber.make(0))
+          .pipe(Stream.runCollect);
+        assert.strictEqual(cursorAfterCrash, 131);
+        assert.deepStrictEqual(
+          Array.from(log)
+            .filter((entry) => durableEventEnvelope(entry.event).namespace === "test.sink")
+            .map((entry) => entry.position.seq),
+          [133],
+        );
+      }).pipe(Effect.scoped),
+  );
 });
 
 describe("paged session recovery", () => {

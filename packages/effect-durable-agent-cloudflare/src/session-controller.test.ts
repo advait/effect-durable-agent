@@ -527,8 +527,8 @@ describe("EDASessionController", () => {
     await Effect.runPromise(EDASessionController.migrate(storage));
     await Effect.runPromise(EDASessionController.migrate(storage));
 
-    expect(storage.appliedMigrations).toEqual([1, 2, 3]);
-    expect(storage.migrationInsertCount).toBe(3);
+    expect(storage.appliedMigrations).toEqual([1, 2, 3, 4]);
+    expect(storage.migrationInsertCount).toBe(4);
     expect(storage.createdReducerCheckpointTable).toBe(true);
   });
 
@@ -1264,6 +1264,7 @@ interface FakeEventRow {
   readonly created_at_ms: number;
   readonly trace_json: string;
   readonly fact_json: string;
+  readonly dedupe_key: string | null;
   readonly seq: number;
 }
 
@@ -1421,8 +1422,16 @@ class FakeDurableObjectStorage implements EDASessionDurableObjectStorage {
     }
 
     if (normalized.startsWith("INSERT INTO _EDA_EVENT_LOG")) {
-      const [eventId, namespace, type, schemaVersion, createdAtMs, traceJson, payloadJson] =
-        bindings;
+      const [
+        eventId,
+        namespace,
+        type,
+        schemaVersion,
+        createdAtMs,
+        traceJson,
+        payloadJson,
+        dedupeKey,
+      ] = bindings;
       this.rows.push({
         event_id: String(eventId),
         namespace: String(namespace),
@@ -1431,6 +1440,7 @@ class FakeDurableObjectStorage implements EDASessionDurableObjectStorage {
         created_at_ms: Number(createdAtMs),
         trace_json: String(traceJson),
         fact_json: String(payloadJson),
+        dedupe_key: dedupeKey === null ? null : String(dedupeKey),
         seq: nextSeq(this.rows),
       });
       return cursor<Row>([]);

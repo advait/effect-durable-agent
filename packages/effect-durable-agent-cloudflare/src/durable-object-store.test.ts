@@ -1,6 +1,7 @@
 import { it as effectIt } from "@effect/vitest";
 import { durableEventEnvelope } from "effect-durable-agent/types/events";
 import { resolveTranscriptBody } from "effect-durable-agent/transcript";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
@@ -29,6 +30,7 @@ import {
   CommandStartedEvent,
   ContextRebasedEvent,
   DurableEventEnvelope,
+  EventDedupeKey,
   EventNamespace,
   EventType,
   ProviderPartId,
@@ -45,6 +47,7 @@ import {
   contextRebasedEventType,
   EDADurableEvent,
   effectDurableAgentNamespace,
+  maxAppEventBytes,
   schemaV1,
   summaryCreatedEventType,
   systemMessageCommittedEventType,
@@ -56,8 +59,18 @@ import {
 import {
   CommittedDurableEvent,
   EDASessionStore,
+  hasEDASessionStoreError,
+  registerAppEvents,
   type EDASessionStoreShape,
 } from "effect-durable-agent/services/session-store";
+import { EDAReducer, EDAReducerRegistry } from "effect-durable-agent/services/reducer-registry";
+import { SessionEventObserver } from "effect-durable-agent/services/session-event-observer";
+import {
+  SessionCommandAdmissionConflict,
+  SessionState,
+} from "effect-durable-agent/services/session-state";
+import { makeEdaTestLayer } from "effect-durable-agent/testkit/layers";
+import { testDefinition } from "effect-durable-agent/testkit/transcript";
 import {
   CompactionExecutorId,
   CompactionPolicyId,
@@ -84,8 +97,10 @@ import type {
   DurableObjectSqlCursor,
   DurableObjectSqlStorage,
 } from "./durable-object-storage";
+import { SqliteDurableObjectStorage } from "./testing/sqlite-durable-object-storage";
 
 const SESSION_ID = "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a";
+const SESSION_ID_TYPED = SessionId.make("018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a");
 const OTHER_SESSION_ID = "018f6bd5-2f2a-7b1e-9f1a-1f2e3d4c5b6a";
 const EVENT_ID_A = "018f6bd5-2f2a-7b1e-af1a-1f2e3d4c5b6a";
 const EVENT_ID_B = "018f6bd5-2f2a-7b1e-bf1a-1f2e3d4c5b6a";
@@ -299,6 +314,42 @@ const replayPageAppEvent = (index: number) =>
     payload: { index },
   });
 
+const keyedFact = ({
+  eventId,
+  dedupeKey,
+  namespace = "test.dedupe",
+  type = "FactObserved",
+  n,
+}: {
+  readonly eventId: string;
+  readonly dedupeKey?: string;
+  readonly namespace?: string;
+  readonly type?: string;
+  readonly n: number;
+}) =>
+  DurableEventEnvelope.make({
+    namespace: EventNamespace.make(namespace),
+    type: EventType.make(type),
+    schemaVersion: schemaV1,
+    durability: "durable",
+    eventId: EventId.make(eventId),
+    sessionId: SessionId.make(SESSION_ID),
+    createdAtMs: UnixEpochMillis.make(1_715_000_030_000 + n),
+    payload: { n },
+    ...(dedupeKey === undefined ? {} : { dedupeKey: EventDedupeKey.make(dedupeKey) }),
+  });
+
+/** Replay as `[eventId, n, dedupeKey]`, the envelope fields the dedupe rules decide on. */
+const replayFacts = (store: EDASessionStoreShape) =>
+  collect(store).pipe(
+    Effect.map((events) =>
+      events.map((entry) => {
+        const envelope = durableEventEnvelope(entry.event);
+        return [envelope.eventId, (envelope.payload as { n: number }).n, envelope.dedupeKey];
+      }),
+    ),
+  );
+
 const appendMany = (
   store: EDASessionStoreShape,
   events: ReadonlyArray<EDADurableEvent>,
@@ -416,6 +467,128 @@ const runEDASessionStoreContract = (contract: EDASessionStoreContract) => {
       expect(result.second.position).toEqual({ seq: 2, subSeq: 0 });
       expect(result.afterSecondHead).toBe(2);
       expect(result.replay.map((entry) => entry.event.eventId)).toEqual([EVENT_ID_A, EVENT_ID_B]);
+    });
+
+    it("collapses an entry whose namespace, type and dedupe key are already committed", () => {
+      const result = Effect.runSync(
+        Effect.gen(function* () {
+          const store = yield* contract.makeStore(SessionId.make(SESSION_ID));
+          const first = yield* store.append({
+            entries: [{ event: keyedFact({ eventId: EVENT_ID_A, dedupeKey: "k", n: 1 }) }],
+          });
+          const repeat = yield* store.append({
+            entries: [{ event: keyedFact({ eventId: EVENT_ID_B, dedupeKey: "k", n: 2 }) }],
+          });
+          return {
+            first,
+            repeat,
+            head: yield* lastCommittedSeq(store),
+            log: yield* replayFacts(store),
+          };
+        }),
+      );
+
+      expect(result.repeat).toEqual(result.first);
+      expect(durableEventEnvelope(result.repeat[0]!.event).eventId).toBe(EVENT_ID_A);
+      expect(result.head).toBe(1);
+      expect(result.log).toEqual([[EVENT_ID_A, 1, "k"]]);
+    });
+
+    it("scopes a dedupe key to its namespace and type", () => {
+      const log = Effect.runSync(
+        Effect.gen(function* () {
+          const store = yield* contract.makeStore(SessionId.make(SESSION_ID));
+          yield* store.append({
+            entries: [
+              { event: keyedFact({ eventId: EVENT_ID_A, dedupeKey: "k", n: 1 }) },
+              { event: keyedFact({ eventId: EVENT_ID_B, dedupeKey: "k", type: "Other", n: 2 }) },
+              {
+                event: keyedFact({ eventId: EVENT_ID_C, dedupeKey: "k", namespace: "other", n: 3 }),
+              },
+            ],
+          });
+          return yield* replayFacts(store);
+        }),
+      );
+
+      expect(log).toEqual([
+        [EVENT_ID_A, 1, "k"],
+        [EVENT_ID_B, 2, "k"],
+        [EVENT_ID_C, 3, "k"],
+      ]);
+    });
+
+    it("collapses a dedupe key repeated within one batch onto the first entry", () => {
+      const result = Effect.runSync(
+        Effect.gen(function* () {
+          const store = yield* contract.makeStore(SessionId.make(SESSION_ID));
+          const returned = yield* store.append({
+            entries: [
+              { event: keyedFact({ eventId: EVENT_ID_A, dedupeKey: "k", n: 1 }) },
+              { event: keyedFact({ eventId: EVENT_ID_B, dedupeKey: "k", n: 2 }) },
+              { event: keyedFact({ eventId: EVENT_ID_C, n: 3 }) },
+            ],
+          });
+          return { returned, log: yield* replayFacts(store) };
+        }),
+      );
+
+      expect(result.returned.map((entry) => entry.position.seq)).toEqual([1, 1, 2]);
+      expect(result.log).toEqual([
+        [EVENT_ID_A, 1, "k"],
+        [EVENT_ID_C, 3, undefined],
+      ]);
+    });
+
+    it("resolves an entry by eventId before its dedupe key", () => {
+      const returned = Effect.runSync(
+        Effect.gen(function* () {
+          const store = yield* contract.makeStore(SessionId.make(SESSION_ID));
+          yield* store.append({
+            entries: [
+              { event: keyedFact({ eventId: EVENT_ID_A, dedupeKey: "a", n: 1 }) },
+              { event: keyedFact({ eventId: EVENT_ID_B, dedupeKey: "b", n: 2 }) },
+            ],
+          });
+          return yield* store.append({
+            entries: [{ event: keyedFact({ eventId: EVENT_ID_A, dedupeKey: "b", n: 3 }) }],
+          });
+        }),
+      );
+
+      expect(returned.map((entry) => entry.position.seq)).toEqual([1]);
+      expect(durableEventEnvelope(returned[0]!.event).dedupeKey).toBe("a");
+    });
+
+    it("finds the first event committed for a dedupe key", () => {
+      const result = Effect.runSync(
+        Effect.gen(function* () {
+          const store = yield* contract.makeStore(SessionId.make(SESSION_ID));
+          yield* store.append({
+            entries: [
+              { event: keyedFact({ eventId: EVENT_ID_A, n: 1 }) },
+              { event: keyedFact({ eventId: EVENT_ID_B, dedupeKey: "k", n: 2 }) },
+              { event: keyedFact({ eventId: EVENT_ID_C, dedupeKey: "k", n: 3 }) },
+            ],
+          });
+          const lookup = (namespace: string, type: string) =>
+            store.findEventByDedupeKey({
+              namespace: EventNamespace.make(namespace),
+              type: EventType.make(type),
+              dedupeKey: EventDedupeKey.make("k"),
+            });
+          return {
+            found: yield* lookup("test.dedupe", "FactObserved"),
+            otherType: yield* lookup("test.dedupe", "Other"),
+            otherNamespace: yield* lookup("other", "FactObserved"),
+          };
+        }),
+      );
+
+      expect(result.found?.position.seq).toBe(2);
+      expect(durableEventEnvelope(result.found!.event).eventId).toBe(EVENT_ID_B);
+      expect(result.otherType).toBeUndefined();
+      expect(result.otherNamespace).toBeUndefined();
     });
 
     it("stores summaries as loadable sidecar artifacts", () => {
@@ -775,6 +948,127 @@ describe("EDASessionStore", () => {
     },
   });
 
+  runEDASessionStoreContract({
+    name: "DurableObjectSessionStore on SQLite",
+    sharesStorageAcrossSessions: true,
+    makeStore: (sessionId) =>
+      DurableObjectSessionStore.make({ sessionId, storage: new SqliteDurableObjectStorage() }),
+  });
+
+  it("writes no sidecar or transcript rows for a collapsed entry", () => {
+    const storage = new SqliteDurableObjectStorage();
+    const tableRowCounts = () =>
+      Object.fromEntries(
+        storage
+          .rows<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '_eda_%' ESCAPE '\\'",
+          )
+          .map(({ name }) => [
+            name,
+            storage.rows<{ count: number }>(`SELECT COUNT(*) AS count FROM ${name}`)[0]?.count,
+          ]),
+      );
+    const keyedMessage = (eventId: string, messageId: string, text: string) =>
+      UserMessageCommittedEvent.make({
+        ...userMessageCommitted(text),
+        eventId: EventId.make(eventId),
+        payload: { ...userMessageCommitted(text).payload, messageId: MessageId.make(messageId) },
+        dedupeKey: EventDedupeKey.make("delivery-1"),
+      });
+    const result = Effect.runSync(
+      Effect.gen(function* () {
+        const store = yield* DurableObjectSessionStore.make({
+          sessionId: SessionId.make(SESSION_ID),
+          storage,
+          transcript: { definitions: { current: testDefinition() } },
+        });
+        const first = yield* appendOne(store, keyedMessage(EVENT_ID_A, MESSAGE_ID_A, "first"));
+        const before = tableRowCounts();
+        const repeat = yield* appendOne(store, keyedMessage(EVENT_ID_B, MESSAGE_ID_B, "second"));
+        return { first, repeat, before, after: tableRowCounts() };
+      }).pipe(Effect.ensuring(Effect.sync(() => storage.db.close()))),
+    );
+
+    expect(result.repeat).toEqual(result.first);
+    expect(result.before["_eda_context_messages"]).toBe(1);
+    expect(Object.keys(result.before).some((name) => name.includes("transcript"))).toBe(true);
+    expect(result.after).toEqual(result.before);
+  });
+
+  // Migration probes from Claude Opus 5.5 (adversary/fr1-fr5-interrogate@b2c303a,
+  // adversary-fr5-migration.test.ts) and gpt-6-astra (review/docs-chat-frs-adversarial@121ac4d).
+  it("migrates a schema-3 log to dedupe keys without changing its events", () => {
+    const storage = new SqliteDurableObjectStorage();
+    const open = () => DurableObjectSessionStore.make({ sessionId: SESSION_ID_TYPED, storage });
+    const result = Effect.runSync(
+      Effect.gen(function* () {
+        const original = yield* open();
+        yield* appendMany(original, [
+          systemMessageCommitted(),
+          userMessageCommitted("hello"),
+          commandAdmitted({ eventId: EVENT_ID_B }),
+        ]);
+        yield* original.append({ entries: [{ event: keyedFact({ eventId: EVENT_ID_C, n: 1 }) }] });
+        const encodeLog = (log: ReadonlyArray<CommittedDurableEvent>) =>
+          log.map((entry) => Schema.encodeSync(CommittedDurableEvent)(entry));
+        const events = encodeLog(yield* collect(original));
+        // Return the database to schema 3: 0.1.0 never had the column or the index.
+        storage.transactionSync(() => {
+          storage.sql.exec("DROP INDEX _eda_event_log_dedupe_key_idx");
+          storage.sql.exec("ALTER TABLE _eda_event_log DROP COLUMN dedupe_key");
+          storage.sql.exec("DELETE FROM _eda_schema_migrations WHERE id = 4");
+        });
+        const schema3Rows = storage.rows("SELECT * FROM _eda_event_log ORDER BY seq");
+
+        const migrated = yield* open();
+        const migratedEvents = encodeLog(yield* collect(migrated));
+        const migratedRows = storage
+          .rows<Record<string, unknown>>("SELECT * FROM _eda_event_log ORDER BY seq")
+          .map(({ dedupe_key, ...row }) => ({ ...row, keyIsNull: dedupe_key === null }));
+        const keyed = keyedFact({ eventId: sequentialUuidV7(76), dedupeKey: "k", n: 2 });
+        yield* migrated.append({ entries: [{ event: keyed }] });
+        const repeat = yield* migrated.append({
+          entries: [{ event: keyedFact({ eventId: sequentialUuidV7(77), dedupeKey: "k", n: 3 }) }],
+        });
+        const indexRefusal = Effect.runSyncExit(
+          Effect.try(() =>
+            storage.sql.exec(
+              `INSERT INTO _eda_event_log (event_id, namespace, type, schema_version, created_at_ms,
+                trace_json, fact_json, dedupe_key)
+               SELECT ?, namespace, type, schema_version, created_at_ms, trace_json, fact_json, dedupe_key
+               FROM _eda_event_log WHERE dedupe_key = 'k'`,
+              sequentialUuidV7(78),
+            ),
+          ),
+        );
+        return {
+          events,
+          migratedEvents,
+          schema3Rows,
+          migratedRows,
+          version: storage.rows<{ version: number }>(
+            "SELECT MAX(id) AS version FROM _eda_schema_migrations",
+          )[0]?.version,
+          repeatSeq: repeat[0]?.position.seq,
+          log: yield* replayFacts(migrated),
+          indexRefusal,
+        };
+      }).pipe(Effect.ensuring(Effect.sync(() => storage.db.close()))),
+    );
+
+    expect(result.migratedEvents).toEqual(result.events);
+    expect(result.migratedRows).toEqual(
+      result.schema3Rows.map((row) => ({ ...row, keyIsNull: true })),
+    );
+    expect(result.version).toBe(4);
+    expect(result.repeatSeq).toBe(5);
+    expect(result.log.slice(3)).toEqual([
+      [EVENT_ID_C, 1, undefined],
+      [sequentialUuidV7(76), 2, "k"],
+    ]);
+    expectFailure(result.indexRefusal, "UNIQUE constraint failed");
+  });
+
   it("exposes InMemory through the EDASessionStore layer tag", () => {
     const event = commandAdmitted();
     const result = runInMemory(
@@ -804,8 +1098,8 @@ describe("EDASessionStore", () => {
     const head = Effect.runSync(program);
 
     expect(head).toBe(1);
-    expect(fakeSql.appliedMigrations).toEqual([1, 2, 3]);
-    expect(fakeSql.migrationInsertCount).toBe(3);
+    expect(fakeSql.appliedMigrations).toEqual([1, 2, 3, 4]);
+    expect(fakeSql.migrationInsertCount).toBe(4);
   });
 
   it("pages DurableObjectSessionStore event replay through bounded SQL reads", () => {
@@ -1491,6 +1785,148 @@ describe("EDASessionStore", () => {
   });
 });
 
+const CounterEvent = Schema.Struct({
+  ...DurableEventEnvelope.fields,
+  namespace: Schema.Literal("test.counter"),
+  type: Schema.Literal("Incremented"),
+  payload: Schema.Struct({ amount: Schema.Number, note: Schema.optionalKey(Schema.String) }),
+});
+
+const counterReducer = EDAReducer.forEvents(CounterEvent, {
+  name: "test.counter",
+  initial: 0,
+  stateSchema: Schema.Number,
+  reduce: (total, entry) => total + entry.event.payload.amount,
+});
+
+const counterFact = (eventId: string, note?: string, dedupeKey?: string) =>
+  CounterEvent.make({
+    namespace: "test.counter",
+    type: "Incremented",
+    schemaVersion: schemaV1,
+    durability: "durable",
+    eventId: EventId.make(eventId),
+    sessionId: SessionId.make(SESSION_ID),
+    createdAtMs: UnixEpochMillis.make(1_715_000_000_000),
+    payload: { amount: 1, ...(note === undefined ? {} : { note }) },
+    ...(dedupeKey === undefined ? {} : { dedupeKey: EventDedupeKey.make(dedupeKey) }),
+  });
+
+/** Run `SessionState` over the real SQLite Durable Object store with the counter app event. */
+const withSqliteSession = <A, E>(
+  program: (input: {
+    readonly session: typeof SessionState.Service;
+    readonly store: EDASessionStoreShape;
+    readonly published: ReadonlyArray<number>;
+  }) => Effect.Effect<A, E, EDAReducerRegistry>,
+) =>
+  Effect.gen(function* () {
+    const storage = new SqliteDurableObjectStorage();
+    const store = registerAppEvents(
+      yield* DurableObjectSessionStore.make({ sessionId: SessionId.make(SESSION_ID), storage }),
+      CounterEvent,
+    );
+    const published: Array<number> = [];
+    return yield* Effect.gen(function* () {
+      const session = yield* SessionState;
+      return yield* program({ session, store, published });
+    }).pipe(
+      Effect.provide(
+        makeEdaTestLayer({
+          sessionId: SessionId.make(SESSION_ID),
+          reducers: [counterReducer],
+          wrapStore: () => store,
+          sessionEventObserverLayer: SessionEventObserver.FromHandler((event) =>
+            Effect.sync(() => {
+              published.push(event.position.seq);
+            }),
+          ),
+        }),
+      ),
+      Effect.ensuring(Effect.sync(() => storage.db.close())),
+    );
+  });
+
+describe("SessionState over DurableObjectSessionStore on SQLite", () => {
+  // Same-batch repeat reproduction from gpt-6-astra's review (review/docs-chat-frs-adversarial@121ac4d).
+  it.each([
+    ["eventId", [counterFact(EVENT_ID_A), counterFact(EVENT_ID_A)]],
+    [
+      "dedupe key",
+      [counterFact(EVENT_ID_A, undefined, "k"), counterFact(EVENT_ID_B, undefined, "k")],
+    ],
+  ])("folds and publishes an event repeated by %s within one batch once", async (_, batch) => {
+    const result = await Effect.runPromise(
+      withSqliteSession(({ session, store, published }) =>
+        Effect.gen(function* () {
+          const reducers = yield* EDAReducerRegistry;
+          const returned = yield* session.submitBatch(batch);
+          const log = yield* collect(store);
+          const live = yield* session.snapshotData();
+          return {
+            returnedSeqs: returned.map((entry) => entry.position.seq),
+            logRows: log.length,
+            liveCount: live.reducerStates.get(counterReducer.name),
+            replayCount: reducers.reduce(reducers.initial, log).get(counterReducer.name),
+            publishedSeqs: [...published],
+          };
+        }),
+      ),
+    );
+
+    expect(result).toEqual({
+      returnedSeqs: [1, 1],
+      logRows: 1,
+      liveCount: 1,
+      replayCount: 1,
+      publishedSeqs: [1],
+    });
+  });
+
+  // Oversize path adapted to `submit` from Claude Opus 5.5's review
+  // (adversary/fr1-fr5-interrogate@b2c303a, adversary-fr1-decider-fatal.test.ts).
+  it("refuses an oversized app event without making the runtime fatal", async () => {
+    // `{"amount":1,"note":""}` is 22 bytes of JSON around the note.
+    const justOver = "x".repeat(maxAppEventBytes - 22 + 1);
+    const overStoreCap = "x".repeat(durableObjectSerializedJsonHardCapBytes);
+    const result = await Effect.runPromise(
+      withSqliteSession(({ session, store }) =>
+        Effect.gen(function* () {
+          const outcome = (exit: Exit.Exit<unknown, unknown>) => {
+            if (Exit.isSuccess(exit)) return "accepted";
+            if (hasEDASessionStoreError(exit.cause)) return "store error";
+            const conflict = exit.cause.reasons
+              .map((reason) => (Cause.isFailReason(reason) ? reason.error : undefined))
+              .find((error) => error instanceof SessionCommandAdmissionConflict);
+            return conflict?.code ?? String(exit.cause);
+          };
+          const overStore = yield* Effect.exit(
+            session.submitBatch([counterFact(EVENT_ID_A, overStoreCap)]),
+          );
+          const overCap = yield* Effect.exit(
+            session.submitBatch([counterFact(EVENT_ID_B, justOver)]),
+          );
+          const small = yield* Effect.exit(session.submitBatch([counterFact(EVENT_ID_C)]));
+          const log = yield* collect(store);
+          return {
+            overStore: outcome(overStore),
+            overCap: outcome(overCap),
+            small: outcome(small),
+            loggedIds: log.map((entry) => entry.event.eventId),
+          };
+        }),
+      ),
+    );
+
+    expect(result).toEqual({
+      overStore: "event_too_large",
+      overCap: "event_too_large",
+      small: "accepted",
+      loggedIds: [EVENT_ID_C],
+    });
+  });
+});
+
 interface FakeEventRow {
   readonly seq: number;
   readonly event_id: string;
@@ -1500,6 +1936,7 @@ interface FakeEventRow {
   readonly created_at_ms: number;
   readonly trace_json: string;
   readonly fact_json: string;
+  readonly dedupe_key?: string | null;
 }
 
 interface FakeCommandRow {
@@ -1593,8 +2030,25 @@ const makeFakeDurableObjectSql = () => {
       }
 
       if (normalized.startsWith("INSERT INTO _EDA_EVENT_LOG")) {
-        const [eventId, namespace, type, schemaVersion, createdAtMs, traceJson, payloadJson] =
-          bindings;
+        const [
+          eventId,
+          namespace,
+          type,
+          schemaVersion,
+          createdAtMs,
+          traceJson,
+          payloadJson,
+          dedupeKey,
+        ] = bindings;
+        if (
+          dedupeKey !== null &&
+          rows.some(
+            (row) =>
+              row.namespace === namespace && row.type === type && row.dedupe_key === dedupeKey,
+          )
+        ) {
+          throw new Error("UNIQUE constraint failed: _eda_event_log dedupe key");
+        }
         rows.push({
           seq: nextSeq(rows),
           event_id: String(eventId),
@@ -1604,8 +2058,21 @@ const makeFakeDurableObjectSql = () => {
           created_at_ms: Number(createdAtMs),
           trace_json: String(traceJson),
           fact_json: String(payloadJson),
+          dedupe_key: dedupeKey === null ? null : String(dedupeKey),
         });
         return cursor<Row>([]);
+      }
+
+      if (normalized.includes("WHERE NAMESPACE = ? AND TYPE = ? AND DEDUPE_KEY = ?")) {
+        const [namespace, type, dedupeKey] = bindings;
+        return cursor<Row>(
+          withDedupeKeys(
+            rows.filter(
+              (row) =>
+                row.namespace === namespace && row.type === type && row.dedupe_key === dedupeKey,
+            ),
+          ) as Array<Row>,
+        );
       }
 
       if (
@@ -1615,7 +2082,9 @@ const makeFakeDurableObjectSql = () => {
         normalized.includes("WHERE EVENT_ID = ?")
       ) {
         const [eventId] = bindings;
-        return cursor<Row>(rows.filter((row) => row.event_id === eventId) as Array<Row>);
+        return cursor<Row>(
+          withDedupeKeys(rows.filter((row) => row.event_id === eventId)) as Array<Row>,
+        );
       }
 
       if (
@@ -1637,14 +2106,14 @@ const makeFakeDurableObjectSql = () => {
               (numericThroughSeq === undefined || row.seq <= numericThroughSeq),
           )
           .sort((left, right) => left.seq - right.seq)
-          .slice(0, numericLimit) as Array<Row>;
+          .slice(0, numericLimit);
         eventReplayQueries.push({
           afterSeq: numericAfterSeq,
           throughSeq: numericThroughSeq,
           limit: numericLimit,
-          returnedSeqs: selected.map((row) => (row as FakeEventRow).seq),
+          returnedSeqs: selected.map((row) => row.seq),
         });
-        return cursor<Row>(selected);
+        return cursor<Row>(withDedupeKeys(selected) as Array<Row>);
       }
 
       if (
@@ -1654,7 +2123,9 @@ const makeFakeDurableObjectSql = () => {
         normalized.includes("WHERE SEQ = ?")
       ) {
         const [seq] = bindings;
-        return cursor<Row>(rows.filter((row) => row.seq === Number(seq)) as Array<Row>);
+        return cursor<Row>(
+          withDedupeKeys(rows.filter((row) => row.seq === Number(seq))) as Array<Row>,
+        );
       }
 
       if (normalized.startsWith("INSERT INTO _EDA_COMMAND_STATE")) {
@@ -1887,6 +2358,10 @@ const makeFakeDurableObjectSql = () => {
     },
   };
 };
+
+/** Rows seeded in the 0.1.0 shape read back with the NULL key real SQLite returns. */
+const withDedupeKeys = (rows: ReadonlyArray<FakeEventRow>): Array<FakeEventRow> =>
+  rows.map((row) => ({ ...row, dedupe_key: row.dedupe_key ?? null }));
 
 const nextSeq = (rows: ReadonlyArray<FakeEventRow>): number =>
   rows.reduce((max, row) => Math.max(max, row.seq), 0) + 1;
