@@ -56,24 +56,30 @@ change.
 - **Feature:** tools get `ctx.decide` and `ctx.snapshot()`. `snapshot` returns
   `{ state, reducerStates }` like `EDARuntime.snapshot` and can be stale by the time the tool
   emits; a tool whose fact depends on state uses `decide` with its `toolCallId` as the key.
-- **Breaking:** `submit` and decider drafts refuse framework events. An event in the
-  `effect-durable-agent` namespace is refused unless its type is `SessionConfigured`,
-  `SystemMessageCommitted` or `AssistantMessageImported`, with a `SessionCommandAdmissionConflict`
-  of code `framework_event` (`invalid_output` for a draft). Before, app code could append
-  `RunCompleted` or any lifecycle event. Test fixtures that need other framework events seed the
+- **Breaking:** `submit`, decider drafts, `ctx.emitDurable` and `ctx.stageDurable` refuse framework
+  events. An event in the `effect-durable-agent` namespace is refused unless its type is
+  `SessionConfigured`, `SystemMessageCommitted` or `AssistantMessageImported`, with a
+  `SessionCommandAdmissionConflict` of code `framework_event` (`invalid_output` for a draft).
+  Before, app code could append `RunCompleted` or any lifecycle event; now a forged
+  `DeciderAccepted` cannot make a later decision replay a result nobody decided. Test fixtures that need other framework events seed the
   store with `EDASessionStore.InMemorySeeded`.
 - **Breaking:** app event payloads must be JSON-native. `submit`, `ctx.emitDurable` and
   `ctx.stageDurable` refuse a payload that does not survive `JSON.parse(JSON.stringify(payload))`
   unchanged (`Redacted`, `Option`, `Date`, a class instance, `undefined` in an array, a non-finite
-  number): `submit` and `emitDurable` fail with a `SessionCommandAdmissionConflict` of code
-  `payload_not_json`, and `stageDurable` dies with it, so the sink runner logs it and skips the
-  batch. Before, the store wrote whatever `JSON.stringify` made of such a value: a `Redacted` email
+  number), failing with a `SessionCommandAdmissionConflict` of code `payload_not_json`. Before, the store wrote whatever `JSON.stringify` made of such a value: a `Redacted` email
   was stored as `"<redacted>"`. An object property whose value is `undefined` is still accepted.
   Encode such values before writing; encode-on-write for `submit` is planned.
 - **Breaking:** `submit` checks registered app events against the runtime's `appEvents` schema
   before the append and refuses a mismatch with code `invalid_event`. Before, a mismatch failed
   inside the append as a store error and made the runtime fatal. `ctx.emitDurable` and
   `ctx.stageDurable` apply the same schema and `maxAppEventBytes` checks.
+- **Breaking:** `ctx.stageDurable` returns `Effect<void, SessionCommandAdmissionConflict>` (was
+  `Effect<void>`), and a durable sink's `process` may fail with that conflict. A sink that catches
+  it keeps the rest of what it staged. One that lets it escape `process`, as a failure or through
+  `orDie`, stops its runner: none of that delivery's staged events commit, the cursor stays, and
+  the next runtime start redelivers the batch. A sink whose `process` already swallows every typed
+  error compiles unchanged and now sees the refusal there. Hand-built `EDASinkContext` fakes with
+  an infallible `stageDurable` still type-check.
 - **Breaking:** `ctx.emitDurable` can fail with `SessionCommandAdmissionConflict`, and
   `EDAToolExecutionContext` gains the required `decide` and `snapshot` members, so a hand-built
   tool context (a test fake) must add them. `SessionCommandAdmissionConflict.code` gains

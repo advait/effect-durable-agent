@@ -310,12 +310,14 @@ Choose the key so it names one occurrence:
 
 Reserved but not currently emitted in normal runtime paths: `ContextProjected`, `BaseStateRequested`, `BaseStateCreated`, `BaseStateFailed`.
 
-App code may write only three framework event types, through `submit` or as decider drafts:
-`SessionConfigured`, `SystemMessageCommitted` and `AssistantMessageImported` (a session seed and
-imported history). Any other event in the `effect-durable-agent` namespace is refused before the
-append: `submit` fails with a `SessionCommandAdmissionConflict` of code `framework_event`, a
-decider with `invalid_output`. Tests that need other framework events seed the store
-(`EDASessionStore.InMemorySeeded`).
+App code may write only three framework event types, through `submit`, as decider drafts, with a
+tool's `ctx.emitDurable` or with a sink's `ctx.stageDurable`: `SessionConfigured`,
+`SystemMessageCommitted` and `AssistantMessageImported` (a session seed and imported history).
+Any other event in the `effect-durable-agent` namespace is refused before the append: `submit`,
+`emitDurable` and `stageDurable` fail with a `SessionCommandAdmissionConflict` of code
+`framework_event`, a decider with `invalid_output`. Every app write path applies the rule, because
+one forged `DeciderAccepted` would make a later decision with its key replay a result nobody
+decided. Tests that need other framework events seed the store (`EDASessionStore.InMemorySeeded`).
 
 ### Current ephemeral framework events
 
@@ -430,10 +432,11 @@ No `await`, model/tool calls, publishing, or external I/O may occur inside the t
   - an event in a namespace the runtime's `appEvents` registers decodes with that schema. Code
     `invalid_event`.
 
-  `submit` and `ctx.emitDurable` fail with a `SessionCommandAdmissionConflict` of that code, a
-  decider with `EDADeciderError` `invalid_output`, and `ctx.stageDurable` dies with the conflict
-  (the sink runner logs it and skips the batch). A store that still refuses a row is a storage
-  fault and is fatal for the live runtime.
+  `submit`, `ctx.emitDurable` and `ctx.stageDurable` fail with a
+  `SessionCommandAdmissionConflict` of that code (or `framework_event`, §8), and a decider with
+  `EDADeciderError` `invalid_output`. A sink that lets a `stageDurable` refusal escape stops its
+  runner without acknowledging the batch (§10, Sinks). A store that still refuses a row is a
+  storage fault and is fatal for the live runtime.
 - Oversized command inputs, messages, summaries, and tool/app results fail before commit; callers should store large data by reference.
 - Storage pruning/BaseState is not implemented. Compaction changes model context; it does not delete retained event/body rows.
 
@@ -748,7 +751,14 @@ Durable lane:
 - commits staged durable events after successful processing, in a transaction separate from the
   cursor commit
 - atomically commits the current sink-owned payload when advancing the cursor after processing/staged commits
-- requires an infallible typed error channel; each sink owns bounded retry and terminal-failure handling
+- requires an infallible typed error channel except for `SessionCommandAdmissionConflict`; each
+  sink owns bounded retry and terminal-failure handling
+- `ctx.stageDurable` fails with a `SessionCommandAdmissionConflict` for an event the app event
+  checks of §9 or the namespace rule of §8 refuse, and stages nothing. A sink that catches it keeps
+  the rest of what it staged. If the conflict escapes `process` (as a failure, or as a defect
+  through `orDie`), the runner commits none of the batch's staged events, leaves the cursor and
+  stops; the next runtime start redelivers the batch. Skipping, as for other defects, would
+  acknowledge inputs whose facts never committed.
 
 Ephemeral lane:
 

@@ -15,7 +15,9 @@ import {
   DurableEventEnvelope,
   EventNamespace,
   EventType,
+  EventDedupeKey,
   UnixEpochMillis,
+  effectDurableAgentNamespace,
   schemaV1,
   assistantMessageCommittedEventType,
   textDeltaEventType,
@@ -646,31 +648,107 @@ describe("EDASinkRegistry", () => {
     );
   });
 
-  it("refuses a staged event whose payload is not JSON-native, skipping the batch without stopping the runtime", async () => {
-    const errors: Array<string> = [];
-    const captureErrors = Logger.make(({ logLevel, message }) => {
-      if (logLevel === "Error") errors.push(JSON.stringify(message));
-    });
+  it("hands a sink the typed refusal for a staged event, and commits what it staged besides", async () => {
+    const refusals: Array<string> = [];
     const sink: EDASink = {
-      name: "test.dated-sink",
+      name: "test.refusal-handling-sink",
       durable: {
         interests: eventInterest("AssistantMessageCommitted"),
-        process: (_batch, ctx) =>
-          ctx.stageDurable(
-            appEvent({ id: 9_100, type: "Dated", payload: { at: new Date(1_715_000_000_000) } }),
+        process: (batch, ctx) =>
+          Effect.forEach(batch.events, (entry) =>
+            Effect.gen(function* () {
+              const keyed = (type: string, payload: unknown) => ({
+                ...appEvent({ id: 9_100 + entry.position.seq, type, payload }),
+                dedupeKey: EventDedupeKey.make(`${type}:${entry.event.eventId}`),
+              });
+              yield* ctx.stageDurable(keyed("Delivered", { of: entry.event.eventId }));
+              const refused = [
+                keyed("Dated", { at: new Date(1_715_000_000_000) }),
+                { ...keyed("UserMessageCommitted", {}), namespace: effectDurableAgentNamespace },
+              ];
+              for (const event of refused) {
+                yield* ctx
+                  .stageDurable(event)
+                  .pipe(
+                    Effect.catchTag("SessionCommandAdmissionConflict", (conflict) =>
+                      Effect.sync(() => refusals.push(conflict.code)),
+                    ),
+                  );
+              }
+            }),
           ),
       },
     };
     const program = Effect.scoped(
       Effect.gen(function* () {
         const runtime = yield* EDARuntime;
+        const checkpointStore = yield* SinkCheckpointStore;
+        yield* runtime.submitAndBlock(command(COMMAND_ID, "hello"));
+        const head = (yield* runtime.snapshot()).state.lastSeq;
+        yield* waitUntil("checkpoint past the reply", () =>
+          checkpointStore
+            .load(EDASinkName.make(sink.name))
+            .pipe(Effect.map((checkpoint) => checkpoint.afterSeq >= head)),
+        );
+        return yield* replayAll(runtime);
+      }),
+    ).pipe(
+      Effect.provide(
+        EDARuntime.Live({ modelSelection }).pipe(
+          Layer.provideMerge(
+            makeEdaTestLayer({ sessionId: SESSION_ID, parts: [finishStream], sinks: [sink] }),
+          ),
+        ),
+      ),
+    );
+    const events = await Effect.runPromise(program);
+    const types = events.map((entry) => durableEventEnvelope(entry.event).type);
+    expect(refusals).toEqual(["payload_not_json", "framework_event"]);
+    expect(types.filter((type) => type === "Delivered")).toHaveLength(1);
+    expect(types).not.toContain("Dated");
+    expect(types).not.toContain("UserMessageCommitted");
+  });
+
+  it("holds the cursor when a sink lets a staged-event refusal escape, so nothing it staged is lost", async () => {
+    const errors: Array<string> = [];
+    const captureErrors = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Error") errors.push(JSON.stringify(message));
+    });
+    const sink: EDASink = {
+      name: "test.refusal-escaping-sink",
+      durable: {
+        interests: eventInterest("AssistantMessageCommitted"),
+        process: (batch, ctx) =>
+          Effect.forEach(batch.events, (entry) =>
+            Effect.gen(function* () {
+              yield* ctx.stageDurable({
+                ...appEvent({ id: 9_200, type: "Delivered", payload: { of: entry.event.eventId } }),
+                dedupeKey: EventDedupeKey.make(entry.event.eventId),
+              });
+              yield* ctx.stageDurable(
+                appEvent({
+                  id: 9_201,
+                  type: "Dated",
+                  payload: { at: new Date(1_715_000_000_000) },
+                }),
+              );
+            }),
+          ),
+      },
+    };
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const runtime = yield* EDARuntime;
+        const checkpointStore = yield* SinkCheckpointStore;
         yield* runtime.submitAndBlock(command(COMMAND_ID, "hello"));
         yield* waitUntil("refusal logged", () =>
           Effect.sync(() => errors.some((error) => error.includes("is not JSON-native"))),
         );
         // The runtime keeps working: the next command runs to completion.
         yield* runtime.submitAndBlock(command(SECOND_COMMAND_ID, "second"));
-        return yield* replayAll(runtime);
+        const events = yield* replayAll(runtime);
+        const cursor = (yield* checkpointStore.load(EDASinkName.make(sink.name))).afterSeq;
+        return { events, cursor };
       }),
     ).pipe(
       Effect.provide(
@@ -686,9 +764,14 @@ describe("EDASinkRegistry", () => {
       ),
       Effect.provide(Logger.layer([captureErrors])),
     );
-    const events = await Effect.runPromise(program);
-    expect(events.some((entry) => durableEventEnvelope(entry.event).type === "Dated")).toBe(false);
+    const { events, cursor } = await Effect.runPromise(program);
+    const firstReply = events.find((entry) => entry.event.type === "AssistantMessageCommitted");
     expect(events.filter((entry) => entry.event.type === "CommandCompleted")).toHaveLength(2);
+    // The batch holding the first reply was never acknowledged, so a restart redelivers it.
+    expect(cursor).toBeLessThan(firstReply?.position.seq ?? 0);
+    const types = events.map((entry) => durableEventEnvelope(entry.event).type);
+    expect(types).not.toContain("Delivered");
+    expect(types).not.toContain("Dated");
   });
 });
 

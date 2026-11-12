@@ -857,7 +857,7 @@ const makeLiveSessionState = Effect.gen(function* () {
     });
     for (const item of input) {
       if (isEDACommand(item)) continue;
-      const refusal = appEventAdmission.refuse(item, { namespaceRule: true });
+      const refusal = appEventAdmission.refuse(item);
       if (refusal !== undefined) return yield* appEventConflict(refusal);
     }
     const committed = yield* withAppendGate(
@@ -886,10 +886,10 @@ const makeLiveSessionState = Effect.gen(function* () {
       return committed[0] as CommittedDurableEvent;
     });
 
-  /** A tool's app fact: the payload, size and registered-schema rules, then the framework path. */
+  /** A tool's app fact: the same admission rules as `submit`, then the framework path. */
   const appendAppDurable = (event: DurableEventEnvelope) =>
     Effect.gen(function* () {
-      const refusal = appEventAdmission.refuse(event, { namespaceRule: false });
+      const refusal = appEventAdmission.refuse(event);
       if (refusal !== undefined) return yield* appEventConflict(refusal);
       return yield* appendDurable(event);
     });
@@ -1026,7 +1026,7 @@ const makeLiveSessionState = Effect.gen(function* () {
                     `item ${index} is not an event of the decider's events schema: ${String(cause)}`,
                   ),
               });
-              const refusal = appEventAdmission.refuse(event, { namespaceRule: true });
+              const refusal = appEventAdmission.refuse(event);
               if (refusal !== undefined) {
                 return yield* fail("invalid_output", `item ${index}: ${refusal.message}`);
               }

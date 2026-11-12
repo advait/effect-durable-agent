@@ -15,6 +15,7 @@ import { CommandId, EventId, MessageId, SequenceNumber, SessionId } from "../typ
 import {
   DeciderAcceptedEvent,
   DurableEventEnvelope,
+  EventDedupeKey,
   SessionConfiguredEvent,
   SystemMessageCommittedEvent,
   UnixEpochMillis,
@@ -541,7 +542,7 @@ describe("SessionState deciders", () => {
     expect(reasonOf(result)).toBe("unknown_decider");
   });
 
-  it("refuses a framework lifecycle event as a draft and through submit", async () => {
+  it("refuses a framework lifecycle event as a draft, through submit and through a tool's emit path", async () => {
     const forged = DeciderAcceptedEvent.make({
       namespace: effectDurableAgentNamespace,
       type: deciderAcceptedEventType,
@@ -550,7 +551,12 @@ describe("SessionState deciders", () => {
       eventId: EventId.make(sequentialUuidV7(60_000)),
       sessionId,
       createdAtMs: NOW,
-      payload: { decider: "test.chat.PostMessage", idempotencyKey: "m1", result: null },
+      dedupeKey: EventDedupeKey.make(deciderMarkerDedupeKey("test.chat.PostMessage", "m1")),
+      payload: {
+        decider: "test.chat.PostMessage",
+        idempotencyKey: "m1",
+        result: { routedNumber: 99 },
+      },
     });
     const forger = EDADecider.define({
       name: "test.Forger",
@@ -577,14 +583,23 @@ describe("SessionState deciders", () => {
         const state = yield* SessionState;
         const decided = yield* Effect.exit(state.decide(forger, { key: "k" }));
         const submitted = yield* Effect.exit(state.submitBatch([forged]));
-        return { decided, submitted, log: yield* logOf, usable: yield* followingSubmitSucceeds };
+        const emitted = yield* Effect.exit(state.appendAppDurable(forged));
+        const logAfterForgery = yield* logOf;
+        // Had the forged marker committed, this would replay its result without deciding.
+        const post = yield* state.decide(postMessage, { key: "m1", text: "hello" });
+        return { decided, submitted, emitted, logAfterForgery, post };
       }),
       { deciders: [postMessage, forger] },
     );
     expect(reasonOf(result.decided)).toBe("invalid_output");
     expect(reasonOf(result.submitted)).toBe("framework_event");
-    expect(result.log).toHaveLength(0);
-    expect(result.usable).toBe(true);
+    expect(reasonOf(result.emitted)).toBe("framework_event");
+    expect(result.logAfterForgery).toHaveLength(0);
+    expect(result.post).toMatchObject({
+      _tag: "Accepted",
+      replayed: false,
+      result: { routedNumber: 1 },
+    });
   });
 
   it("refuses a payload that is not JSON-native through submit and a tool's emit path", async () => {

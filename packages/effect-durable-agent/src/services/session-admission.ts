@@ -32,15 +32,17 @@ export class SessionCommandAdmissionConflict extends Schema.TaggedError<SessionC
   },
 ) {}
 
-/** Why an app event is refused; `framework_event` applies only where the namespace rule does. */
+/** Why an app event is refused. */
 export interface AppEventRefusal {
   readonly code: "event_too_large" | "framework_event" | "invalid_event" | "payload_not_json";
   readonly message: string;
 }
 
 /**
- * Framework event types app code may still write through `submit` and decider drafts: a session
- * seed (`SessionConfigured`, `SystemMessageCommitted`) and imported history.
+ * Framework event types app code may still write through `submit`, decider drafts, `emitDurable`
+ * and `stageDurable`: a session seed (`SessionConfigured`, `SystemMessageCommitted`) and imported
+ * history. Every other `effect-durable-agent` event is the framework's alone; a forged
+ * `DeciderAccepted` would make a later decision replay a result nobody decided.
  */
 export const appWritableFrameworkEventTypes: ReadonlySet<string> = new Set([
   "SessionConfigured",
@@ -130,10 +132,7 @@ export const RegisteredAppEvents = Context.Reference<AppEventCodec | undefined>(
 
 /** Checks one app-written durable event against the runtime's admission rules. */
 export interface AppEventAdmission {
-  readonly refuse: (
-    event: DurableEventEnvelope,
-    options: { readonly namespaceRule: boolean },
-  ) => AppEventRefusal | undefined;
+  readonly refuse: (event: DurableEventEnvelope) => AppEventRefusal | undefined;
 }
 
 /** Build the checker for a runtime, with its registered `appEvents` codec if any. */
@@ -143,9 +142,8 @@ export const makeAppEventAdmission = (appEvents: AppEventCodec | undefined): App
   const describe = (event: DurableEventEnvelope) =>
     `Event ${event.namespace}/${event.type} ${event.eventId}`;
   return {
-    refuse: (event, options) => {
+    refuse: (event) => {
       if (
-        options.namespaceRule &&
         event.namespace === effectDurableAgentNamespace &&
         !appWritableFrameworkEventTypes.has(event.type)
       ) {

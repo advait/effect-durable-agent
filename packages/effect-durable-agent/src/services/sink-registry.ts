@@ -26,7 +26,12 @@ import type { EventFactoryShape } from "./event-factory";
 import { IdGenerator } from "./id-generator";
 import { EDAKeepAlive } from "./keep-alive";
 import { makeSinkInbox } from "./sink-inbox";
-import { appEventConflict, makeAppEventAdmission, RegisteredAppEvents } from "./session-admission";
+import {
+  appEventConflict,
+  makeAppEventAdmission,
+  RegisteredAppEvents,
+  SessionCommandAdmissionConflict,
+} from "./session-admission";
 import { SessionContext } from "./session-context";
 import {
   EDASinkName,
@@ -73,7 +78,10 @@ export interface EDASinkContext {
   readonly sessionId: SessionId;
   /** Sink-owned checkpoint state, serialized with cursor commits and background writes. */
   readonly checkpoint: EDASinkCheckpoint;
-  /** Build a framework durable event if the sink needs to emit one. */
+  /**
+   * Build a framework durable event. `stageDurable` accepts only the framework types app code may
+   * write (`SessionConfigured`, `SystemMessageCommitted`, `AssistantMessageImported`).
+   */
   readonly events: EventFactoryShape;
   /** Mint an app durable event id for staged custom events. */
   readonly makeEventId: () => Effect.Effect<EventId>;
@@ -85,11 +93,18 @@ export interface EDASinkContext {
    * Stage durable events; the runner commits them after the sink succeeds, in a transaction
    * separate from the cursor commit. A crash between the two redelivers the batch, so give each
    * staged event a `dedupeKey` derived from what caused it; one without a key logs a warning.
-   * An event the app event admission rules refuse (a payload that is not JSON-native or is over
-   * `maxAppEventBytes`, or one the registered `appEvents` schema rejects) is a defect carrying a
-   * `SessionCommandAdmissionConflict`: the runner logs it and skips the batch, as for any defect.
+   *
+   * An event the app event admission rules refuse fails with a `SessionCommandAdmissionConflict`
+   * and is not staged: a framework lifecycle event (`framework_event`), a payload that is not
+   * JSON-native (`payload_not_json`) or is over `maxAppEventBytes` (`event_too_large`), or one
+   * the registered `appEvents` schema rejects (`invalid_event`). A sink that catches it keeps
+   * what it staged besides. One that lets it escape `process` stops its runner before the batch
+   * is acknowledged: nothing staged in that delivery commits, the cursor stays, and the next
+   * runtime start redelivers the batch.
    */
-  readonly stageDurable: (event: DurableEventEnvelope) => Effect.Effect<void>;
+  readonly stageDurable: (
+    event: DurableEventEnvelope,
+  ) => Effect.Effect<void, SessionCommandAdmissionConflict>;
   /** Fork background sink work into the session scope. */
   readonly forkScoped: (effect: Effect.Effect<unknown, unknown>) => Effect.Effect<void>;
 }
@@ -105,7 +120,10 @@ interface EDADurableSinkOptions {
 
 /** Default durable consumer with framework and app projections at each cursor window. */
 export interface EDAProjectedDurableSinkDefinition extends EDADurableSinkOptions {
-  readonly process: (batch: EDASinkDurableBatch, ctx: EDASinkContext) => Effect.Effect<void, never>;
+  readonly process: (
+    batch: EDASinkDurableBatch,
+    ctx: EDASinkContext,
+  ) => Effect.Effect<void, SessionCommandAdmissionConflict>;
 }
 
 /** Raw consumer that never hydrates, folds, or retains a session projection. */
@@ -113,7 +131,7 @@ export interface EDARawDurableSinkDefinition extends EDADurableSinkOptions {
   readonly process: (
     batch: EDASinkRawDurableBatch,
     ctx: EDASinkContext,
-  ) => Effect.Effect<void, never>;
+  ) => Effect.Effect<void, SessionCommandAdmissionConflict>;
 }
 
 /** Durable sink definition backed by a checkpoint and an app-owned delivery policy. */
@@ -131,8 +149,9 @@ export interface EDAEphemeralSinkDefinition {
  * Named app integration hook with optional durable and ephemeral filters.
  *
  * Every sink runs on one serialized position-ordered lane. Sinks own retry and
- * terminal failure handling, so callbacks must have an infallible typed error
- * channel. An unexpected defect is logged and skipped before the durable checkpoint
+ * terminal failure handling, so callbacks have no typed error channel except a
+ * `stageDurable` refusal, which stops the runner without acknowledging the batch.
+ * An unexpected defect is logged and skipped before the durable checkpoint
  * advances. Ephemeral callbacks are best-effort and are only processed after the
  * durable prefix at their anchor sequence has been projected.
  */
@@ -187,7 +206,7 @@ export const EDASink = {
         readonly process: (
           batch: EDASinkDurableBatch<E>,
           ctx: EDASinkContext,
-        ) => Effect.Effect<void, never>;
+        ) => Effect.Effect<void, SessionCommandAdmissionConflict>;
       };
     },
   ): EDAProjectedSink => ({
@@ -301,8 +320,8 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
       emitEphemeral: publishEphemeral,
       stageDurable: (event) =>
         Effect.gen(function* () {
-          const refusal = appEventAdmission.refuse(event, { namespaceRule: false });
-          if (refusal !== undefined) return yield* Effect.die(appEventConflict(refusal));
+          const refusal = appEventAdmission.refuse(event);
+          if (refusal !== undefined) return yield* appEventConflict(refusal);
           // Staged events and the cursor commit separately; only a key collapses a restaged event.
           if (event.dedupeKey === undefined) {
             yield* Effect.logWarning("EDA sink staged a durable event without a dedupeKey", {
@@ -438,14 +457,16 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
             });
             const completed = yield* delivery.pipe(
               Effect.as(true),
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.failCause(cause)
-                  : Effect.logError("EDA durable sink violated its infallible contract", {
-                      cause: Cause.pretty(cause),
-                      sink: sink.name,
-                    }).pipe(Effect.as(false)),
-              ),
+              Effect.catchCause((cause) => {
+                if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+                // Skipping would acknowledge a batch whose staged facts never commit: stop instead.
+                const refusal = stagedEventRefusal(cause);
+                if (refusal !== undefined) return Effect.fail(refusal);
+                return Effect.logError("EDA durable sink violated its infallible contract", {
+                  cause: Cause.pretty(cause),
+                  sink: sink.name,
+                }).pipe(Effect.as(false));
+              }),
             );
             if (completed && staged.length > 0) {
               yield* annotateEdaSpan({ "eda.sink.staged_events": staged.length });
@@ -611,6 +632,21 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
         ),
     } satisfies EDASinkRegistryShape;
   });
+
+/** The `stageDurable` refusal a sink let escape, as a failure or (through `orDie`) a defect. */
+const stagedEventRefusal = (
+  cause: Cause.Cause<unknown>,
+): SessionCommandAdmissionConflict | undefined => {
+  for (const reason of cause.reasons) {
+    const value = Cause.isFailReason(reason)
+      ? reason.error
+      : Cause.isDieReason(reason)
+        ? reason.defect
+        : undefined;
+    if (value instanceof SessionCommandAdmissionConflict) return value;
+  }
+  return undefined;
+};
 
 const makeSinkCheckpoint = (
   store: SinkCheckpointStoreShape,
