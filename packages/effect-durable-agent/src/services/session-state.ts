@@ -978,7 +978,9 @@ const makeLiveSessionState = Effect.gen(function* () {
             if (resultViolation !== undefined) {
               return yield* fail("invalid_output", `encoded result: ${resultViolation}`);
             }
-            const resultBytes = jsonBytes(encodedResult);
+            // What the store keeps: an optional field left `undefined` becomes absent.
+            const storedResult: unknown = JSON.parse(JSON.stringify(encodedResult));
+            const resultBytes = jsonBytes(storedResult);
             if (resultBytes > maxDeciderResultBytes) {
               return yield* fail(
                 "invalid_output",
@@ -1033,7 +1035,7 @@ const makeLiveSessionState = Effect.gen(function* () {
               items.push(event);
             }
 
-            const marker = DeciderAcceptedEvent.make({
+            const marker = yield* Schema.decodeUnknownEffect(DeciderAcceptedEvent)({
               namespace: effectDurableAgentNamespace,
               type: deciderAcceptedEventType,
               schemaVersion: schemaV1,
@@ -1043,8 +1045,12 @@ const makeLiveSessionState = Effect.gen(function* () {
               createdAtMs,
               trace,
               dedupeKey: markerKey,
-              payload: { decider: decider.name, idempotencyKey, result: encodedResult },
-            });
+              payload: { decider: decider.name, idempotencyKey, result: storedResult },
+            }).pipe(
+              Effect.mapError((cause) =>
+                fail("invalid_output", `encoded result is not JSON: ${cause.message}`),
+              ),
+            );
             const committed = yield* commitDurableEntriesWithinGate(
               [marker, ...items].map((event) => ({ event })),
             );

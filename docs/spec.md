@@ -717,9 +717,11 @@ refuse an unregistered decider (`unknown_decider`).
    with `replayed: true`. `decide` is not called; the input of a retry is not compared.
 4. Read the state and the clock once and call `decide` (`decide_threw` if it throws).
 5. On `Reject`, return it. Nothing is committed and the control loop is not woken.
-6. On `Accept`, encode the result (at most 16 KiB of JSON) and every draft with `events`, apply the
-   app event checks of §9 and the framework-namespace rule of §8 to each draft (`invalid_output`),
-   admit each command, and commit `[DeciderAccepted, ...items]` as one store append.
+6. On `Accept`, encode the result with `result` (JSON-native, at most 16 KiB of JSON) and store
+   its JSON form, so an optional field left `undefined` is absent from the marker, as the store
+   would keep it. Encode every draft with `events`, apply the app event checks of §9 and the
+   framework-namespace rule of §8 to each draft (`invalid_output`), admit each command, and commit
+   `[DeciderAccepted, ...items]` as one store append.
 7. Wake the control loop if the batch held a command, and return `Accepted` with the marker's seq.
 
 Inside the gate `state` is exactly the fold of the committed log (every durable append and every

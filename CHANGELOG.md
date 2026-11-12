@@ -44,7 +44,8 @@ change.
   `dedupeKey` = decider name, a line feed and the key; a retry with the same key returns the stored
   result with `replayed: true` and commits nothing. A rejection commits nothing. Drafts are encoded
   with the decider's `events` schema and checked against the registered `appEvents`; the result is
-  capped at 16 KiB (`maxDeciderResultBytes`). Failures are `EDADeciderError` (`unknown_decider`,
+  stored in its JSON form (an optional field left `undefined` is absent) and capped at 16 KiB
+  (`maxDeciderResultBytes`). Failures are `EDADeciderError` (`unknown_decider`,
   `invalid_input`, `decide_threw`, `invalid_output`), never store errors, so the runtime stays
   usable. Construction fails on a duplicate name, a name outside `/^[A-Za-z0-9._-]{1,128}$/` or
   under `_eda.`, or a decider that emits an app namespace `appEvents` does not register. See

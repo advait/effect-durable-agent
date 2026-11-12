@@ -56,7 +56,7 @@ const appFields = { ...DurableEventEnvelope.fields, namespace: Schema.Literal("t
 const MessageRouted = Schema.Struct({
   ...appFields,
   type: Schema.Literal("MessageRouted"),
-  payload: Schema.Struct({ text: Schema.String }),
+  payload: Schema.Struct({ text: Schema.String, note: Schema.optional(Schema.String) }),
 });
 const ChatEnded = Schema.Struct({
   ...appFields,
@@ -294,6 +294,51 @@ describe("SessionState deciders", () => {
     expect(result.decided).toBe(0);
     expect(result.after).toBe(result.head);
     expect(markers(result.log)).toHaveLength(1);
+  });
+
+  it("accepts an optional field left undefined in the result and in a draft, as JSON stores it", async () => {
+    const annotate = EDADecider.define({
+      name: "test.Annotate",
+      input: Schema.Struct({ key: Schema.String }),
+      events: ChatEvents,
+      result: Schema.Struct({ note: Schema.optional(Schema.String) }),
+      rejection: Schema.Never,
+      idempotencyKey: (input) => input.key,
+      decide: () => ({
+        _tag: "Accept",
+        items: [
+          {
+            namespace: "test.chat",
+            type: "MessageRouted",
+            schemaVersion: schemaV1,
+            payload: { text: "hi", note: undefined },
+          },
+        ],
+        result: { note: undefined },
+      }),
+    });
+    const result = await run(
+      Effect.gen(function* () {
+        const state = yield* SessionState;
+        const first = yield* state.decide(annotate, { key: "k" });
+        const retry = yield* state.decide(annotate, { key: "k" });
+        return { first, retry, log: yield* logOf };
+      }),
+      { deciders: [annotate] },
+    );
+    expect(result.first).toMatchObject({ _tag: "Accepted", replayed: false });
+    expect(result.retry).toMatchObject({ _tag: "Accepted", replayed: true });
+    expect(result.retry._tag === "Accepted" && Object.keys(result.retry.result)).toEqual([]);
+    const marker = markers(result.log)[0]?.event;
+    expect(marker === undefined ? undefined : durableEventEnvelope(marker).payload).toEqual({
+      decider: "test.Annotate",
+      idempotencyKey: "k",
+      result: {},
+    });
+    expect(result.log.map((entry) => durableEventEnvelope(entry.event))).toMatchObject([
+      { type: deciderAcceptedEventType },
+      { type: "MessageRouted", payload: { text: "hi" } },
+    ]);
   });
 
   it("checks the idempotency key: a line feed or 257 characters is invalid_input; 256 quotes replay", async () => {
