@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
+
+Patch release: idle session objects stop waking every 30 s. No storage, protocol or API change.
 
 - **Fix:** an idle session object no longer wakes every 30 s forever. `SessionState.start` forked
   the live control loop, so on a cold start the loop's first drain took its `session-control`
