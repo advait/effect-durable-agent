@@ -32,6 +32,8 @@ import {
   makeEDADurableObjectOpenAiModelResolverLayer,
 } from "./providers/openai";
 import { DurableObjectKeepAlive } from "./durable-object-keepalive";
+import { DurableObjectAlarmScheduler } from "./durable-object-alarms";
+import { runEDASessionAlarm } from "./durable-object-alarm-handler";
 import {
   EDAWebSocketClientFrame,
   EDA_WEB_SOCKET_PING_MESSAGE,
@@ -1031,6 +1033,67 @@ describe("EDASessionController", () => {
     expect(keepAlive.activeLeaseCount).toBeGreaterThan(0);
     expect(storage.alarm).not.toBeNull();
     await alarmHost.dispose();
+  });
+
+  it("a cold alarm whose first drain fails keeps the queued message's wakeup until a retry runs it", async () => {
+    const storage = new SqliteDurableObjectStorage();
+    const sessionId = SessionId.make(SESSION_ID);
+    const config = { modelSelection: { provider: "test", modelId: "test-model" } };
+    const modelResolverLayer = ModelResolver.Fixed.pipe(
+      Layer.provide(makeLanguageModelLayer({ parts: Stream.never })),
+    );
+    const parked = new EDASessionController({
+      config,
+      modelResolverLayer,
+      runSchedulerLayer: Layer.succeed(RunScheduler, {
+        resolve: () => Effect.never,
+        deliver: () => Effect.void,
+      }),
+      storage,
+    });
+    await parked.submit({ sessionId, command: makeCommand() });
+    await parked.dispose();
+
+    const alarms = new DurableObjectAlarmScheduler(storage);
+    await alarms.request("runtime", Date.now() - 100);
+    const keepAlive = new DurableObjectKeepAlive(alarms.owner("runtime"));
+    const host = new EDASessionController({
+      config,
+      keepAlive,
+      modelResolverLayer,
+      storage,
+    });
+    const fireAlarm = () =>
+      runEDASessionAlarm({
+        alarms,
+        now: () => Date.now(),
+        runRuntime: () => host.alarm({ sessionId }),
+        runBuilderSlices: undefined,
+        maxBuilderFailures: 3,
+        builderRetryDelayMs: 1_000,
+        onBuilderFailure: () => undefined,
+      });
+    let failures = 0;
+    storage.faults = (query) => {
+      if (failures === 0 && query.includes("INSERT INTO _eda_event_log")) {
+        failures += 1;
+        throw new Error("transient append failure");
+      }
+    };
+
+    await expect(fireAlarm()).rejects.toThrow();
+    expect(failures).toBe(1);
+    expect(storage.rows("SELECT owner FROM _eda_alarm_wakeups")).toEqual([{ owner: "runtime" }]);
+
+    storage.faults = undefined;
+    await fireAlarm();
+    await quiesce();
+    expect(storage.rows("SELECT type FROM _eda_event_log").map((row) => row.type)).toContain(
+      "TurnStarted",
+    );
+    expect(storage.alarm).not.toBeNull();
+    await host.dispose();
+    storage.db.close();
   });
 
   it("retries runtime construction after a rejected build", async () => {
