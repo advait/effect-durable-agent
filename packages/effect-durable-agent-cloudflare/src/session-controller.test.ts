@@ -979,6 +979,60 @@ describe("EDASessionController", () => {
     expect(storage.alarm).toBeNull();
   });
 
+  it.each([
+    { name: "ended", commands: 1 },
+    { name: "never used", commands: 0 },
+  ])(
+    "a cold alarm on an $name session leaves no alarm once the object is quiet",
+    async ({ commands }) => {
+      const storage = new FakeDurableObjectStorage();
+      await Effect.runPromise(EDASessionController.migrate(storage));
+      const scope = { sessionId: SessionId.make(SESSION_ID) };
+      const firstHost = makeHost(storage);
+      if (commands > 0) await firstHost.submitAndBlock({ ...scope, command: makeCommand() });
+      else await firstHost.snapshot(scope);
+      await firstHost.dispose();
+
+      const keepAlive = new DurableObjectKeepAlive(storage);
+      const alarmHost = makeHost(storage, { keepAlive });
+      storage.alarm = null;
+      await alarmHost.alarm(scope);
+      await quiesce();
+
+      expect(keepAlive.activeLeaseCount).toBe(0);
+      expect(storage.alarm).toBeNull();
+      await alarmHost.dispose();
+    },
+  );
+
+  it("a cold alarm keeps waking a session whose queued message is still running", async () => {
+    const storage = new FakeDurableObjectStorage();
+    await Effect.runPromise(EDASessionController.migrate(storage));
+    const scope = { sessionId: SessionId.make(SESSION_ID) };
+    const activeStream = Stream.make(
+      Response.makePart("text-delta", { id: "text-1", delta: "partial" }),
+    ).pipe(Stream.concat(Stream.never));
+    const firstHost = makeHost(storage, { parts: activeStream });
+    await firstHost.submit({ ...scope, command: makeCommand() });
+    await waitForEventType(storage, "TurnStarted");
+    await firstHost.submit({
+      ...scope,
+      command: makeCommand("018f6bd5-2f2a-7b1e-8f1f-1f2e3d4c5b6a"),
+    });
+    await firstHost.dispose();
+
+    const keepAlive = new DurableObjectKeepAlive(storage);
+    const alarmHost = makeHost(storage, { keepAlive, parts: activeStream });
+    storage.alarm = null;
+    await alarmHost.alarm(scope);
+    await quiesce();
+
+    expect(storage.eventRows.filter((row) => row.type === "TurnStarted")).toHaveLength(2);
+    expect(keepAlive.activeLeaseCount).toBeGreaterThan(0);
+    expect(storage.alarm).not.toBeNull();
+    await alarmHost.dispose();
+  });
+
   it("retries runtime construction after a rejected build", async () => {
     const storage = new FakeDurableObjectStorage();
     await Effect.runPromise(EDASessionController.migrate(storage));
@@ -1248,6 +1302,9 @@ const waitForEventType = async (
   }
   throw new Error(`Timed out waiting for ${type}`);
 };
+
+/** Lets work an alarm handler left behind run to its next wait, as an object does before it hibernates. */
+const quiesce = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 const completeWithin = async <A>(promise: Promise<A>, timeoutMs = 2_000): Promise<A> => {
   let timeout: ReturnType<typeof setTimeout> | undefined;
