@@ -73,7 +73,9 @@ change.
   Encode such values before writing; encode-on-write for `submit` is planned.
 - **Breaking:** `submit` checks registered app events against the runtime's `appEvents` schema
   before the append and refuses a mismatch with code `invalid_event`. Before, a mismatch failed
-  inside the append as a store error and made the runtime fatal. `ctx.emitDurable` and
+  inside the append as a store error and made the runtime fatal. An allowlisted framework event
+  (`SessionConfigured`, `SystemMessageCommitted`, `AssistantMessageImported`) is checked the same
+  way against its framework schema. `ctx.emitDurable` and
   `ctx.stageDurable` apply the same schema and `maxAppEventBytes` checks.
 - **Breaking:** `ctx.stageDurable` returns `Effect<void, SessionCommandAdmissionConflict>` (was
   `Effect<void>`), and a durable sink's `process` may fail with that conflict. A sink that catches

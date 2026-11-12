@@ -429,8 +429,8 @@ No `await`, model/tool calls, publishing, or external I/O may occur inside the t
     of it. Code `payload_not_json`;
   - the serialized payload is at most `maxAppEventBytes` (1 MiB, below every host's row cap). Code
     `event_too_large`;
-  - an event in a namespace the runtime's `appEvents` registers decodes with that schema. Code
-    `invalid_event`.
+  - an event in a namespace the runtime's `appEvents` registers decodes with that schema, and an
+    allowlisted framework event decodes with its framework schema. Code `invalid_event`.
 
   `submit`, `ctx.emitDurable` and `ctx.stageDurable` fail with a
   `SessionCommandAdmissionConflict` of that code (or `framework_event`, §8), and a decider with

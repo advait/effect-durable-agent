@@ -8,6 +8,7 @@ import {
   effectDurableAgentNamespace,
   maxAppEventBytes,
 } from "../types/events/envelope";
+import { decodeDurableEventSync } from "../types/events/durable";
 import { decodeRetainingExcess } from "../types/events/internal";
 
 /**
@@ -151,6 +152,18 @@ export const makeAppEventAdmission = (appEvents: AppEventCodec | undefined): App
           code: "framework_event",
           message: `${describe(event)} is a framework lifecycle event; app code may write only ${Array.from(appWritableFrameworkEventTypes).join(", ")}`,
         };
+      }
+      if (event.namespace === effectDurableAgentNamespace) {
+        // The store decodes framework events with their own schema and would fail a malformed one
+        // as a store error, so an allowlisted type is checked against that schema here.
+        try {
+          decodeDurableEventSync(event);
+        } catch (cause) {
+          return {
+            code: "invalid_event",
+            message: `${describe(event)} does not match its framework event schema: ${String(cause)}`,
+          };
+        }
       }
       const notJson = jsonNativeViolation(event.payload);
       if (notJson !== undefined) {

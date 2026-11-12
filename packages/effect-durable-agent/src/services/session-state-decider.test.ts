@@ -647,6 +647,63 @@ describe("SessionState deciders", () => {
     });
   });
 
+  it("refuses an allowlisted framework event whose payload its framework schema refuses", async () => {
+    // Reviewer repro (gpt-6-astra, FR-1 review round 1): a loose decider schema let a malformed
+    // SessionConfigured reach the store, which failed it as a store error and made the runtime fatal.
+    const LooseConfigured = Schema.Struct({
+      ...DurableEventEnvelope.fields,
+      namespace: Schema.Literal(effectDurableAgentNamespace),
+      type: Schema.Literal(sessionConfiguredEventType),
+      payload: Schema.Unknown,
+    });
+    const loose = EDADecider.define({
+      name: "test.LooseConfigured",
+      input: Schema.Struct({ key: Schema.String }),
+      events: LooseConfigured,
+      result: Schema.Null,
+      rejection: Schema.Never,
+      idempotencyKey: (input) => input.key,
+      decide: () => ({
+        _tag: "Accept",
+        items: [
+          {
+            namespace: effectDurableAgentNamespace,
+            type: sessionConfiguredEventType,
+            schemaVersion: schemaV1,
+            payload: {},
+          },
+        ],
+        result: null,
+      }),
+    });
+    const malformed = DurableEventEnvelope.make({
+      namespace: effectDurableAgentNamespace,
+      type: sessionConfiguredEventType,
+      schemaVersion: schemaV1,
+      durability: "durable",
+      eventId: EventId.make(sequentialUuidV7(61_000)),
+      sessionId,
+      createdAtMs: NOW,
+      payload: {},
+    });
+    const result = await run(
+      Effect.gen(function* () {
+        const state = yield* SessionState;
+        const decided = yield* Effect.exit(state.decide(loose, { key: "k" }));
+        const submitted = yield* Effect.exit(state.submitBatch([malformed]));
+        const emitted = yield* Effect.exit(state.appendAppDurable(malformed));
+        const usable = yield* followingSubmitSucceeds;
+        return { decided, submitted, emitted, usable, log: yield* logOf };
+      }),
+      { deciders: [postMessage, loose] },
+    );
+    expect(reasonOf(result.decided)).toBe("invalid_output");
+    expect(reasonOf(result.submitted)).toBe("invalid_event");
+    expect(reasonOf(result.emitted)).toBe("invalid_event");
+    expect(result.usable).toBe(true);
+    expect(result.log.map((entry) => entry.event.type)).not.toContain(sessionConfiguredEventType);
+  });
+
   it("refuses a payload that is not JSON-native through submit and a tool's emit path", async () => {
     const result = await run(
       Effect.gen(function* () {
