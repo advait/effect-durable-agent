@@ -8,6 +8,9 @@ import * as Toolkit from "effect/ai/Toolkit";
 
 import { EventId, SequenceNumber, SessionId, ToolCallId, RunId, TurnId } from "../types/core";
 import { DurableEventEnvelope, ToolName } from "../types/events";
+import type { EDADecider, EDADeciderError, EDADeciderOutcome } from "./decider";
+import type { SessionCommandAdmissionConflict } from "./session-admission";
+import type { EDASessionSnapshot } from "./session-query";
 import type { CommittedDurableEvent, EDASessionStoreError } from "./session-store";
 
 /**
@@ -62,10 +65,34 @@ export interface EDAToolExecutionContext {
   readonly sessionId: SessionId;
   /** Mint an app durable event id for tool-emitted facts. */
   readonly makeEventId: () => Effect.Effect<EventId>;
-  /** Emit an app durable event through `SessionState`, never directly through the store. */
+  /**
+   * Emit an app durable event through `SessionState`, never directly through the store. A payload
+   * that is not JSON-native, is over `maxAppEventBytes`, or does not match the registered
+   * `appEvents` schema fails with a `SessionCommandAdmissionConflict` and commits nothing.
+   */
   readonly emitDurable: (
     event: DurableEventEnvelope,
-  ) => Effect.Effect<CommittedDurableEvent, EDASessionStoreError>;
+  ) => Effect.Effect<CommittedDurableEvent, EDASessionStoreError | SessionCommandAdmissionConflict>;
+  /**
+   * Run a registered decider for this session: it reads the committed state and appends its
+   * marker and items in one step, so nothing can commit in between. Use it when the fact the tool
+   * emits depends on state. Pass `toolCallId` in the input and use it as the idempotency key, so a
+   * call re-invoked under `ToolRecovery: "reinvoke"` finds the first acceptance. Return facts, not
+   * commands: a command admitted from inside the run it affects is legal but confusing.
+   */
+  readonly decide: <Input, Result, Rejection>(
+    decider: EDADecider<string, Input, Result, Rejection>,
+    input: Input,
+  ) => Effect.Effect<
+    EDADeciderOutcome<Result, Rejection>,
+    EDASessionStoreError | SessionCommandAdmissionConflict | EDADeciderError
+  >;
+  /**
+   * Read the session's framework state and app reducer states, as `EDARuntime.snapshot` does.
+   * For a tool that only reads (to prefill a form, say). The state can be stale by the time the
+   * tool emits: when what the tool writes depends on it, use `decide` instead.
+   */
+  readonly snapshot: () => Effect.Effect<EDASessionSnapshot>;
   /**
    * Present when startup recovery re-invokes a call that had started before the runtime died
    * (its tool declares `ToolRecovery: "reinvoke"`). Facts the first attempt committed are in the

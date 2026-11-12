@@ -18,6 +18,7 @@ const publicEntries = {
   websocket: "src/websocket/index.ts",
   "websocket/events": "src/websocket/events.ts",
   "services/compaction": "src/services/compaction.ts",
+  "services/decider": "src/services/decider.ts",
   "services/model-call": "src/services/model-call.ts",
   "services/id-generator": "src/services/id-generator.ts",
   "services/keep-alive": "src/services/keep-alive.ts",

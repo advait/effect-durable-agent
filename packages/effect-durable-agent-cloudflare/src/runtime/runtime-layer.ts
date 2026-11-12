@@ -20,6 +20,7 @@ import { makeEDARuntimeLayer } from "effect-durable-agent/services/runtime-layer
 import type { SessionEventObserver } from "effect-durable-agent/services/session-event-observer";
 import type { SessionCommandAdmissionError } from "effect-durable-agent/services/session-state";
 import type { EDASink } from "effect-durable-agent/services/sink-registry";
+import type { EDADecider } from "effect-durable-agent/services/decider";
 import type {
   EDAModelToolkit,
   EDAToolRegistryShape,
@@ -42,6 +43,8 @@ export type EDASessionDurableObjectStorage = DurableObjectSessionStorage &
 export interface EDADurableObjectRuntimeLayerOptions {
   readonly appEvents?: EDAAppEvents;
   readonly config: EDARuntimeConfig;
+  /** Deciders this session runs; the `decide` RPC and `EDARuntime.decide` share the registry. */
+  readonly deciders?: ReadonlyArray<EDADecider>;
   /** Host-owned identity source, shared by every lifecycle service. Defaults to `IdGenerator.Live`. */
   readonly idGeneratorLayer?: Layer.Layer<IdGenerator>;
   readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
@@ -66,6 +69,7 @@ export interface EDADurableObjectRuntimeLayerOptions {
 export const makeEDADurableObjectRuntimeLayer = ({
   appEvents,
   config,
+  deciders,
   idGeneratorLayer,
   compactionExecutorLayer,
   compactionPolicyLayer,
@@ -88,6 +92,7 @@ export const makeEDADurableObjectRuntimeLayer = ({
   return makeEDARuntimeLayer({
     appEvents,
     config,
+    deciders,
     idGeneratorLayer,
     compactionExecutorLayer,
     compactionPolicyLayer,

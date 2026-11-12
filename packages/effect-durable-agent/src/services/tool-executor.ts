@@ -149,7 +149,15 @@ const makeLiveToolExecutor = Effect.gen(function* () {
                   queryEvents: (schema, options) => queryCommittedEvents(store, schema, options),
                   sessionId: session.sessionId,
                   makeEventId: ids.makeEventId,
-                  emitDurable: input.eventSink.appendDurable,
+                  emitDurable: input.eventSink.appendAppDurable,
+                  decide: input.eventSink.decide,
+                  snapshot: () =>
+                    input.eventSink.snapshotData().pipe(
+                      Effect.map((data) => ({
+                        state: data.reduced,
+                        reducerStates: data.reducerStates,
+                      })),
+                    ),
                   ...(input.resume === undefined ? {} : { recovery: input.resume }),
                 },
               )

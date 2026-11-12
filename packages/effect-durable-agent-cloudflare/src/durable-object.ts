@@ -9,6 +9,7 @@ import {
   SessionCommandInput,
   SessionGrantRunInput,
   SessionBatchInput,
+  SessionDecideInput,
   SessionBlockInput,
   SessionOutcomeInput,
   edaSessionRpc,
@@ -81,6 +82,7 @@ export const EDA_WEB_SOCKET_STREAM_PARAM = "stream";
 export type EDASessionCommandRpcInput = typeof SessionCommandInput.Encoded;
 export type EDASessionGrantRunRpcInput = typeof SessionGrantRunInput.Encoded;
 export type EDASessionSubmitBatchRpcInput = typeof SessionBatchInput.Encoded;
+export type EDASessionDecideRpcInput = typeof SessionDecideInput.Encoded;
 export type EDASessionScopedRpcInput = typeof SessionScopedInput.Encoded;
 export type EDASessionEventsRpcInput = EDASessionScopedRpcInput & { readonly afterSeq?: number };
 export type EDASessionBlockOnCommandRpcInput = typeof SessionBlockInput.Encoded;
@@ -100,6 +102,9 @@ export interface EDASessionRpcSurface {
   readonly submitBatch: (
     input: EDASessionSubmitBatchRpcInput,
   ) => Promise<typeof edaSessionRpc.submitBatch.output.Encoded>;
+  readonly decide: (
+    input: EDASessionDecideRpcInput,
+  ) => Promise<typeof edaSessionRpc.decide.output.Encoded>;
   readonly submitAndBlock: (
     input: EDASessionCommandRpcInput,
   ) => Promise<typeof edaSessionRpc.submitAndBlock.output.Encoded>;
@@ -377,6 +382,20 @@ export abstract class EDASessionDurableObject<
       trace: decodeTraceMetadata(input.trace),
     });
     return committed.map(encodeEdaRpcCommittedDurableEvent);
+  }
+
+  /** Trusted RPC, like `submitBatch`: run a registered decider. The calling Worker authorizes. */
+  async decide(
+    raw: typeof SessionDecideInput.Encoded,
+  ): Promise<typeof edaSessionRpc.decide.output.Encoded> {
+    const input = Schema.decodeUnknownSync(SessionDecideInput)(raw);
+    const outcome = await this.#controller.decide({
+      decider: input.decider,
+      input: input.input,
+      sessionId: this.parseSessionId(input.sessionId),
+      trace: decodeTraceMetadata(input.trace),
+    });
+    return Schema.encodeSync(edaSessionRpc.decide.output)(outcome);
   }
 
   async submitAndBlock(

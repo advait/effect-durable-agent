@@ -75,6 +75,10 @@
       "types": "./dist/services/keep-alive.d.ts",
       "import": "./dist/services/keep-alive.js"
     },
+    "./services/decider": {
+      "types": "./dist/services/decider.d.ts",
+      "import": "./dist/services/decider.js"
+    },
     "./services/compaction": {
       "types": "./dist/services/compaction.d.ts",
       "import": "./dist/services/compaction.js"

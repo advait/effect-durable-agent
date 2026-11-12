@@ -551,6 +551,24 @@ const oneTurnConsumesSeveralSubmitted = () => {
   return log.runCompleted(1, [1]);
 };
 
+/** A decider's batch: its marker, an app fact and the admitted message, then a reply. */
+const deciderBatch = () => {
+  const log = new TestLog().configure();
+  log.deciderAccepted({ decider: "docs.chat.PostMessage", key: "msg-1", result: { route: "ai" } });
+  log.appendForeign("docs.chat", "MessageRouted", { route: "ai", idempotencyKey: "msg-1" });
+  log.submit({ command: 1, message: 1, text: "hello", idempotencyKey: "msg-1" });
+  log.startRun({ run: 1, commands: [1] });
+  log.assistantTurn({ run: 1, turn: 1, inference: 1, message: 101, text: "hi", inputs: [1] });
+  // A retry found the marker and committed nothing; a second decision commits its own marker.
+  log.deciderAccepted({
+    decider: "docs.chat.PostMessage",
+    key: "msg-2",
+    result: { route: "human" },
+  });
+  log.appendForeign("docs.chat", "MessageRouted", { route: "human", idempotencyKey: "msg-2" });
+  return log.runCompleted(1, [1]);
+};
+
 const scenario = (name: string, compacted: boolean, build: () => TestLog): TranscriptScenario => ({
   name,
   compacted,
@@ -574,4 +592,5 @@ export const transcriptScenarios = (): ReadonlyArray<TranscriptScenario> => [
   scenario("failed-interrupt-repeated-compaction-completion", true, failuresAndRepeatedCompletion),
   scenario("one-turn-consumes-several", false, oneTurnConsumesSeveral),
   scenario("one-turn-consumes-several-submitted", false, oneTurnConsumesSeveralSubmitted),
+  scenario("decider-marker", false, deciderBatch),
 ];

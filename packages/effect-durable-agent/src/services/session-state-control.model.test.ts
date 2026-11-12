@@ -1,18 +1,32 @@
 import * as fc from "fast-check";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as Prompt from "effect/ai/Prompt";
 import * as Response from "effect/ai/Response";
 import { describe, expect, it } from "vite-plus/test";
 
+import * as Schema from "effect/Schema";
+
 import { classifyRecoverableWork, reduceCommittedEvents } from "../domain/reduced-state";
 import { durableMessageTranscript } from "../domain/message-transcript";
-import { StopTurnCommand, SubmitMessageCommand } from "../types/commands";
+import { CommandIdempotencyKey, StopTurnCommand, SubmitMessageCommand } from "../types/commands";
 import type { EDACommand } from "../types/commands";
-import { CommandId, SequenceNumber, SessionId } from "../types/core";
+import { CommandId, EventId, SequenceNumber, SessionId } from "../types/core";
+import {
+  DeciderAcceptedEvent,
+  DurableEventEnvelope,
+  EventDedupeKey,
+  UnixEpochMillis,
+  schemaV1,
+} from "../types/events";
+import { durableEventEnvelope } from "../types/events/durable";
+import { EDADecider, type EDADeciderOutcome } from "./decider";
+import { EDAReducer, getEDAReducerState } from "./reducer-registry";
+import { EDASink } from "./sink-registry";
 import { EDASessionStore } from "./session-store";
-import type { CommittedDurableEvent } from "./session-store";
+import type { CommittedDurableEvent, EDASessionStoreShape } from "./session-store";
 import { sequentialUuidV7 } from "./id-generator";
 import { EDASessionQuery } from "./session-query";
 import { SessionState } from "./session-state";
@@ -24,7 +38,14 @@ import { NoopParams, SESSION_ID, modelSelection, usage } from "./session-state-c
 const propertyRuns = 25;
 const maxActions = 12;
 
-type ModelAction = "submitQueue" | "submitSteer" | "submitInterrupt" | "stop" | "finish";
+type ModelAction =
+  | "submitQueue"
+  | "submitSteer"
+  | "submitInterrupt"
+  | "stop"
+  | "finish"
+  | "decide"
+  | "retryDecide";
 
 type CommandAdmission = {
   readonly commandId: string;
@@ -41,6 +62,8 @@ const actionArbitrary = fc
         "submitInterrupt",
         "stop",
         "finish",
+        "decide",
+        "retryDecide",
       ),
       { maxLength: maxActions - 1 },
     ),
@@ -48,6 +71,137 @@ const actionArbitrary = fc
   .map(([first, rest]) => [first, ...rest] as ReadonlyArray<ModelAction>);
 
 const commandId = (index: number) => CommandId.make(sequentialUuidV7(10_000 + index));
+
+/**
+ * App facts the decider reads and writes: `Fact` from the decider and from tools, `Echo` staged by
+ * a sink in reaction to each `Fact`. Both land concurrently with decisions and run lifecycles.
+ */
+const modelFields = { ...DurableEventEnvelope.fields, namespace: Schema.Literal("test.model") };
+const ModelFact = Schema.Struct({
+  ...modelFields,
+  type: Schema.Literal("Fact"),
+  payload: Schema.Struct({ count: Schema.Number, head: Schema.Number, origin: Schema.String }),
+});
+const ModelEcho = Schema.Struct({
+  ...modelFields,
+  type: Schema.Literal("Echo"),
+  payload: Schema.Struct({ of: Schema.String }),
+});
+const ModelEvents = Schema.Union([ModelFact, ModelEcho]);
+const factCounter = EDAReducer.forEvents(ModelEvents, {
+  name: "test.model.facts",
+  initial: 0,
+  stateSchema: Schema.Number,
+  reduce: (count) => count + 1,
+});
+
+/** Reads the head and the fact count; on an even count it also admits a steer. */
+const DecideInput = Schema.Struct({ key: Schema.String, text: Schema.String });
+type DecideInput = typeof DecideInput.Type;
+const modelDecider = EDADecider.define({
+  name: "test.model.Decide",
+  input: DecideInput,
+  events: ModelEvents,
+  result: Schema.Struct({ count: Schema.Number, head: Schema.Number }),
+  rejection: Schema.Never,
+  idempotencyKey: (input) => input.key,
+  decide: (view, input) => {
+    const count = getEDAReducerState(view.reducerStates, factCounter);
+    const fact = {
+      namespace: "test.model",
+      type: "Fact",
+      schemaVersion: schemaV1,
+      payload: { count, head: view.state.lastSeq, origin: input.key },
+    } as const;
+    return {
+      _tag: "Accept",
+      items:
+        count % 2 === 0
+          ? [
+              fact,
+              new SubmitMessageCommand({
+                idempotencyKey: CommandIdempotencyKey.make(`decide:${input.key}`),
+                disposition: "steer",
+                content: [Prompt.textPart({ text: input.text })],
+              }),
+            ]
+          : [fact],
+      result: { count, head: view.state.lastSeq },
+    };
+  },
+});
+
+/** Stages one `Echo` per `Fact`, keyed by the fact, as a sink should. */
+const echoSink = EDASink.make({
+  name: "test.model.echo",
+  state: "none",
+  durable: {
+    interests: ModelFact,
+    process: (batch, ctx) =>
+      Effect.forEach(batch.events, (entry) =>
+        Effect.gen(function* () {
+          yield* ctx.stageDurable(
+            ModelEcho.make({
+              namespace: "test.model",
+              type: "Echo",
+              schemaVersion: schemaV1,
+              durability: "durable",
+              eventId: yield* ctx.makeEventId(),
+              sessionId: SessionId.make(SESSION_ID),
+              createdAtMs: UnixEpochMillis.make(0),
+              dedupeKey: EventDedupeKey.make(entry.event.eventId),
+              payload: { of: entry.event.eventId },
+            }),
+          );
+        }),
+      ).pipe(Effect.asVoid),
+  },
+});
+
+/** A tool-emitted fact, through the path `ctx.emitDurable` takes. */
+const toolFact = (index: number) =>
+  ModelFact.make({
+    namespace: "test.model",
+    type: "Fact",
+    schemaVersion: schemaV1,
+    durability: "durable",
+    eventId: EventId.make(sequentialUuidV7(50_000 + index)),
+    sessionId: SessionId.make(SESSION_ID),
+    createdAtMs: UnixEpochMillis.make(0),
+    payload: { count: -1, head: -1, origin: `tool ${index}` },
+  });
+
+/** A store append the scenario holds open, inside the append gate, until it releases it. */
+interface HeldAppend {
+  readonly eventId: string;
+  readonly reached: Deferred.Deferred<void>;
+  readonly release: Deferred.Deferred<void>;
+}
+
+/** Holds the append that carries `held.current`'s event at the store, the boundary the test owns. */
+const holdingStore =
+  (held: { current: HeldAppend | undefined }) =>
+  (inner: EDASessionStoreShape): EDASessionStoreShape => ({
+    ...inner,
+    append: (batch) =>
+      Effect.gen(function* () {
+        const hold = held.current;
+        if (
+          hold !== undefined &&
+          batch.entries.some((entry) => entry.event.eventId === hold.eventId)
+        ) {
+          yield* Deferred.succeed(hold.reached, undefined);
+          yield* Deferred.await(hold.release);
+        }
+        return yield* inner.append(batch);
+      }),
+  });
+
+interface DecideRecord {
+  readonly key: string;
+  readonly input: DecideInput;
+  readonly outcome: EDADeciderOutcome<{ readonly count: number; readonly head: number }, never>;
+}
 
 const makeCommand = (action: Exclude<ModelAction, "finish">, index: number): EDACommand => {
   const id = commandId(index);
@@ -165,8 +319,39 @@ const interpretAction = (input: {
   readonly gates: ReadonlyArray<Deferred.Deferred<void>>;
   readonly startedStreams: ReadonlyArray<number>;
   readonly released: Set<number>;
+  readonly decisions: Array<DecideRecord>;
+  readonly held: { current: HeldAppend | undefined };
 }) =>
   Effect.gen(function* () {
+    if (input.action === "decide" || input.action === "retryDecide") {
+      const earlier = input.decisions.at(input.actionIndex % Math.max(1, input.decisions.length));
+      const key =
+        input.action === "retryDecide" && earlier !== undefined
+          ? earlier.key
+          : `key-${input.actionIndex}`;
+      const decideInput = { key, text: `decide ${input.actionIndex}` };
+      // A tool's fact is mid-append, inside the gate, when the decision starts. The decision must
+      // read the state that append commits, never the state from before it.
+      const fact = toolFact(input.actionIndex);
+      const hold: HeldAppend = {
+        eventId: fact.eventId,
+        reached: yield* Deferred.make<void>(),
+        release: yield* Deferred.make<void>(),
+      };
+      input.held.current = hold;
+      const emitting = yield* Effect.forkChild(input.dispatcher.appendAppDurable(fact));
+      yield* Deferred.await(hold.reached);
+      const deciding = yield* Effect.forkChild(input.dispatcher.decide(modelDecider, decideInput));
+      // Let the decision run until it waits on the gate the held append owns.
+      for (let step = 0; step < 10; step += 1) yield* Effect.yieldNow;
+      yield* Deferred.succeed(hold.release, undefined);
+      yield* Fiber.join(emitting);
+      const outcome = yield* Fiber.join(deciding);
+      input.held.current = undefined;
+      input.decisions.push({ key, input: decideInput, outcome });
+      yield* settleAfterAction(input.dispatcher);
+      return;
+    }
     if (input.action === "finish") {
       yield* releaseStartedStreams(input.gates, input.startedStreams, input.released);
       yield* settleAfterAction(input.dispatcher);
@@ -192,7 +377,9 @@ const runScenario = (actions: ReadonlyArray<ModelAction>) =>
     const startedStreams: Array<number> = [];
     const released = new Set<number>();
     const admissions: Array<CommandAdmission> = [];
+    const decisions: Array<DecideRecord> = [];
     const commandCounter = { value: 0 };
+    const held: { current: HeldAppend | undefined } = { current: undefined };
     const streams = gates.map((gate, index) => modelStream(index, gate));
 
     return yield* Effect.scoped(
@@ -211,14 +398,17 @@ const runScenario = (actions: ReadonlyArray<ModelAction>) =>
             gates,
             startedStreams,
             released,
+            decisions,
+            held,
           });
         }
 
         yield* finalFlush(dispatcher, gates, startedStreams, released);
-        const committed = yield* collectCommitted(store);
+        // The echo sink may still append, so read the snapshots before the log.
         const snapshot = yield* dispatcher.snapshot();
         const messages = durableMessageTranscript((yield* query.snapshot()).state);
-        return { admissions, committed, messages, snapshot };
+        const committed = yield* collectCommitted(store);
+        return { admissions, committed, decisions, messages, snapshot };
       }).pipe(
         Effect.provide(
           makeEdaTestLayer({
@@ -226,6 +416,11 @@ const runScenario = (actions: ReadonlyArray<ModelAction>) =>
             parts: streams,
             toolSchemas: new Map([["noop", NoopParams]]),
             onStreamText: ({ index }) => startedStreams.push(index),
+            appEvents: ModelEvents,
+            reducers: [factCounter],
+            deciders: [modelDecider],
+            sinks: [echoSink],
+            wrapStore: holdingStore(held),
           }),
         ),
       ),
@@ -241,13 +436,83 @@ describe("SessionState control loop model", () => {
         assertLifecycleTerminals(result.committed);
         assertQueuedCommandSerialization(result.committed);
         assertFinalReducedState(result.committed);
-        expect(result.snapshot).toEqual(reduceCommittedEvents(result.committed));
+        assertDecisionsReplay(result.committed, result.decisions);
+        const throughSnapshot = result.committed.filter(
+          (entry) => entry.position.seq <= result.snapshot.lastSeq,
+        );
+        expect(result.snapshot).toEqual(reduceCommittedEvents(throughSnapshot));
         expect(result.messages).toEqual(durableMessageTranscript(result.snapshot));
       }),
       { numRuns: propertyRuns },
     );
   });
 });
+
+/**
+ * The atomicity claim as a property. For every marker at seq s, deciding again on the fold of the
+ * log through s - 1, with the recorded input and the marker's clock, yields exactly the events
+ * that follow the marker. One marker per key, and every replay returned the first result.
+ */
+const assertDecisionsReplay = (
+  committed: ReadonlyArray<CommittedDurableEvent>,
+  decisions: ReadonlyArray<DecideRecord>,
+) => {
+  const markerEntries = committed.filter((entry) => entry.event.type === "DeciderAccepted");
+  const keys = markerEntries.map(
+    (entry) => Schema.decodeUnknownSync(DeciderAcceptedEvent)(entry.event).payload.idempotencyKey,
+  );
+  expect(new Set(keys).size).toBe(keys.length);
+  for (const marker of markerEntries) {
+    const envelope = Schema.decodeUnknownSync(DeciderAcceptedEvent)(marker.event);
+    const accepted = decisions.find(
+      (decision) =>
+        decision.key === envelope.payload.idempotencyKey &&
+        decision.outcome._tag === "Accepted" &&
+        !decision.outcome.replayed,
+    );
+    if (accepted === undefined)
+      throw new Error(`no accepted call for ${envelope.payload.idempotencyKey}`);
+    const index = committed.indexOf(marker);
+    const prefix = committed.slice(0, index);
+    const view = {
+      sessionId: SessionId.make(SESSION_ID),
+      nowMs: envelope.createdAtMs,
+      state: reduceCommittedEvents(prefix),
+      reducerStates: new Map([
+        [factCounter.name, prefix.reduce(factCounter.reduce, factCounter.initial)],
+      ]),
+    };
+    const decision = modelDecider.decide(view, accepted.input);
+    if (decision._tag !== "Accept") throw new Error("model decider never rejects");
+    expect(envelope.payload.result).toEqual(decision.result);
+    let next = index + 1;
+    for (const item of decision.items) {
+      if ("_tag" in item) {
+        const admitted = committed[next];
+        expect(admitted?.event.type).toBe("CommandAdmitted");
+        expect(JSON.stringify(admitted?.event.payload)).toContain(
+          `"idempotencyKey":"decide:${envelope.payload.idempotencyKey}"`,
+        );
+        expect(committed[next + 1]?.event.type).toBe("UserMessageSubmitted");
+        next += 2;
+        continue;
+      }
+      const written = committed[next];
+      expect(written === undefined ? undefined : durableEventEnvelope(written.event)).toMatchObject(
+        { ...item, createdAtMs: envelope.createdAtMs },
+      );
+      next += 1;
+    }
+  }
+  for (const decision of decisions) {
+    if (decision.outcome._tag !== "Accepted" || !decision.outcome.replayed) continue;
+    const first = decisions.find(
+      (other) =>
+        other.key === decision.key && other.outcome._tag === "Accepted" && !other.outcome.replayed,
+    );
+    expect(first?.outcome).toEqual({ ...decision.outcome, replayed: false });
+  }
+};
 
 const assertDurableSequences = (committed: ReadonlyArray<CommittedDurableEvent>) => {
   committed.forEach((entry, index) => {

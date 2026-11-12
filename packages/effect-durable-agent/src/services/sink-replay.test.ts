@@ -554,7 +554,12 @@ describe("paged sink startup replay", () => {
                   Effect.gen(function* () {
                     if (!appended) {
                       appended = true;
-                      yield* ctx.stageDurable(event(133));
+                      yield* ctx.stageDurable({
+                        ...event(133),
+                        namespace: EventNamespace.make("test.sink"),
+                        type: EventType.make("Written"),
+                        payload: {},
+                      });
                     }
                   }),
               },

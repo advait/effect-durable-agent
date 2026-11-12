@@ -1,5 +1,14 @@
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import type * as Tracer from "effect/Tracer";
+
+import {
+  EDADeciderError,
+  encodeDeciderJson,
+  makeEDADeciderRegistry,
+  type EDADecider,
+} from "effect-durable-agent/services/decider";
 
 import type {
   CommittedCommandTerminalEvent,
@@ -55,6 +64,25 @@ export interface EDASessionSubmitBatchInput {
   readonly trace?: EDATraceMetadata;
 }
 
+export interface EDASessionDecideInput {
+  /** A registered decider's name. */
+  readonly decider: string;
+  /** The decider's input, encoded with its `input` schema. */
+  readonly input: unknown;
+  readonly sessionId: SessionId;
+  readonly trace?: EDATraceMetadata;
+}
+
+/** A decider outcome with its result or rejection encoded by the decider's schemas. */
+export type EDASessionDecideResult =
+  | {
+      readonly _tag: "Accepted";
+      readonly result: Schema.Json;
+      readonly acceptedSeq: SequenceNumber;
+      readonly replayed: boolean;
+    }
+  | { readonly _tag: "Rejected"; readonly rejection: Schema.Json };
+
 export interface EDASessionBlockOnCommandInput {
   readonly afterSeq?: SequenceNumber;
   readonly commandId: CommandId;
@@ -90,8 +118,11 @@ export interface EDAPreparedEventWebSocket<ProjectionState extends object = neve
 export class EDASessionController<ProjectionState extends object = never> {
   private readonly runtime: EDASessionRuntime;
   private readonly webSockets: EDAWebSocketConnectionManager<ProjectionState>;
+  private readonly deciders: ReadonlyMap<string, EDADecider>;
 
   constructor(options: EDASessionControllerOptions<ProjectionState>) {
+    // The runtime builds the same registry; building it here fails the host at construction.
+    this.deciders = makeEDADeciderRegistry(options.deciders ?? [], options.appEvents);
     this.webSockets = new EDAWebSocketConnectionManager({
       getWebSockets: options.getWebSockets,
       isSessionReady: (sessionId) => this.runtime.isReady(sessionId),
@@ -166,6 +197,56 @@ export class EDASessionController<ProjectionState extends object = never> {
           hostSpanOptions(trace, {
             "eda.session.id": input.sessionId,
             "eda.command.submittable_count": input.items.length,
+          }),
+        ),
+      ),
+    );
+  }
+
+  /**
+   * Trusted ingress, like `submitBatch`: run a registered decider by name. Decodes `input` with
+   * the decider's `input` schema and encodes the outcome with its `result` or `rejection` schema.
+   */
+  decide(input: EDASessionDecideInput): Promise<EDASessionDecideResult> {
+    const trace = input.trace ?? makeRootEDATraceMetadata();
+    const decider = this.deciders.get(input.decider);
+    return this.run(input.sessionId, (eda) =>
+      Effect.gen(function* () {
+        if (decider === undefined) {
+          return yield* new EDADeciderError({
+            decider: input.decider,
+            reason: "unknown_decider",
+            message: `EDA decider ${input.decider} is not registered`,
+          });
+        }
+        const decoded = yield* Schema.decodeUnknownEffect(decider.input)(input.input).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EDADeciderError({
+                decider: decider.name,
+                reason: "invalid_input",
+                message: `input does not decode: ${cause.message}`,
+              }),
+          ),
+        );
+        const outcome = yield* eda.decide(decider, decoded);
+        return outcome._tag === "Accepted"
+          ? {
+              _tag: "Accepted" as const,
+              result: yield* encodeJson(decider, decider.result, outcome.result),
+              acceptedSeq: outcome.acceptedSeq,
+              replayed: outcome.replayed,
+            }
+          : {
+              _tag: "Rejected" as const,
+              rejection: yield* encodeJson(decider, decider.rejection, outcome.rejection),
+            };
+      }).pipe(
+        Effect.withSpan(
+          "agent.decide",
+          hostSpanOptions(trace, {
+            "eda.session.id": input.sessionId,
+            "eda.decider.name": input.decider,
           }),
         ),
       ),
@@ -333,6 +414,27 @@ export class EDASessionController<ProjectionState extends object = never> {
     return await this.runtime.run(sessionId, operation);
   }
 }
+
+/**
+ * Encode a decider value for the wire with the policy the marker's stored result uses, so a
+ * committed result always encodes; a rejection its own schema cannot encode is `invalid_output`.
+ */
+const encodeJson = <A>(
+  decider: EDADecider,
+  schema: Schema.Codec<A, unknown, never, never>,
+  value: A,
+): Effect.Effect<Schema.Json, EDADeciderError> => {
+  const encoded = encodeDeciderJson(schema, value);
+  return Result.isSuccess(encoded)
+    ? Effect.succeed(encoded.success)
+    : Effect.fail(
+        new EDADeciderError({
+          decider: decider.name,
+          reason: "invalid_output",
+          message: `outcome ${encoded.failure}`,
+        }),
+      );
+};
 
 const hostSpanOptions = (
   trace: EDATraceMetadata,

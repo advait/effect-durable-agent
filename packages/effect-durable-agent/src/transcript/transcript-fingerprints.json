@@ -60,6 +60,10 @@
     "one-turn-consumes-several-submitted": {
       "transcript": "96d588a9771524c6d0467c5e186f1f48ee7a9ffeb50cf432ee3ad770d44cd9c8",
       "prompt": "1a448db488567d1c2c507a98401812915b1d45d873b9b50c4d813656b2efa644"
+    },
+    "decider-marker": {
+      "transcript": "82625c087bacca97c0d67886d277ca88f9f79c8ba59b2e2bfe91524d863e9c81",
+      "prompt": "3ce8e2b12b779b4fd9ffab31d483f0fa7df99df06675b9712ac2aae8a3060a61"
     }
   }
 }

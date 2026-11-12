@@ -54,6 +54,7 @@ import {
   runSchedulingRequestedEventType,
   runStartedEventType,
   sessionConfiguredEventType,
+  deciderAcceptedEventType,
   steeringMessageCancelledEventType,
   steeringMessageQueuedEventType,
   stopTurnAppliedEventType,
@@ -719,6 +720,7 @@ const interpretEvent = (
       return;
     }
     case systemMessageCommittedEventType:
+    case deciderAcceptedEventType:
     case runSchedulingRequestedEventType:
     case runSchedulingDeliveredEventType:
     case runSchedulingInvalidatedEventType:

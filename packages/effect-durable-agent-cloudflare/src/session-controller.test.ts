@@ -25,6 +25,7 @@ import {
   SequenceNumber,
   SessionId,
 } from "effect-durable-agent/types/core";
+import { EDADecider } from "effect-durable-agent/services/decider";
 import { EDASessionController, type EDASessionDurableObjectStorage } from "./session-controller";
 import {
   makeEDADurableObjectOpenAiModelLayer,
@@ -48,12 +49,16 @@ import { EDAReducer } from "effect-durable-agent/services/reducer-registry";
 import type { DurableObjectSqlCursor } from "./durable-object-storage";
 import { makeLanguageModelLayer, type TestModelParts } from "effect-durable-agent/testkit/layers";
 import {
+  AssistantMessageImportedEvent,
   DurableEventEnvelope,
   EventNamespace,
   EventType,
   UnixEpochMillis,
+  assistantMessageImportedEventType,
+  effectDurableAgentNamespace,
   schemaV1,
 } from "effect-durable-agent/types/events";
+import { SqliteDurableObjectStorage } from "./testing/sqlite-durable-object-storage";
 import { makeRootEDATraceMetadata } from "effect-durable-agent/types/tracing";
 
 const SESSION_ID = "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a";
@@ -1698,3 +1703,155 @@ const cursor = <Row>(items: Array<Row>): DurableObjectSqlCursor<Row> => ({
 
 const nextSeq = (rows: ReadonlyArray<FakeEventRow>): number =>
   rows.reduce((max, row) => Math.max(max, row.seq), 0) + 1;
+
+// Reviewer repros (gpt-6-astra, FR-1 review round 2, review-rpc.ts and review-framework.ts): the
+// store keeps the JSON form of a result or event, so the decide RPC must check and return that form.
+describe("EDASessionController decide over SQLite", () => {
+  const ProbeEvent = Schema.Struct({
+    ...DurableEventEnvelope.fields,
+    namespace: Schema.Literal("test.rpc"),
+    type: Schema.Literal("Fact"),
+    payload: Schema.Struct({}),
+  });
+  const decideInput = (decider: string) => ({
+    sessionId: SessionId.make(SESSION_ID),
+    decider,
+    input: { key: "k" },
+  });
+  const withController = async <A>(
+    deciders: ReadonlyArray<EDADecider>,
+    use: (controller: EDASessionController, storage: SqliteDurableObjectStorage) => Promise<A>,
+  ): Promise<A> => {
+    const storage = new SqliteDurableObjectStorage();
+    await Effect.runPromise(EDASessionController.migrate(storage));
+    const controller = new EDASessionController({
+      storage,
+      config: { modelSelection: { provider: "test", modelId: "test-model" } },
+      appEvents: ProbeEvent,
+      deciders,
+      modelResolverLayer: ModelResolver.Fixed.pipe(
+        Layer.provide(makeLanguageModelLayer({ parts: Stream.empty })),
+      ),
+    });
+    try {
+      return await use(controller, storage);
+    } finally {
+      await controller.dispose();
+      storage.db.close();
+    }
+  };
+  const loggedTypes = (storage: SqliteDurableObjectStorage) =>
+    storage
+      .rows<{ readonly type: string }>("SELECT type FROM _eda_event_log ORDER BY seq")
+      .map((row) => row.type);
+  const noteDecider = (name: string, note: Schema.Codec<string | undefined, unknown>) =>
+    EDADecider.define({
+      name,
+      input: Schema.Struct({ key: Schema.String }),
+      events: ProbeEvent,
+      result: Schema.Struct({ note }),
+      rejection: Schema.Never,
+      idempotencyKey: (input) => input.key,
+      decide: () => ({
+        _tag: "Accept",
+        items: [{ namespace: "test.rpc", type: "Fact", schemaVersion: schemaV1, payload: {} }],
+        result: { note: undefined },
+      }),
+    });
+
+  it("returns the stored result on the first call and every replay", async () => {
+    const optional = EDADecider.define({
+      name: "test.Optional",
+      input: Schema.Struct({ key: Schema.String }),
+      events: ProbeEvent,
+      result: Schema.Struct({ note: Schema.optional(Schema.String) }),
+      rejection: Schema.Never,
+      idempotencyKey: (input) => input.key,
+      decide: () => ({
+        _tag: "Accept",
+        items: [{ namespace: "test.rpc", type: "Fact", schemaVersion: schemaV1, payload: {} }],
+        result: { note: undefined },
+      }),
+    });
+    const result = await withController([optional], async (controller, storage) => {
+      const first = await controller.decide(decideInput(optional.name));
+      const retry = await controller.decide(decideInput(optional.name));
+      return { first, retry, logged: loggedTypes(storage) };
+    });
+    expect(result.first).toStrictEqual({
+      _tag: "Accepted",
+      result: {},
+      acceptedSeq: 1,
+      replayed: false,
+    });
+    expect(result.retry).toStrictEqual({ ...result.first, replayed: true });
+    expect(result.logged).toEqual(["DeciderAccepted", "Fact"]);
+  });
+
+  it("refuses a result its schema cannot read back from the store, committing nothing", async () => {
+    const required = noteDecider("test.RequiredUndefined", Schema.UndefinedOr(Schema.String));
+    const result = await withController([required], async (controller, storage) => ({
+      first: await controller.decide(decideInput(required.name)).catch((error: unknown) => error),
+      retry: await controller.decide(decideInput(required.name)).catch((error: unknown) => error),
+      logged: loggedTypes(storage),
+    }));
+    expect(result.first).toMatchObject({ _tag: "EDADeciderError", reason: "invalid_output" });
+    expect(result.retry).toMatchObject({ _tag: "EDADeciderError", reason: "invalid_output" });
+    expect(result.logged).toEqual([]);
+  });
+
+  it("refuses an imported tool result whose JSON loses its result, and stays usable", async () => {
+    const id = (n: number) => `018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b${String(n).padStart(2, "0")}`;
+    // As the reviewer built it: the canonical schema decodes the in-memory event.
+    const imported = Schema.decodeUnknownSync(AssistantMessageImportedEvent)(
+      DurableEventEnvelope.make({
+        namespace: effectDurableAgentNamespace,
+        type: assistantMessageImportedEventType,
+        schemaVersion: schemaV1,
+        durability: "durable",
+        eventId: EventId.make(id(1)),
+        sessionId: SessionId.make(SESSION_ID),
+        createdAtMs: UnixEpochMillis.make(1_715_000_000_000),
+        payload: {
+          messageId: id(2),
+          runId: id(3),
+          turnId: id(4),
+          inferenceId: id(5),
+          promptParts: [
+            Prompt.toolResultPart({ id: "t1", name: "noop", isFailure: false, result: undefined }),
+          ],
+        },
+      }),
+    );
+    const importer = EDADecider.define({
+      name: "test.Import",
+      input: Schema.Struct({ key: Schema.String }),
+      events: AssistantMessageImportedEvent,
+      result: Schema.Null,
+      rejection: Schema.Never,
+      idempotencyKey: (input) => input.key,
+      decide: () => ({ _tag: "Accept", items: [imported], result: null }),
+    });
+    const fact = DurableEventEnvelope.make({
+      namespace: "test.rpc",
+      type: "Fact",
+      schemaVersion: schemaV1,
+      durability: "durable",
+      eventId: EventId.make(id(6)),
+      sessionId: SessionId.make(SESSION_ID),
+      createdAtMs: UnixEpochMillis.make(1_715_000_000_000),
+      payload: {},
+    });
+    const result = await withController([importer], async (controller, storage) => ({
+      decided: await controller.decide(decideInput(importer.name)).catch((error: unknown) => error),
+      submitted: await controller
+        .submitBatch({ sessionId: SessionId.make(SESSION_ID), items: [fact] })
+        .then(() => "committed")
+        .catch((error: unknown) => error),
+      logged: loggedTypes(storage),
+    }));
+    expect(result.decided).toMatchObject({ _tag: "EDADeciderError", reason: "invalid_output" });
+    expect(result.submitted).toBe("committed");
+    expect(result.logged).toEqual(["Fact"]);
+  });
+});

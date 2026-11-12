@@ -15,7 +15,8 @@ import {
 } from "effect-durable-agent/services/compaction";
 import { makeEDAToolkit } from "effect-durable-agent/services/tool-registry";
 import { CommandIdempotencyKey, SubmitMessageCommand } from "effect-durable-agent/types/commands";
-import { EventId, SessionId } from "effect-durable-agent/types/core";
+import { CommandId, EventId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
+import { EDADecider } from "effect-durable-agent/services/decider";
 import {
   DurableEventEnvelope,
   EventDedupeKey,
@@ -30,6 +31,8 @@ import type {
   EDASessionDurableObjectOptions,
 } from "../../packages/effect-durable-agent-cloudflare/dist/index.js";
 import {
+  decodeDecideOutcome,
+  encodeDecideInput,
   encodeEdaRpcCommand,
   encodeEdaRpcSubmittables,
 } from "../../packages/effect-durable-agent-cloudflare/dist/index.js";
@@ -112,6 +115,52 @@ const conformanceModel = ({ prompt }: { readonly prompt: Prompt.RawInput }) => {
     : finishedStream("pong");
 };
 
+const conformanceFields = {
+  ...DurableEventEnvelope.fields,
+  namespace: Schema.Literal("conformance"),
+};
+/** The conformance app events: keyed facts and the routing fact the decider writes. */
+const ConformanceEvents = Schema.Union([
+  Schema.Struct({
+    ...conformanceFields,
+    type: Schema.Literal("FactObserved"),
+    payload: Schema.Struct({ eventId: Schema.String }),
+  }),
+  Schema.Struct({
+    ...conformanceFields,
+    type: Schema.Literal("MessageRouted"),
+    payload: Schema.Struct({ text: Schema.String }),
+  }),
+]);
+
+/** Routes a message to the model: one fact and a queued message with the caller's command id. */
+const routeDecider = EDADecider.define({
+  name: "conformance.Route",
+  input: Schema.Struct({ key: Schema.String, text: Schema.String, commandId: Schema.String }),
+  events: ConformanceEvents,
+  result: Schema.Struct({ headBefore: Schema.Number }),
+  rejection: Schema.Never,
+  idempotencyKey: (input) => input.key,
+  decide: (view, input) => ({
+    _tag: "Accept",
+    items: [
+      {
+        namespace: "conformance",
+        type: "MessageRouted",
+        schemaVersion: schemaV1,
+        payload: { text: input.text },
+      },
+      new SubmitMessageCommand({
+        commandId: CommandId.make(input.commandId),
+        idempotencyKey: CommandIdempotencyKey.make(`route:${input.key}`),
+        disposition: "queue",
+        content: [Prompt.textPart({ text: input.text })],
+      }),
+    ],
+    result: { headBefore: view.state.lastSeq },
+  }),
+});
+
 /** A session that asks to compact compacts after its turn; every other session never does. */
 const compactsOnRequest = (state: CompactionPolicyInput["state"]): boolean =>
   Array.from(state.messages.values()).some(
@@ -135,6 +184,8 @@ const everyTurnPolicy = Effect.runSync(
 /** Deterministic model and runtime configuration shared by both real-host fixtures. */
 export const conformanceHostOptions = (): EDASessionDurableObjectOptions => ({
   config: { modelSelection: { provider: "conformance", modelId: "fixed-pong" } },
+  appEvents: ConformanceEvents,
+  deciders: [routeDecider],
   transcript: {
     adoptIncarnationKey: conformanceIncarnationKey,
     // A rollout ring: every session except the one this launch disables.
@@ -191,7 +242,7 @@ export const conformanceWorker = {
     }
 
     const match =
-      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|transcript-body|transcript-summary|runtime-builds|arm-unrecorded-alarm|kv-incarnation|transcript-upgrade|facts)\/?$/.exec(
+      /^\/sessions\/([^/]+)\/(messages|snapshot|events|destroy|transcript|transcript-status|transcript-body|transcript-summary|runtime-builds|arm-unrecorded-alarm|kv-incarnation|transcript-upgrade|facts|decide)\/?$/.exec(
         url.pathname,
       );
     if (match === null) {
@@ -296,6 +347,23 @@ export const conformanceWorker = {
     const body: unknown = await request.json();
     if (typeof body !== "object" || body === null) {
       return json({ error: "Expected an object body" }, 400);
+    }
+
+    if (operation === "decide") {
+      // One routing decision; then wait for the routed message's run and report the head.
+      const input = Schema.decodeUnknownSync(
+        Schema.Struct({ key: Schema.String, text: Schema.String, commandId: Schema.String }),
+      )(body);
+      const raw = await session.decide({ ...scoped, ...encodeDecideInput(routeDecider, input) });
+      const outcome = await Effect.runPromise(decodeDecideOutcome(routeDecider, raw));
+      if (outcome._tag === "Accepted") {
+        await session.blockOnCommand({
+          ...scoped,
+          commandId: input.commandId,
+          afterSeq: SequenceNumber.make(outcome.acceptedSeq),
+        });
+      }
+      return json({ outcome, snapshot: snapshotSummary(await session.snapshot(scoped)) });
     }
 
     if (operation === "facts") {

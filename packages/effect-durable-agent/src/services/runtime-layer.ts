@@ -25,6 +25,8 @@ import {
   EDASessionStoreError,
 } from "./session-store";
 import { SessionState, type SessionCommandAdmissionError } from "./session-state";
+import { RegisteredAppEvents } from "./session-admission";
+import { EDADeciderRegistry, makeEDADeciderRegistry, type EDADecider } from "./decider";
 import { SinkCheckpointStore } from "./sink-checkpoint-store";
 import { EDASinkRegistry, type EDASink } from "./sink-registry";
 import { ToolExecutor } from "./tool-executor";
@@ -41,6 +43,11 @@ export interface EDARuntimeLayerOptions {
   /** Complete application event union with literal namespaces, decoded once at the store boundary. */
   readonly appEvents?: EDAAppEvents;
   readonly config: EDARuntimeConfig;
+  /**
+   * Deciders this runtime runs, by name. Construction fails on a duplicate or reserved name, or
+   * when a decider emits an app namespace `appEvents` does not register.
+   */
+  readonly deciders?: ReadonlyArray<EDADecider>;
   /** Host-owned identity source, shared by every lifecycle service. Defaults to `IdGenerator.Live`. */
   readonly idGeneratorLayer?: Layer.Layer<IdGenerator>;
   readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
@@ -65,6 +72,7 @@ export interface EDARuntimeLayerOptions {
 export const makeEDARuntimeLayer = ({
   appEvents,
   config,
+  deciders,
   idGeneratorLayer,
   compactionExecutorLayer,
   compactionPolicyLayer,
@@ -92,6 +100,10 @@ export const makeEDARuntimeLayer = ({
             return registerAppEvents(yield* EDASessionStore, appEvents);
           }),
         ).pipe(Layer.provide(sessionStoreLayer));
+  const Admission = Layer.mergeAll(
+    Layer.succeed(RegisteredAppEvents, appEvents),
+    Layer.sync(EDADeciderRegistry, () => makeEDADeciderRegistry(deciders ?? [], appEvents)),
+  );
   const Models = modelResolverLayer;
   const EventObserver = sessionEventObserverLayer ?? SessionEventObserver.Noop;
   const Bus = LiveEventBus.Live.pipe(Layer.provide(EventObserver));
@@ -172,7 +184,8 @@ export const makeEDARuntimeLayer = ({
     Layer.provideMerge(Layer.mergeAll(StateWithRun, Query)),
   );
 
+  const Admitted = Runtime.pipe(Layer.provide(Admission));
   return tracer === undefined
-    ? Runtime
-    : Runtime.pipe(Layer.provideMerge(Layer.succeed(Tracer.Tracer, tracer)));
+    ? Admitted
+    : Admitted.pipe(Layer.provideMerge(Layer.succeed(Tracer.Tracer, tracer)));
 };

@@ -21,7 +21,7 @@ import {
   TranscriptWindowSelector,
 } from "effect-durable-agent/transcript";
 import { TranscriptStorageStatus } from "./durable-object-transcript";
-import { EDARpcSubmittable } from "./rpc-codec";
+import { EDARpcSubmittable, SessionDecideResult } from "./rpc-codec";
 
 /** Names the session isolation boundary and carries caller trace metadata. */
 export const SessionScopedInput = Schema.Struct({ sessionId: SessionId, trace: EDATraceMetadata });
@@ -39,6 +39,15 @@ export const SessionGrantRunInput = Schema.Struct({
 export const SessionBatchInput = Schema.Struct({
   ...SessionScopedInput.fields,
   items: Schema.Array(EDARpcSubmittable),
+});
+/**
+ * One call to a registered decider, by name. `input` is the decider's input encoded with its
+ * `input` schema (`encodeDecideInput`). Trusted ingress, like `submitBatch`: the host authorizes.
+ */
+export const SessionDecideInput = Schema.Struct({
+  ...SessionScopedInput.fields,
+  decider: Schema.NonEmptyString,
+  input: Schema.Unknown,
 });
 /** Waits for one command terminal after an optional durable replay position. */
 export const SessionBlockInput = Schema.Struct({
@@ -113,6 +122,7 @@ export const SessionTranscriptSummaryResult = Schema.Union([
 export const edaSessionRpc = {
   submit: { input: SessionCommandInput, output: CommittedDurableEvent },
   submitBatch: { input: SessionBatchInput, output: Schema.Array(CommittedDurableEvent) },
+  decide: { input: SessionDecideInput, output: SessionDecideResult },
   submitAndBlock: { input: SessionCommandInput, output: CommittedCommandTerminalEvent },
   blockOnCommand: { input: SessionBlockInput, output: CommittedCommandTerminalEvent },
   grantRun: { input: SessionGrantRunInput, output: RunGrantResult },

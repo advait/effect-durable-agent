@@ -83,9 +83,15 @@ export class TestLog {
     return this.envelopes;
   }
 
-  append(type: string, payload: Record<string, unknown>, namespace = effectDurableAgentNamespace) {
+  append(
+    type: string,
+    payload: Record<string, unknown>,
+    namespace = effectDurableAgentNamespace,
+    dedupeKey?: string,
+  ) {
     const slot = this.nextEvent++;
     const raw = {
+      ...(dedupeKey === undefined ? {} : { dedupeKey }),
       namespace,
       type,
       schemaVersion: 1,
@@ -112,6 +118,20 @@ export class TestLog {
 
   configure() {
     return this.append("SessionConfigured", { modelSelection: testModel });
+  }
+
+  /** A decider's acceptance marker, as `decide` commits it first in its batch. */
+  deciderAccepted(input: {
+    readonly decider: string;
+    readonly key: string;
+    readonly result: unknown;
+  }) {
+    return this.append(
+      "DeciderAccepted",
+      { decider: input.decider, idempotencyKey: input.key, result: input.result },
+      effectDurableAgentNamespace,
+      `${input.decider}\n${input.key}`,
+    );
   }
 
   /** Command admission plus the submitted message, as session ingress writes them. */
