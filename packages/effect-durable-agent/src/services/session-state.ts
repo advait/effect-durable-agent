@@ -67,7 +67,12 @@ import {
   NonNegativeInt,
   PositionedEvent,
   SystemPromptText,
-  maxAppEventBytes,
+  DeciderAcceptedEvent,
+  EventDedupeKey,
+  UnixEpochMillis,
+  deciderAcceptedEventType,
+  effectDurableAgentNamespace,
+  schemaV1,
   turnFailedEventType,
   type ToolCallFailedPayload,
   type TurnFailedEvent,
@@ -114,6 +119,7 @@ import { failurePayloadFromCause, makeStartedBoundaryGuard } from "./started-bou
 import {
   annotateEdaSpan,
   committedBatchAttributes,
+  currentOrRootEDAEventTrace,
   edaTraceContextFromSpan,
   eventBatchAttributes,
   makeEDARunTrace,
@@ -122,6 +128,24 @@ import {
 import type { EDARunTrace, EDATraceLink } from "../types/tracing";
 import { TurnRunner, type TurnRunResult } from "./turn-runner";
 import { maxToolCallAttempts } from "./tool-registry";
+import {
+  appEventConflict,
+  jsonBytes,
+  jsonNativeViolation,
+  makeAppEventAdmission,
+  RegisteredAppEvents,
+  SessionCommandAdmissionConflict,
+} from "./session-admission";
+import {
+  deciderIdempotencyKeyViolation,
+  deciderMarkerDedupeKey,
+  EDADeciderError,
+  EDADeciderRegistry,
+  maxDeciderResultBytes,
+  type EDADecider,
+  type EDADeciderOutcome,
+  type EDADeciderView,
+} from "./decider";
 import type { TurnRunnerError } from "./turn-runner";
 
 interface EphemeralAnchorState {
@@ -296,17 +320,13 @@ type ExecutionInspection =
 /** Error surface for session control-loop execution. */
 export type SessionStateError = EDASessionStoreError | TurnRunnerError;
 
-export class SessionCommandAdmissionConflict extends Schema.TaggedError<SessionCommandAdmissionConflict>()(
-  "SessionCommandAdmissionConflict",
-  {
-    code: Schema.Literals(["queue_paused", "paused_queue_changed", "event_too_large"]),
-    message: Schema.String,
-    pausedMessageIds: Schema.Array(MessageId),
-  },
-) {}
+export { SessionCommandAdmissionConflict };
 
 /** Error surface for durable command admission and batched submit. */
 export type SessionCommandAdmissionError = EDASessionStoreError | SessionCommandAdmissionConflict;
+
+/** Error surface for a decider call. */
+export type SessionDecideError = SessionCommandAdmissionError | EDADeciderError;
 
 /** Ordered item admitted through the public runtime submit batch. */
 export type EDASubmittable = EDACommand | DurableEventEnvelope;
@@ -423,6 +443,8 @@ const makeLiveSessionState = Effect.gen(function* () {
   const schedulingWakeup = yield* RunSchedulingWakeup;
   const reducerRegistry = yield* EDAReducerRegistry;
   const sinkRegistry = yield* EDASinkRegistry;
+  const appEventAdmission = makeAppEventAdmission(yield* RegisteredAppEvents);
+  const deciders = yield* EDADeciderRegistry;
   const { hydrated, hydratedReducerStates } = yield* Effect.gen(function* () {
     const hydrated = yield* hydrateFrameworkReducedState(store);
     const hydratedReducerStates = yield* hydrateAppReducerStates(store, reducerRegistry.reducers);
@@ -834,7 +856,9 @@ const makeLiveSessionState = Effect.gen(function* () {
       "eda.event.app_owned_count": input.length - commandCount,
     });
     for (const item of input) {
-      if (!isEDACommand(item)) yield* refuseOversizedEvent(item);
+      if (isEDACommand(item)) continue;
+      const refusal = appEventAdmission.refuse(item, { namespaceRule: true });
+      if (refusal !== undefined) return yield* appEventConflict(refusal);
     }
     const committed = yield* withAppendGate(
       Effect.gen(function* () {
@@ -862,6 +886,188 @@ const makeLiveSessionState = Effect.gen(function* () {
       return committed[0] as CommittedDurableEvent;
     });
 
+  /** A tool's app fact: the payload, size and registered-schema rules, then the framework path. */
+  const appendAppDurable = (event: DurableEventEnvelope) =>
+    Effect.gen(function* () {
+      const refusal = appEventAdmission.refuse(event, { namespaceRule: false });
+      if (refusal !== undefined) return yield* appEventConflict(refusal);
+      return yield* appendDurable(event);
+    });
+
+  /**
+   * Run a registered decider: read the committed fold and append its marker and items as one
+   * batch under the admission and append gates `submitBatch` takes, so nothing interleaves
+   * between the read and the write. A retry with the same key finds the marker and returns the
+   * stored result without deciding again. No decider error is a store error, so none is fatal.
+   */
+  const decide = <Input, Result, Rejection>(
+    decider: EDADecider<string, Input, Result, Rejection>,
+    input: Input,
+  ): Effect.Effect<EDADeciderOutcome<Result, Rejection>, SessionDecideError> =>
+    Effect.gen(function* () {
+      const fail = (reason: EDADeciderError["reason"], message: string) =>
+        new EDADeciderError({ decider: decider.name, reason, message });
+      if (deciders.get(decider.name) !== decider) {
+        return yield* fail("unknown_decider", `EDA decider ${decider.name} is not registered`);
+      }
+      const idempotencyKey = yield* Effect.try({
+        try: () => decider.idempotencyKey(input),
+        catch: (cause) => fail("invalid_input", `idempotencyKey threw: ${String(cause)}`),
+      });
+      const keyViolation = deciderIdempotencyKeyViolation(idempotencyKey);
+      if (keyViolation !== undefined) return yield* fail("invalid_input", keyViolation);
+      const markerKey = EventDedupeKey.make(deciderMarkerDedupeKey(decider.name, idempotencyKey));
+      yield* annotateEdaSpan({ "eda.decider.name": decider.name });
+
+      const decided = yield* admissionGate.withPermits(1)(
+        withAppendGate(
+          Effect.gen(function* () {
+            const accepted = yield* store.findEventByDedupeKey({
+              namespace: effectDurableAgentNamespace,
+              type: deciderAcceptedEventType,
+              dedupeKey: markerKey,
+            });
+            if (accepted !== undefined) {
+              const marker = durableEventEnvelope(accepted.event);
+              const stored = Schema.is(DeciderAcceptedEvent)(marker)
+                ? marker.payload.result
+                : undefined;
+              const result = yield* Schema.decodeUnknownEffect(decider.result)(stored).pipe(
+                Effect.mapError((cause) =>
+                  fail("invalid_output", `stored result does not decode: ${cause.message}`),
+                ),
+              );
+              return {
+                outcome: {
+                  _tag: "Accepted",
+                  result,
+                  acceptedSeq: accepted.position.seq,
+                  replayed: true,
+                } satisfies EDADeciderOutcome<Result, Rejection>,
+                wake: false,
+              };
+            }
+
+            const current = yield* Ref.get(state);
+            const nowMs = yield* Clock.currentTimeMillis;
+            const view: EDADeciderView = {
+              sessionId: sessionContext.sessionId,
+              nowMs,
+              state: current.reduced,
+              reducerStates: current.reducerStates,
+            };
+            const decision = yield* Effect.try({
+              try: () => decider.decide(view, input),
+              catch: (cause) => fail("decide_threw", `decide threw: ${String(cause)}`),
+            });
+            if (decision._tag === "Reject") {
+              return {
+                outcome: {
+                  _tag: "Rejected",
+                  rejection: decision.rejection,
+                } satisfies EDADeciderOutcome<Result, Rejection>,
+                wake: false,
+              };
+            }
+
+            const encodedResult = yield* Effect.try({
+              try: () => Schema.encodeUnknownSync(decider.result)(decision.result),
+              catch: (cause) => fail("invalid_output", `result does not encode: ${String(cause)}`),
+            });
+            const resultViolation = jsonNativeViolation(encodedResult);
+            if (resultViolation !== undefined) {
+              return yield* fail("invalid_output", `encoded result: ${resultViolation}`);
+            }
+            const resultBytes = jsonBytes(encodedResult);
+            if (resultBytes > maxDeciderResultBytes) {
+              return yield* fail(
+                "invalid_output",
+                `encoded result is ${resultBytes} bytes; the limit is ${maxDeciderResultBytes} bytes`,
+              );
+            }
+
+            const trace = yield* currentOrRootEDAEventTrace;
+            const createdAtMs = UnixEpochMillis.make(nowMs);
+            const preparedByIdempotencyKey = new Map<string, DurableEventEnvelope>();
+            const preparedByCommandId = new Map<string, DurableEventEnvelope>();
+            const items: Array<DurableEventEnvelope> = [];
+            let hasCommand = false;
+            for (const [index, item] of decision.items.entries()) {
+              if (isDecidedCommand(item)) {
+                hasCommand = true;
+                items.push(
+                  ...(yield* prepareCommandAdmission(
+                    item,
+                    preparedByIdempotencyKey,
+                    preparedByCommandId,
+                  )),
+                );
+                continue;
+              }
+              const eventId =
+                "eventId" in item && typeof item.eventId === "string"
+                  ? item.eventId
+                  : yield* ids.makeEventId();
+              const event = yield* Effect.try({
+                try: () =>
+                  Schema.decodeUnknownSync(DurableEventEnvelope)(
+                    decider.encodeEvent({
+                      ...item,
+                      eventId,
+                      sessionId: sessionContext.sessionId,
+                      createdAtMs,
+                      trace,
+                      durability: "durable",
+                    }),
+                  ),
+                catch: (cause) =>
+                  fail(
+                    "invalid_output",
+                    `item ${index} is not an event of the decider's events schema: ${String(cause)}`,
+                  ),
+              });
+              const refusal = appEventAdmission.refuse(event, { namespaceRule: true });
+              if (refusal !== undefined) {
+                return yield* fail("invalid_output", `item ${index}: ${refusal.message}`);
+              }
+              items.push(event);
+            }
+
+            const marker = DeciderAcceptedEvent.make({
+              namespace: effectDurableAgentNamespace,
+              type: deciderAcceptedEventType,
+              schemaVersion: schemaV1,
+              durability: "durable",
+              eventId: yield* ids.makeEventId(),
+              sessionId: sessionContext.sessionId,
+              createdAtMs,
+              trace,
+              dedupeKey: markerKey,
+              payload: { decider: decider.name, idempotencyKey, result: encodedResult },
+            });
+            const committed = yield* commitDurableEntriesWithinGate(
+              [marker, ...items].map((event) => ({ event })),
+            );
+            const acceptedSeq = committed[0]?.position.seq;
+            if (acceptedSeq === undefined) {
+              return yield* Effect.die(new Error("decider marker was not committed"));
+            }
+            return {
+              outcome: {
+                _tag: "Accepted",
+                result: decision.result,
+                acceptedSeq,
+                replayed: false,
+              } satisfies EDADeciderOutcome<Result, Rejection>,
+              wake: hasCommand,
+            };
+          }),
+        ),
+      );
+      if (decided.wake) yield* wakeAfterCommandAdmission();
+      return decided.outcome;
+    });
+
   const initialize = (input: SessionRunInput) => commitInitialSystemPrompt(input.systemPrompt);
 
   const sessionApi: SessionStateShape = {
@@ -869,10 +1075,12 @@ const makeLiveSessionState = Effect.gen(function* () {
     retryRunSchedulingDelivery: () => retryRunSchedulingDelivery(),
     initialize,
     submitBatch,
+    decide,
     admitCommand,
     snapshot,
     snapshotData,
     appendDurable,
+    appendAppDurable,
     appendDurableBatch,
     publishEphemeral,
     drainReadyWork: (input) => drainReadyWork(input),
@@ -2842,6 +3050,9 @@ const hydrateAppReducerStates = (
 
 const isEDACommand = (input: EDASubmittable): input is EDACommand => "_tag" in input;
 
+/** Decider items are commands (tagged classes) or untagged event drafts. */
+const isDecidedCommand = (item: EDACommand | object): item is EDACommand => "_tag" in item;
+
 const commandWithId = (command: EDACommand, commandId: CommandId): EDACommand => {
   switch (command._tag) {
     case "SubmitMessage":
@@ -2881,35 +3092,6 @@ const commandWithId = (command: EDACommand, commandId: CommandId): EDACommand =>
     default:
       throw assertNeverError(command, "EDA command");
   }
-};
-
-const payloadJsonEncoder = new TextEncoder();
-
-/** UTF-8 size of the payload's JSON; a payload JSON cannot encode is left to the store to refuse. */
-const serializedPayloadBytes = (payload: unknown): number => {
-  try {
-    const json = JSON.stringify(payload) as string | undefined;
-    return json === undefined ? 0 : payloadJsonEncoder.encode(json).byteLength;
-  } catch {
-    return 0;
-  }
-};
-
-/**
- * Refuse an app event whose serialized payload exceeds `maxAppEventBytes` before it reaches the
- * store, whose own row cap would fail as a store error and stop the runtime.
- */
-const refuseOversizedEvent = (event: DurableEventEnvelope) => {
-  const bytes = serializedPayloadBytes(event.payload);
-  return bytes <= maxAppEventBytes
-    ? Effect.void
-    : Effect.fail(
-        new SessionCommandAdmissionConflict({
-          code: "event_too_large",
-          message: `Event ${event.namespace}/${event.type} ${event.eventId} payload is ${bytes} bytes; the limit is ${maxAppEventBytes} bytes`,
-          pausedMessageIds: [],
-        }),
-      );
 };
 
 const rememberPreparedCommand = (

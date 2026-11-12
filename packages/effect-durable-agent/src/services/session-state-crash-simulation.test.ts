@@ -18,7 +18,9 @@ import {
   type ReducedState,
 } from "../domain/reduced-state";
 import { CommandId, SequenceNumber, SessionId } from "../types/core";
-import type { EDADurableEvent } from "../types/events";
+import { DurableEventEnvelope, schemaV1, type EDADurableEvent } from "../types/events";
+import { EDADecider } from "./decider";
+import { durableEventEnvelope } from "../types/events/durable";
 import {
   EDASessionStore,
   type CommittedDurableEvent,
@@ -377,6 +379,39 @@ describe("SessionState crash-point simulation", () => {
     });
   });
 
+  it("recovers a decision that admits a run from every durable prefix, and its retry converges", async () => {
+    // The empty prefix is the crash before the decision's append; every other prefix holds it.
+    const recovered = await Effect.runPromise(
+      recoverDecisionCheckpoint({ operation: "none", committed: [] }),
+    );
+    assertDecisionConverged(recovered.committed);
+    await runCrashPrefixSimulation({
+      name: "decision",
+      runGolden: async (wrapStore) => ({
+        committed: await Effect.runPromise(runDecisionSubmit({ wrapStore })),
+        context: undefined,
+      }),
+      recover: (checkpoint) => recoverDecisionCheckpoint(checkpoint),
+      assertGolden: ({ committed, checkpoints }) => {
+        expect(committed.slice(0, 4).map((entry) => entry.event.type)).toEqual([
+          "DeciderAccepted",
+          "Foreign",
+          "CommandAdmitted",
+          "UserMessageSubmitted",
+        ]);
+        const [first] = checkpoints;
+        if (first === undefined) throw new Error("no checkpoints");
+        expect(eventTypesAtCheckpoint(first)).toEqual([
+          "DeciderAccepted",
+          "Foreign",
+          "CommandAdmitted",
+          "UserMessageSubmitted",
+        ]);
+      },
+      assertCheckpoint: ({ recovered }) => assertDecisionConverged(recovered),
+    });
+  });
+
   it("recovers tool execution without rerunning completed or abandoned tool calls", async () => {
     await runCrashPrefixSimulation({
       name: "tool execution",
@@ -723,6 +758,112 @@ const runSubmitScenario = (input: {
       }),
     ),
   );
+
+const DecisionFact = Schema.Struct({
+  ...DurableEventEnvelope.fields,
+  namespace: Schema.Literal("test.decision"),
+  type: Schema.Literal("Routed"),
+  payload: Schema.Struct({ to: Schema.Literal("ai") }),
+});
+
+/** Routes the message to the AI: one fact and the `SubmitMessage` that starts the run. */
+const routeDecider = EDADecider.define({
+  name: "test.decision.Route",
+  input: Schema.Struct({ key: Schema.String }),
+  events: DecisionFact,
+  result: Schema.Struct({ to: Schema.Literal("ai") }),
+  rejection: Schema.Never,
+  idempotencyKey: (input) => input.key,
+  decide: () => ({
+    _tag: "Accept",
+    items: [
+      {
+        namespace: "test.decision",
+        type: "Routed",
+        schemaVersion: schemaV1,
+        payload: { to: "ai" },
+      },
+      command,
+    ],
+    result: { to: "ai" },
+  }),
+});
+
+const decisionIds = (offset: number) =>
+  Array.from({ length: 60 }, (_, index) => sequentialUuidV7(offset + index));
+
+const runDecisionSubmit = (input: {
+  readonly wrapStore?: (inner: EDASessionStoreShape) => EDASessionStoreShape;
+}) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const sessionState = yield* SessionState;
+      const durableStore = yield* EDASessionStore;
+      yield* sessionState.decide(routeDecider, { key: "route-1" });
+      yield* sessionState.drainReadyWork({ modelSelection });
+      yield* waitForDurableStore(
+        durableStore,
+        (entries) => countEventType(entries, "TurnCompleted") >= 1,
+      );
+      yield* sessionState.drainReadyWork({ modelSelection });
+      return yield* waitForDurableStore(
+        durableStore,
+        hasCommandCompleted(CommandId.make(COMMAND_ID)),
+      );
+    }),
+  ).pipe(
+    Effect.provide(
+      makeEdaTestLayer({
+        sessionId: SessionId.make(SESSION_ID),
+        ids: decisionIds(4_000),
+        parts: plainSubmitStream(),
+        appEvents: DecisionFact,
+        deciders: [routeDecider],
+        wrapStore: input.wrapStore,
+      }),
+    ),
+  );
+
+/** Restart over the prefix, then retry the decision with the same key until the session settles. */
+const recoverDecisionCheckpoint = (
+  checkpoint: DurableCheckpoint,
+): Effect.Effect<CrashRecoveryResult<undefined>> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const sessionState = yield* SessionState;
+      const durableStore = yield* EDASessionStore;
+      yield* sessionState.start({ modelSelection });
+      const retried = yield* sessionState.decide(routeDecider, { key: "route-1" });
+      expect(retried).toMatchObject({
+        _tag: "Accepted",
+        result: { to: "ai" },
+        replayed: checkpoint.committed.length > 0,
+      });
+      yield* waitForDurableStore(durableStore, hasCommandCompleted(CommandId.make(COMMAND_ID)));
+      const recovered = yield* waitForRecoveredStable(sessionState, durableStore);
+      return { ...recovered, context: undefined };
+    }),
+  ).pipe(
+    Effect.provide(
+      makeEdaTestLayer({
+        sessionId: SessionId.make(SESSION_ID),
+        ids: decisionIds(5_000),
+        seedEvents: checkpoint.committed.map((entry) => durableEventEnvelope(entry.event)),
+        parts: plainSubmitStream(),
+        appEvents: DecisionFact,
+        deciders: [routeDecider],
+      }),
+    ),
+    Effect.orDie,
+  );
+
+/** One marker, one fact and one admission of the decided command, which ran to completion. */
+const assertDecisionConverged = (committed: ReadonlyArray<CommittedDurableEvent>) => {
+  expect(countEventType(committed, "DeciderAccepted")).toBe(1);
+  expect(countEventType(committed, "Foreign")).toBe(1);
+  expect(countEventType(committed, "CommandAdmitted")).toBe(1);
+  expect(hasCommandCompleted(CommandId.make(COMMAND_ID))(committed)).toBe(true);
+};
 
 const recoverStoppedCheckpoint = (checkpoint: DurableCheckpoint) =>
   recoverFromCheckpoint(checkpoint, {

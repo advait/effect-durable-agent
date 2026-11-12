@@ -51,6 +51,7 @@ import {
   runSchedulingInvalidatedEventType,
   runSchedulingGrantedEventType,
   sessionConfiguredEventType,
+  deciderAcceptedEventType,
   stopTurnAppliedEventType,
   stopTurnRequestedEventType,
   steeringMessageCancelledEventType,
@@ -1384,6 +1385,9 @@ export const foldReducedState = (
       }
       case sessionConfiguredEventType:
         modelSelection ??= event.payload.modelSelection;
+        break;
+      case deciderAcceptedEventType:
+        // A decider's acceptance marker: its items carry the state change.
         break;
       case baseStateRequestedEventType:
       case baseStateCreatedEventType:

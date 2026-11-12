@@ -26,6 +26,7 @@ import type { EventFactoryShape } from "./event-factory";
 import { IdGenerator } from "./id-generator";
 import { EDAKeepAlive } from "./keep-alive";
 import { makeSinkInbox } from "./sink-inbox";
+import { appEventConflict, makeAppEventAdmission, RegisteredAppEvents } from "./session-admission";
 import { SessionContext } from "./session-context";
 import {
   EDASinkName,
@@ -84,6 +85,9 @@ export interface EDASinkContext {
    * Stage durable events; the runner commits them after the sink succeeds, in a transaction
    * separate from the cursor commit. A crash between the two redelivers the batch, so give each
    * staged event a `dedupeKey` derived from what caused it; one without a key logs a warning.
+   * An event the app event admission rules refuse (a payload that is not JSON-native or is over
+   * `maxAppEventBytes`, or one the registered `appEvents` schema rejects) is a defect carrying a
+   * `SessionCommandAdmissionConflict`: the runner logs it and skips the batch, as for any defect.
    */
   readonly stageDurable: (event: DurableEventEnvelope) => Effect.Effect<void>;
   /** Fork background sink work into the session scope. */
@@ -273,6 +277,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
     const ids = yield* IdGenerator;
     const reducerRegistry = yield* EDAReducerRegistry;
     const keepAlive = yield* EDAKeepAlive;
+    const appEventAdmission = makeAppEventAdmission(yield* RegisteredAppEvents);
     const started = yield* Ref.make(false);
     const hydrationGate = yield* Semaphore.make(1);
     const deliveries: Array<{
@@ -296,6 +301,8 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
       emitEphemeral: publishEphemeral,
       stageDurable: (event) =>
         Effect.gen(function* () {
+          const refusal = appEventAdmission.refuse(event, { namespaceRule: false });
+          if (refusal !== undefined) return yield* Effect.die(appEventConflict(refusal));
           // Staged events and the cursor commit separately; only a key collapses a restaged event.
           if (event.dedupeKey === undefined) {
             yield* Effect.logWarning("EDA sink staged a durable event without a dedupeKey", {

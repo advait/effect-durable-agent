@@ -42,6 +42,25 @@ export const SessionConfiguredEvent = durableEventSchema(
 );
 export type SessionConfiguredEvent = typeof SessionConfiguredEvent.Type;
 
+/**
+ * Records that a registered decider accepted one call. It commits first in the decision's batch,
+ * with `dedupeKey` = decider name, a line feed, and the call's idempotency key, so a retry finds it
+ * and returns the stored `result` instead of deciding again. Reducers and the transcript ignore it.
+ */
+export const deciderAcceptedEventType = makeEventType("DeciderAccepted");
+export const DeciderAcceptedPayload = Schema.Struct({
+  decider: Schema.NonEmptyString,
+  idempotencyKey: Schema.NonEmptyString,
+  /** The decider's `result`, encoded with its `result` schema. */
+  result: Schema.Json,
+});
+export type DeciderAcceptedPayload = typeof DeciderAcceptedPayload.Type;
+export const DeciderAcceptedEvent = durableEventSchema(
+  deciderAcceptedEventType,
+  DeciderAcceptedPayload,
+);
+export type DeciderAcceptedEvent = typeof DeciderAcceptedEvent.Type;
+
 /** Event type values for durable command lifecycle events. */
 export const commandAdmittedEventType = makeEventType("CommandAdmitted");
 export const commandStartedEventType = makeEventType("CommandStarted");
@@ -1016,6 +1035,7 @@ const isLegacyToolCall = (
 /** Built-in durable event union for framework-owned session facts, including retained historical schemas. */
 export const CurrentEDADurableEvent = Schema.Union([
   SessionConfiguredEvent,
+  DeciderAcceptedEvent,
   RunSchedulingEvent,
   CommandEvent,
   MessageEvent,

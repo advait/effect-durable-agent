@@ -10,7 +10,9 @@ import * as Response from "effect/ai/Response";
 import { SessionId } from "../types/core";
 import { type DurableEventEnvelope, UnixEpochMillis } from "../types/events";
 
-import { EDASessionStore } from "../services/session-store";
+import { EDASessionStore, registerAppEvents, type EDAAppEvents } from "../services/session-store";
+import { RegisteredAppEvents } from "../services/session-admission";
+import { EDADeciderRegistry, makeEDADeciderRegistry, type EDADecider } from "../services/decider";
 import { CompactionExecutor, CompactionPolicy, CompactionRunner } from "../services/compaction";
 import type { EDASessionStoreShape } from "../services/session-store";
 import { EventFactory } from "../services/event-factory";
@@ -197,6 +199,10 @@ export interface EdaTestLayerOptions {
   readonly compactionExecutorLayer?: Layer.Layer<CompactionExecutor>;
   /** App-specific durable metadata reducers. */
   readonly reducers?: ReadonlyArray<EDAReducer>;
+  /** Application event union, registered on the store and checked at admission, as in hosts. */
+  readonly appEvents?: EDAAppEvents;
+  /** Deciders the runtime runs, as `makeEDARuntimeLayer` registers them. */
+  readonly deciders?: ReadonlyArray<EDADecider>;
   /** Override state-to-LLM context projection. */
   readonly promptProjectorLayer?: Layer.Layer<EDAPromptProjector>;
   /** App-provided EDA sinks. */
@@ -215,16 +221,29 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
     options.seedEvents === undefined
       ? EDASessionStore.InMemory(options.sessionId)
       : EDASessionStore.InMemorySeeded(options.sessionId, options.seedEvents);
+  const wrapStore =
+    options.appEvents === undefined
+      ? options.wrapStore
+      : (inner: EDASessionStoreShape) => {
+          const registered = registerAppEvents(inner, options.appEvents!);
+          return options.wrapStore === undefined ? registered : options.wrapStore(registered);
+        };
   const Store =
-    options.wrapStore === undefined
+    wrapStore === undefined
       ? BaseStore
       : Layer.effect(
           EDASessionStore,
           Effect.gen(function* () {
             const inner = yield* EDASessionStore;
-            return options.wrapStore!(inner);
+            return wrapStore(inner);
           }),
         ).pipe(Layer.provide(BaseStore));
+  const Admission = Layer.mergeAll(
+    Layer.succeed(RegisteredAppEvents, options.appEvents),
+    Layer.sync(EDADeciderRegistry, () =>
+      makeEDADeciderRegistry(options.deciders ?? [], options.appEvents),
+    ),
+  );
   const Bus =
     options.sessionEventObserverLayer === undefined
       ? LiveEventBus.Noop
@@ -317,5 +336,7 @@ export const makeEdaTestLayer = (options: EdaTestLayerOptions) => {
     Layer.provideMerge(Layer.mergeAll(StateWithRun, Store, Bus)),
   );
 
-  return Layer.mergeAll(StateWithRun, Query, InferenceRunnerLayer, ToolExec, TestClock);
+  return Layer.mergeAll(StateWithRun, Query, InferenceRunnerLayer, ToolExec, TestClock).pipe(
+    Layer.provide(Admission),
+  );
 };

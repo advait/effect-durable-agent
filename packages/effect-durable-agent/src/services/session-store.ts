@@ -6,7 +6,6 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
-import type * as SchemaAST from "effect/SchemaAST";
 import * as Stream from "effect/Stream";
 
 import {
@@ -35,6 +34,7 @@ import {
   summaryCreatedEventType,
 } from "../types/events";
 import { decodeRetainingExcess } from "../types/events/internal";
+import { eventSchemaNamespaces } from "./session-admission";
 import {
   initialTranscriptState,
   inMemoryTranscriptWindowSource,
@@ -515,22 +515,12 @@ const commandAdmissionMatches = (
 /** App schemas are registered once; known namespaces fail at the store boundary when malformed. */
 export type EDAAppEvents = Schema.Codec<DurableEventEnvelope, unknown, never, never>;
 
-const eventNamespaces = (ast: SchemaAST.AST): ReadonlyArray<string> => {
-  if (ast._tag === "Union") return ast.types.flatMap(eventNamespaces);
-  if (ast._tag === "Objects") {
-    const namespace = ast.propertySignatures.find((field) => field.name === "namespace")?.type;
-    if (namespace?._tag === "Literal" && typeof namespace.literal === "string")
-      return [namespace.literal];
-  }
-  throw new Error("App event schemas must be a union of structs with literal namespaces");
-};
-
 /** Attach the app decoder to every event-returning store operation without changing storage bytes. */
 export const registerAppEvents = (
   store: EDASessionStoreShape,
   schema: EDAAppEvents,
 ): EDASessionStoreShape => {
-  const namespaces = new Set(eventNamespaces(schema.ast));
+  const namespaces = new Set(eventSchemaNamespaces(schema.ast));
   const decode = decodeRetainingExcess(schema);
   const envelopeKey = (event: DurableEventEnvelope): string =>
     JSON.stringify(Schema.encodeSync(DurableEventEnvelope)(event));

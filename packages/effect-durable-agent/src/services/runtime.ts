@@ -21,6 +21,7 @@ import type {
   SessionCommandAdmissionError,
   SessionStateShape,
 } from "./session-state";
+import type { EDADecider, EDADeciderError, EDADeciderOutcome } from "./decider";
 import { CommittedDurableEvent } from "./session-store";
 import { EDASessionQuery } from "./session-query";
 import { annotateEdaSpan, committedBatchAttributes } from "./tracing";
@@ -71,6 +72,16 @@ export interface EDARuntimeShape {
   readonly retryRunSchedulingDelivery: SessionStateShape["retryRunSchedulingDelivery"];
   /** Submit commands and/or app durable events durably and wake the dispatch process if needed. */
   readonly submit: EDARuntimeSubmit;
+  /**
+   * Run a registered decider: read the committed state and append what it decides as one step,
+   * so no other writer (a tool, a sink, the control loop) commits in between. A retry with the
+   * same idempotency key returns the first acceptance with `replayed: true` and commits nothing.
+   * A rejection commits nothing. An unregistered decider fails with `unknown_decider`.
+   */
+  readonly decide: <Input, Result, Rejection>(
+    decider: EDADecider<string, Input, Result, Rejection>,
+    input: Input,
+  ) => Effect.Effect<EDADeciderOutcome<Result, Rejection>, EDARuntimeError | EDADeciderError>;
   /** Block until the command reaches CommandCompleted, CommandFailed, or CommandCancelled. */
   readonly blockOnCommand: (
     commandId: CommandId,
@@ -150,6 +161,10 @@ const makeLiveRuntime = (config: EDARuntimeConfig) =>
       grantRun: (command: GrantRunCommand) => sessionState.grantRun(command, runInput),
       retryRunSchedulingDelivery: () => sessionState.retryRunSchedulingDelivery(),
       submit,
+      decide: <Input, Result, Rejection>(
+        decider: EDADecider<string, Input, Result, Rejection>,
+        input: Input,
+      ) => sessionState.decide(decider, input),
       blockOnCommand,
       submitAndBlock: Effect.fn(function* (command: EDACommand) {
         yield* annotateEdaSpan({

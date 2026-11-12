@@ -645,6 +645,51 @@ describe("EDASinkRegistry", () => {
       ]),
     );
   });
+
+  it("refuses a staged event whose payload is not JSON-native, skipping the batch without stopping the runtime", async () => {
+    const errors: Array<string> = [];
+    const captureErrors = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Error") errors.push(JSON.stringify(message));
+    });
+    const sink: EDASink = {
+      name: "test.dated-sink",
+      durable: {
+        interests: eventInterest("AssistantMessageCommitted"),
+        process: (_batch, ctx) =>
+          ctx.stageDurable(
+            appEvent({ id: 9_100, type: "Dated", payload: { at: new Date(1_715_000_000_000) } }),
+          ),
+      },
+    };
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const runtime = yield* EDARuntime;
+        yield* runtime.submitAndBlock(command(COMMAND_ID, "hello"));
+        yield* waitUntil("refusal logged", () =>
+          Effect.sync(() => errors.some((error) => error.includes("is not JSON-native"))),
+        );
+        // The runtime keeps working: the next command runs to completion.
+        yield* runtime.submitAndBlock(command(SECOND_COMMAND_ID, "second"));
+        return yield* replayAll(runtime);
+      }),
+    ).pipe(
+      Effect.provide(
+        EDARuntime.Live({ modelSelection }).pipe(
+          Layer.provideMerge(
+            makeEdaTestLayer({
+              sessionId: SESSION_ID,
+              parts: [finishStream, finishStream],
+              sinks: [sink],
+            }),
+          ),
+        ),
+      ),
+      Effect.provide(Logger.layer([captureErrors])),
+    );
+    const events = await Effect.runPromise(program);
+    expect(events.some((entry) => durableEventEnvelope(entry.event).type === "Dated")).toBe(false);
+    expect(events.filter((entry) => entry.event.type === "CommandCompleted")).toHaveLength(2);
+  });
 });
 
 /** Schema-selected fixture interest, including application events opaque to the framework. */
