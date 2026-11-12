@@ -35,7 +35,6 @@ import {
   encodeDecideInput,
   encodeEdaRpcCommand,
   encodeEdaRpcSubmittables,
-  edaSessionRpc,
 } from "../../packages/effect-durable-agent-cloudflare/dist/index.js";
 
 declare const EDA_CONFORMANCE_BLOCK_MODEL: boolean;
@@ -356,12 +355,7 @@ export const conformanceWorker = {
         Schema.Struct({ key: Schema.String, text: Schema.String, commandId: Schema.String }),
       )(body);
       const raw = await session.decide({ ...scoped, ...encodeDecideInput(routeDecider, input) });
-      const outcome = await Effect.runPromise(
-        decodeDecideOutcome(
-          routeDecider,
-          Schema.decodeUnknownSync(edaSessionRpc.decide.output)(raw),
-        ),
-      );
+      const outcome = await Effect.runPromise(decodeDecideOutcome(routeDecider, raw));
       if (outcome._tag === "Accepted") {
         await session.blockOnCommand({
           ...scoped,

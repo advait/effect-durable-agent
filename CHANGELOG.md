@@ -53,7 +53,8 @@ change.
 - **Feature:** the Cloudflare host exposes `decide`. `edaSessionRpc.decide`
   (`SessionDecideInput`, `SessionDecideResult`), `EDASessionController.decide`,
   `EDASessionDurableObject.decide(raw)`, and `encodeDecideInput` / `decodeDecideOutcome` for the
-  caller's side of the RPC (also re-exported by celld). It is trusted ingress, like `submitBatch`.
+  caller's side of the RPC (also re-exported by celld). `decodeDecideOutcome(decider, raw)` takes
+  the stub's `decide` return value as is and decodes it. It is trusted ingress, like `submitBatch`.
 - **Feature:** tools get `ctx.decide` and `ctx.snapshot()`. `snapshot` returns
   `{ state, reducerStates }` like `EDARuntime.snapshot` and can be stale by the time the tool
   emits; a tool whose fact depends on state uses `decide` with its `toolCallId` as the key.

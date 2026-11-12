@@ -5,7 +5,7 @@ import * as Schema from "effect/Schema";
 import { EDACommand } from "effect-durable-agent/types/commands";
 import type { EDASubmittable } from "effect-durable-agent/services/session-state";
 import type { EDADecider, EDADeciderOutcome } from "effect-durable-agent/services/decider";
-import type { SequenceNumber } from "effect-durable-agent/types/core";
+import { SequenceNumber } from "effect-durable-agent/types/core";
 import {
   DurableEventEnvelope,
   EDADurableEvent,
@@ -57,27 +57,42 @@ export const encodeDecideInput = <Input>(
   input: Schema.encodeUnknownSync(decider.input)(input),
 });
 
-/** Decode a `decide` RPC outcome with the decider's `result` and `rejection` schemas. */
+/**
+ * The `decide` RPC's outcome, its result or rejection encoded with the decider's schemas. Lives
+ * here, not in `rpc-spec`, so `decodeDecideOutcome` can decode it without an import cycle.
+ */
+export const SessionDecideResult = Schema.Union([
+  Schema.TaggedStruct("Accepted", {
+    result: Schema.Json,
+    acceptedSeq: SequenceNumber,
+    replayed: Schema.Boolean,
+  }),
+  Schema.TaggedStruct("Rejected", { rejection: Schema.Json }),
+]);
+export type SessionDecideResult = typeof SessionDecideResult.Type;
+
+/**
+ * Decode what a `decide` RPC returns, as the session stub returns it: the envelope (including
+ * `acceptedSeq`), then the result or rejection with the decider's schemas.
+ */
 export const decodeDecideOutcome = <Result, Rejection>(
   decider: EDADecider<string, unknown, Result, Rejection>,
-  raw:
-    | {
-        readonly _tag: "Accepted";
-        readonly result: unknown;
-        readonly acceptedSeq: SequenceNumber;
-        readonly replayed: boolean;
-      }
-    | { readonly _tag: "Rejected"; readonly rejection: unknown },
+  raw: typeof SessionDecideResult.Encoded,
 ): Effect.Effect<EDADeciderOutcome<Result, Rejection>, Schema.SchemaError> =>
-  raw._tag === "Accepted"
-    ? Schema.decodeUnknownEffect(decider.result)(raw.result).pipe(
-        Effect.map((result) => ({
-          _tag: "Accepted" as const,
-          result,
-          acceptedSeq: raw.acceptedSeq,
-          replayed: raw.replayed,
-        })),
-      )
-    : Schema.decodeUnknownEffect(decider.rejection)(raw.rejection).pipe(
-        Effect.map((rejection) => ({ _tag: "Rejected" as const, rejection })),
-      );
+  Schema.decodeUnknownEffect(SessionDecideResult)(raw).pipe(
+    Effect.flatMap(
+      (outcome): Effect.Effect<EDADeciderOutcome<Result, Rejection>, Schema.SchemaError> =>
+        outcome._tag === "Accepted"
+          ? Schema.decodeUnknownEffect(decider.result)(outcome.result).pipe(
+              Effect.map((result) => ({
+                _tag: "Accepted" as const,
+                result,
+                acceptedSeq: outcome.acceptedSeq,
+                replayed: outcome.replayed,
+              })),
+            )
+          : Schema.decodeUnknownEffect(decider.rejection)(outcome.rejection).pipe(
+              Effect.map((rejection) => ({ _tag: "Rejected" as const, rejection })),
+            ),
+    ),
+  );

@@ -21,7 +21,7 @@ import {
   TranscriptWindowSelector,
 } from "effect-durable-agent/transcript";
 import { TranscriptStorageStatus } from "./durable-object-transcript";
-import { EDARpcSubmittable } from "./rpc-codec";
+import { EDARpcSubmittable, SessionDecideResult } from "./rpc-codec";
 
 /** Names the session isolation boundary and carries caller trace metadata. */
 export const SessionScopedInput = Schema.Struct({ sessionId: SessionId, trace: EDATraceMetadata });
@@ -49,16 +49,6 @@ export const SessionDecideInput = Schema.Struct({
   decider: Schema.NonEmptyString,
   input: Schema.Unknown,
 });
-/** The decider's outcome, its result or rejection encoded with its schemas (`decodeDecideOutcome`). */
-export const SessionDecideResult = Schema.Union([
-  Schema.TaggedStruct("Accepted", {
-    result: Schema.Json,
-    acceptedSeq: SequenceNumber,
-    replayed: Schema.Boolean,
-  }),
-  Schema.TaggedStruct("Rejected", { rejection: Schema.Json }),
-]);
-export type SessionDecideResult = typeof SessionDecideResult.Type;
 /** Waits for one command terminal after an optional durable replay position. */
 export const SessionBlockInput = Schema.Struct({
   ...SessionScopedInput.fields,

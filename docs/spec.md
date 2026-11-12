@@ -734,7 +734,9 @@ command it admits still runs later on the control loop.
 
 The host RPC `decide({ sessionId, trace, decider, input })` (`edaSessionRpc.decide`) decodes
 `input` with the decider's schema and returns the outcome encoded with its `result` or
-`rejection` schema; `encodeDecideInput` and `decodeDecideOutcome` keep the caller's types. It is
+`rejection` schema; `encodeDecideInput` and `decodeDecideOutcome` keep the caller's types.
+`decodeDecideOutcome(decider, raw)` takes what the session stub's `decide` returns, unchanged, and
+decodes the envelope (`acceptedSeq` to a `SequenceNumber`) and then the result or rejection. It is
 trusted ingress, like `submitBatch`.
 
 ### Sinks
