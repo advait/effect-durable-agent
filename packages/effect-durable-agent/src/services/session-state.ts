@@ -2929,11 +2929,12 @@ const makeLiveSessionState = Effect.gen(function* () {
     yield* keepAlive.withActiveWork("session-recovery", runStartupRecoveryPass(input));
   });
 
+  /** Runs after the first drain: waits for ingress, then drains ready work to its next wait. */
   const runLiveControlLoop = Effect.fn(function* (input: SessionRunInput) {
     yield* annotateRunInput(input);
     while (true) {
-      yield* drainAndLog(input);
       yield* waitForNextSignal();
+      yield* drainAndLog(input);
     }
   });
 
@@ -2942,7 +2943,13 @@ const makeLiveSessionState = Effect.gen(function* () {
     if (reinvocations.length === 0) {
       yield* runStartupRecovery(input);
       yield* forkSchedulingDelivery();
-      yield* runLiveControlLoop(input).pipe(Effect.forkIn(runtimeScope));
+      // The first drain settles before start returns. A host deciding whether a cold-started
+      // session is idle (a Durable Object alarm) must see that drain's keep-alive lease released;
+      // a lease taken after the decision re-arms the heartbeat, and the object wakes forever.
+      // Work the drain starts, such as a turn, holds its own lease.
+      if (Exit.isSuccess(yield* Effect.exit(drainAndLog(input)))) {
+        yield* runLiveControlLoop(input).pipe(Effect.forkIn(runtimeScope));
+      }
       return;
     }
     // Re-invoked tools may run for minutes, so recovery finishes in the background while the
@@ -2966,6 +2973,7 @@ const makeLiveSessionState = Effect.gen(function* () {
         Ref.set(recoveringInBackground, false).pipe(Effect.andThen(controlGate.release(1))),
       ),
       Effect.andThen(forkSchedulingDelivery()),
+      Effect.andThen(drainAndLog(input)),
       Effect.andThen(runLiveControlLoop(input)),
       // Startup failing synchronously fails the runtime build; failing here must be as loud, or
       // the session would accept input that nothing processes. Later work fails until the
