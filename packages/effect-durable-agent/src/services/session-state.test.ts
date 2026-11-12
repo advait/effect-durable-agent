@@ -42,6 +42,7 @@ import {
   type EDASessionStoreShape,
 } from "./session-store";
 import { LiveEventBus } from "./live-event-bus";
+import { EDASessionQuery } from "./session-query";
 import { EDAReducer, EDAReducerRegistry } from "./reducer-registry";
 import { SessionEventObserver } from "./session-event-observer";
 import { EDAPromptProjector } from "./prompt-projector";
@@ -281,6 +282,45 @@ describe("SessionState", () => {
       lastSeq: 1,
       publishedSeqs: [1],
     });
+  });
+
+  it("keeps an event's dedupe key on live publication, event pages and replay", async () => {
+    const published: Array<unknown> = [];
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const session = yield* SessionState;
+        const query = yield* EDASessionQuery;
+        yield* session.submitBatch([counterFact(EVENT_ID, "delivery-1")]);
+        const page = yield* query.readEventPage(SequenceNumber.make(0), 10);
+        const replay = yield* (yield* query.eventsAfter(SequenceNumber.make(0))).pipe(
+          Stream.take(1),
+          Stream.runCollect,
+        );
+        return {
+          published,
+          page: page.events.map((entry) => entry.event),
+          replay: Array.from(replay, (entry) => entry.event),
+        };
+      }),
+    ).pipe(
+      Effect.provide(
+        makeEdaTestLayer({
+          sessionId: SessionId.make(SESSION_ID),
+          reducers: [counterReducer],
+          wrapStore: (store) => registerAppEvents(store, CounterEvent),
+          sessionEventObserverLayer: SessionEventObserver.FromHandler((event) =>
+            Effect.sync(() => {
+              published.push(event.event);
+            }),
+          ),
+        }),
+      ),
+    );
+
+    const result = await Effect.runPromise(program);
+
+    const keyed = [expect.objectContaining({ dedupeKey: "delivery-1" })];
+    expect(result).toEqual({ published: keyed, page: keyed, replay: keyed });
   });
 
   it("starts a legacy admitted submit without migrating persisted session state", async () => {

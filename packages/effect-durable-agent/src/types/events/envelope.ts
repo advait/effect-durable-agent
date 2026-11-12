@@ -89,10 +89,13 @@ export const EphemeralEventEnvelope = Schema.Struct({
 });
 export type EphemeralEventEnvelope = typeof EphemeralEventEnvelope.Type;
 
-/** Event delivered to live subscribers with its durable/ephemeral position. */
+/**
+ * Event delivered to live subscribers with its durable/ephemeral position. The event is either
+ * envelope, so a durable event keeps its `dedupeKey` on live publication, replay and the wire.
+ */
 export const PositionedEvent = Schema.Struct({
   position: Position,
-  event: EventEnvelope,
+  event: Schema.Union([DurableEventEnvelope, EphemeralEventEnvelope]),
 });
 export type PositionedEvent<E = EventEnvelope> = {
   readonly position: typeof Position.Type;
