@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import type { ReducedState } from "../domain/reduced-state";
@@ -6,7 +7,7 @@ import type { EDACommand } from "../types/commands";
 import type { EventId, SequenceNumber, SessionId } from "../types/core";
 import { type DurableEventEnvelope, effectDurableAgentNamespace } from "../types/events/envelope";
 import type { EDAReducerStateSnapshot } from "./reducer-registry";
-import { eventSchemaNamespaces } from "./session-admission";
+import { eventSchemaNamespaces, storedJsonForm } from "./session-admission";
 import type { EDAAppEvents } from "./session-store";
 
 /** What a decider reads: the fold of every committed event at the moment of the decision. */
@@ -158,10 +159,27 @@ export const EDADecider = {
   },
 };
 
+/**
+ * Encode a decider's result or rejection with its schema into JSON: what the acceptance marker
+ * stores and what the host's `decide` RPC returns. An object property left `undefined` becomes
+ * absent; any other value JSON would change is a failure.
+ */
+export const encodeDeciderJson = <A>(
+  schema: Schema.Codec<A, unknown, never, never>,
+  value: A,
+): Result.Result<Schema.Json, string> => {
+  try {
+    return storedJsonForm(Schema.encodeUnknownSync(schema)(value), "encoded value");
+  } catch (cause) {
+    return Result.fail(`does not encode: ${String(cause)}`);
+  }
+};
+
 /** What a call to a decider returns. */
 export type EDADeciderOutcome<Result, Rejection> =
   | {
       readonly _tag: "Accepted";
+      /** Decoded from the stored JSON, on the first call as on every replay. */
       readonly result: Result;
       /** Position of the acceptance marker. */
       readonly acceptedSeq: SequenceNumber;

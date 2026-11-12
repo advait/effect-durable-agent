@@ -1,4 +1,6 @@
+import * as Brand from "effect/Brand";
 import * as Context from "effect/Context";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as SchemaAST from "effect/SchemaAST";
 
@@ -63,14 +65,21 @@ export const eventSchemaNamespaces = (ast: SchemaAST.AST): ReadonlyArray<string>
 };
 
 /**
- * Whether `value` survives `JSON.parse(JSON.stringify(value))` unchanged: plain objects, arrays,
- * strings, finite numbers, booleans and null. An object property whose value is `undefined`
- * passes (it reads back as absent); anything with a prototype (`Redacted`, `Option`, `Date`, a
- * class instance), `undefined` in an array, a non-finite number, a bigint, a function, a symbol
- * or a cycle does not.
+ * The JSON form the store keeps, `JSON.parse(JSON.stringify(value))`, or why `value` has none.
+ * The round trip may only drop an object property whose value is `undefined`; anything else it
+ * would change is refused rather than silently rewritten: anything with a prototype (`Redacted`,
+ * `Option`, `Date`, a class instance), `undefined` in an array, a non-finite number, a bigint, a
+ * function, a symbol or a cycle. Every check that must hold for what is stored runs on this form.
  */
-export const jsonNativeViolation = (value: unknown): string | undefined =>
-  jsonNativeAt(value, "payload", new Set());
+export const storedJsonForm = (
+  value: unknown,
+  path: string,
+): Result.Result<Schema.Json, string> => {
+  const violation = jsonNativeAt(value, path, new Set());
+  if (violation !== undefined) return Result.fail(violation);
+  const json: Schema.Json = JSON.parse(JSON.stringify(value));
+  return Result.succeed(json);
+};
 
 const jsonNativeAt = (value: unknown, path: string, seen: Set<object>): string | undefined => {
   if (value === null || typeof value === "string" || typeof value === "boolean") return undefined;
@@ -131,9 +140,20 @@ export const RegisteredAppEvents = Context.Reference<AppEventCodec | undefined>(
   { defaultValue: () => undefined },
 );
 
-/** Checks one app-written durable event against the runtime's admission rules. */
+/**
+ * An app-written durable event that passed admission. Its payload is already the JSON form the
+ * store keeps, so what is appended is exactly what was checked. Only `admit` makes one.
+ */
+export type AdmittedAppEvent = DurableEventEnvelope & Brand.Brand<"AdmittedAppEvent">;
+const AdmittedAppEvent = Brand.nominal<AdmittedAppEvent>();
+
+/** Admits app-written durable events under the runtime's rules. */
 export interface AppEventAdmission {
-  readonly refuse: (event: DurableEventEnvelope) => AppEventRefusal | undefined;
+  /**
+   * The event to append in place of `event`, or why it is refused. The payload is replaced by its
+   * stored JSON form first; the size, framework-schema and `appEvents` checks all read that form.
+   */
+  readonly admit: (event: DurableEventEnvelope) => Result.Result<AdmittedAppEvent, AppEventRefusal>;
 }
 
 /** Build the checker for a runtime, with its registered `appEvents` codec if any. */
@@ -142,54 +162,51 @@ export const makeAppEventAdmission = (appEvents: AppEventCodec | undefined): App
   const decode = appEvents === undefined ? undefined : decodeRetainingExcess(appEvents);
   const describe = (event: DurableEventEnvelope) =>
     `Event ${event.namespace}/${event.type} ${event.eventId}`;
+  const refuse = (code: AppEventRefusal["code"], message: string) =>
+    Result.fail<AppEventRefusal>({ code, message });
   return {
-    refuse: (event) => {
-      if (
-        event.namespace === effectDurableAgentNamespace &&
-        !appWritableFrameworkEventTypes.has(event.type)
-      ) {
-        return {
-          code: "framework_event",
-          message: `${describe(event)} is a framework lifecycle event; app code may write only ${Array.from(appWritableFrameworkEventTypes).join(", ")}`,
-        };
+    admit: (event) => {
+      const isFramework = event.namespace === effectDurableAgentNamespace;
+      if (isFramework && !appWritableFrameworkEventTypes.has(event.type)) {
+        return refuse(
+          "framework_event",
+          `${describe(event)} is a framework lifecycle event; app code may write only ${Array.from(appWritableFrameworkEventTypes).join(", ")}`,
+        );
       }
-      if (event.namespace === effectDurableAgentNamespace) {
+      const payload = storedJsonForm(event.payload, "payload");
+      if (Result.isFailure(payload)) {
+        return refuse(
+          "payload_not_json",
+          `${describe(event)} payload is not JSON-native: ${payload.failure}. Encode it before writing; the store keeps JSON only.`,
+        );
+      }
+      const stored = { ...event, payload: payload.success };
+      const bytes = jsonBytes(stored.payload);
+      if (bytes > maxAppEventBytes) {
+        return refuse(
+          "event_too_large",
+          `${describe(event)} payload is ${bytes} bytes; the limit is ${maxAppEventBytes} bytes`,
+        );
+      }
+      try {
         // The store decodes framework events with their own schema and would fail a malformed one
         // as a store error, so an allowlisted type is checked against that schema here.
-        try {
-          decodeDurableEventSync(event);
-        } catch (cause) {
-          return {
-            code: "invalid_event",
-            message: `${describe(event)} does not match its framework event schema: ${String(cause)}`,
-          };
-        }
+        if (isFramework) decodeDurableEventSync(stored);
+      } catch (cause) {
+        return refuse(
+          "invalid_event",
+          `${describe(event)} does not match its framework event schema once stored as JSON: ${String(cause)}`,
+        );
       }
-      const notJson = jsonNativeViolation(event.payload);
-      if (notJson !== undefined) {
-        return {
-          code: "payload_not_json",
-          message: `${describe(event)} payload is not JSON-native: ${notJson}. Encode it before writing; the store keeps JSON only.`,
-        };
+      try {
+        if (decode !== undefined && namespaces.has(event.namespace)) decode(stored);
+      } catch (cause) {
+        return refuse(
+          "invalid_event",
+          `${describe(event)} does not match the registered appEvents schema once stored as JSON: ${String(cause)}`,
+        );
       }
-      const bytes = jsonBytes(event.payload);
-      if (bytes > maxAppEventBytes) {
-        return {
-          code: "event_too_large",
-          message: `${describe(event)} payload is ${bytes} bytes; the limit is ${maxAppEventBytes} bytes`,
-        };
-      }
-      if (decode !== undefined && namespaces.has(event.namespace)) {
-        try {
-          decode(event);
-        } catch (cause) {
-          return {
-            code: "invalid_event",
-            message: `${describe(event)} does not match the registered appEvents schema: ${String(cause)}`,
-          };
-        }
-      }
-      return undefined;
+      return Result.succeed(AdmittedAppEvent(stored));
     },
   };
 };

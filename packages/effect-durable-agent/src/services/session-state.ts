@@ -9,6 +9,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -131,15 +132,16 @@ import { maxToolCallAttempts } from "./tool-registry";
 import {
   appEventConflict,
   jsonBytes,
-  jsonNativeViolation,
   makeAppEventAdmission,
   RegisteredAppEvents,
+  type AdmittedAppEvent,
   SessionCommandAdmissionConflict,
 } from "./session-admission";
 import {
   deciderIdempotencyKeyViolation,
   deciderMarkerDedupeKey,
   EDADeciderError,
+  encodeDeciderJson,
   EDADeciderRegistry,
   maxDeciderResultBytes,
   type EDADecider,
@@ -855,16 +857,21 @@ const makeLiveSessionState = Effect.gen(function* () {
       "eda.command.count": commandCount,
       "eda.event.app_owned_count": input.length - commandCount,
     });
+    const admitted: Array<EDACommand | AdmittedAppEvent> = [];
     for (const item of input) {
-      if (isEDACommand(item)) continue;
-      const refusal = appEventAdmission.refuse(item);
-      if (refusal !== undefined) return yield* appEventConflict(refusal);
+      if (isEDACommand(item)) {
+        admitted.push(item);
+        continue;
+      }
+      const event = appEventAdmission.admit(item);
+      if (Result.isFailure(event)) return yield* appEventConflict(event.failure);
+      admitted.push(event.success);
     }
     const committed = yield* withAppendGate(
       Effect.gen(function* () {
         const preparedByIdempotencyKey = new Map<string, DurableEventEnvelope>();
         const preparedByCommandId = new Map<string, DurableEventEnvelope>();
-        const durableEventGroups = yield* Effect.forEach(input, (item) =>
+        const durableEventGroups = yield* Effect.forEach(admitted, (item) =>
           isEDACommand(item)
             ? prepareCommandAdmission(item, preparedByIdempotencyKey, preparedByCommandId)
             : Effect.succeed([item]),
@@ -889,9 +896,9 @@ const makeLiveSessionState = Effect.gen(function* () {
   /** A tool's app fact: the same admission rules as `submit`, then the framework path. */
   const appendAppDurable = (event: DurableEventEnvelope) =>
     Effect.gen(function* () {
-      const refusal = appEventAdmission.refuse(event);
-      if (refusal !== undefined) return yield* appEventConflict(refusal);
-      return yield* appendDurable(event);
+      const admitted = appEventAdmission.admit(event);
+      if (Result.isFailure(admitted)) return yield* appEventConflict(admitted.failure);
+      return yield* appendDurable(admitted.success);
     });
 
   /**
@@ -970,21 +977,35 @@ const makeLiveSessionState = Effect.gen(function* () {
               };
             }
 
-            const encodedResult = yield* Effect.try({
-              try: () => Schema.encodeUnknownSync(decider.result)(decision.result),
-              catch: (cause) => fail("invalid_output", `result does not encode: ${String(cause)}`),
-            });
-            const resultViolation = jsonNativeViolation(encodedResult);
-            if (resultViolation !== undefined) {
-              return yield* fail("invalid_output", `encoded result: ${resultViolation}`);
+            // The marker stores the result's JSON form. Every replay decodes that form, so this
+            // call returns it decoded too, and refuses here a result the replays could not read.
+            const storedResult = encodeDeciderJson(decider.result, decision.result);
+            if (Result.isFailure(storedResult)) {
+              return yield* fail("invalid_output", `result ${storedResult.failure}`);
             }
-            // What the store keeps: an optional field left `undefined` becomes absent.
-            const storedResult: unknown = JSON.parse(JSON.stringify(encodedResult));
-            const resultBytes = jsonBytes(storedResult);
+            const resultBytes = jsonBytes(storedResult.success);
             if (resultBytes > maxDeciderResultBytes) {
               return yield* fail(
                 "invalid_output",
                 `encoded result is ${resultBytes} bytes; the limit is ${maxDeciderResultBytes} bytes`,
+              );
+            }
+            const result = yield* Schema.decodeUnknownEffect(decider.result)(
+              storedResult.success,
+            ).pipe(
+              Effect.mapError((cause) =>
+                fail(
+                  "invalid_output",
+                  `result does not decode from its stored JSON: ${cause.message}`,
+                ),
+              ),
+            );
+            // The host's decide RPC encodes the decoded result again; prove that cannot fail.
+            const wireResult = encodeDeciderJson(decider.result, result);
+            if (Result.isFailure(wireResult)) {
+              return yield* fail(
+                "invalid_output",
+                `result decoded from its stored JSON ${wireResult.failure}`,
               );
             }
 
@@ -1028,11 +1049,11 @@ const makeLiveSessionState = Effect.gen(function* () {
                     `item ${index} is not an event of the decider's events schema: ${String(cause)}`,
                   ),
               });
-              const refusal = appEventAdmission.refuse(event);
-              if (refusal !== undefined) {
-                return yield* fail("invalid_output", `item ${index}: ${refusal.message}`);
+              const admitted = appEventAdmission.admit(event);
+              if (Result.isFailure(admitted)) {
+                return yield* fail("invalid_output", `item ${index}: ${admitted.failure.message}`);
               }
-              items.push(event);
+              items.push(admitted.success);
             }
 
             const marker = yield* Schema.decodeUnknownEffect(DeciderAcceptedEvent)({
@@ -1045,7 +1066,7 @@ const makeLiveSessionState = Effect.gen(function* () {
               createdAtMs,
               trace,
               dedupeKey: markerKey,
-              payload: { decider: decider.name, idempotencyKey, result: storedResult },
+              payload: { decider: decider.name, idempotencyKey, result: storedResult.success },
             }).pipe(
               Effect.mapError((cause) =>
                 fail("invalid_output", `encoded result is not JSON: ${cause.message}`),
@@ -1061,7 +1082,7 @@ const makeLiveSessionState = Effect.gen(function* () {
             return {
               outcome: {
                 _tag: "Accepted",
-                result: decision.result,
+                result,
                 acceptedSeq,
                 replayed: false,
               } satisfies EDADeciderOutcome<Result, Rejection>,

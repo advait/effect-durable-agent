@@ -88,6 +88,30 @@ change.
   `EDAToolExecutionContext` gains the required `decide` and `snapshot` members, so a hand-built
   tool context (a test fake) must add them. `SessionCommandAdmissionConflict.code` gains
   `framework_event`, `invalid_event` and `payload_not_json`, which also reach RPC callers.
+- **Fix:** admission checks the JSON form the store keeps, not the value app code passed
+  (gpt-6-astra, FR-1 review round 2). `submit`, decider drafts, `ctx.emitDurable` and
+  `ctx.stageDurable` replace each app event's payload with `JSON.parse(JSON.stringify(payload))`
+  before the size, `appEvents` and framework-schema checks, and append exactly that event. Before,
+  an `AssistantMessageImported` tool-result part with `result: undefined` passed its framework
+  schema in memory, lost the required `result` in JSON, and the store refused it as a store error,
+  which made the runtime fatal. Such an event, or an app event with a required field left
+  `undefined`, is now refused with `invalid_event` (`invalid_output` for a draft). Live reducers
+  and sinks see the same JSON payload a replay reads.
+- **Fix:** a decider's accepted result is the one its replays return. The result is encoded into
+  its JSON form, decoded with the `result` schema and checked to encode again before anything
+  commits; a failure is `invalid_output` and commits nothing. Before, a `Schema.UndefinedOr` field
+  left `undefined` committed a marker whose `{}` no retry could decode, and through
+  `EDASessionController.decide` an optional field left `undefined` committed the marker and its
+  facts and then failed `invalid_output` encoding the reply. `Accepted.result` on the first call
+  is now the value decoded from the stored JSON. New export `encodeDeciderJson` from
+  `effect-durable-agent/services/decider`, which the `decide` RPC uses for results and
+  rejections; a rejection with an optional field left `undefined` now encodes without it instead
+  of failing.
+- A durable sink that lets a `SessionCommandAdmissionConflict` escape `process` stays stopped
+  until the host builds a new runtime: the session keeps accepting work, but that sink processes
+  nothing more, and the next runtime start redelivers the batch. Catch the conflict around
+  `ctx.stageDurable`. A `ctx.checkpoint.save` failure escaping `process` through `orDie` is still
+  a generic defect that skips the batch, as in 0.1.0.
 - `EDADeciderDefinition.decide` takes its types from the schemas, never from its return value. A
   literal nested in the returned object widens (`payload: { to: "ai" }` checks as `string`), so
   build nested values with their schema's `make` or write them `as const`.
@@ -99,7 +123,9 @@ cannot decode `DeciderAccepted`, so once a session has accepted a decision it ca
 and RPC replies can carry the new `DeciderAccepted` framework event (transcript sockets never do),
 the new `decide` RPC, and the new conflict codes. API: the `services/decider` subpath,
 `EDARuntimeShape.decide`, the `deciders` options, the tool context members, the host RPC and
-helpers, and the admission rules above. No transcript interpretation change: the interpreter and
+helpers, `encodeDeciderJson`, and the admission rules above. Admission writes the same bytes as
+before for every event it admits (the store always kept the JSON form); it now refuses the events
+whose JSON form a schema refuses, instead of failing them in the store. No transcript interpretation change: the interpreter and
 `ReducedState` ignore the marker, and `transcriptSemanticRevision` and the recorded fingerprints
 are unchanged.
 

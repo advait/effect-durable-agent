@@ -1,9 +1,11 @@
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Tracer from "effect/Tracer";
 
 import {
   EDADeciderError,
+  encodeDeciderJson,
   makeEDADeciderRegistry,
   type EDADecider,
 } from "effect-durable-agent/services/decider";
@@ -413,23 +415,26 @@ export class EDASessionController<ProjectionState extends object = never> {
   }
 }
 
-/** Encode a decider value for the wire; a value its own schema cannot encode is `invalid_output`. */
+/**
+ * Encode a decider value for the wire with the policy the marker's stored result uses, so a
+ * committed result always encodes; a rejection its own schema cannot encode is `invalid_output`.
+ */
 const encodeJson = <A>(
   decider: EDADecider,
   schema: Schema.Codec<A, unknown, never, never>,
   value: A,
-): Effect.Effect<Schema.Json, EDADeciderError> =>
-  Schema.encodeUnknownEffect(schema)(value).pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Json)),
-    Effect.mapError(
-      (cause) =>
+): Effect.Effect<Schema.Json, EDADeciderError> => {
+  const encoded = encodeDeciderJson(schema, value);
+  return Result.isSuccess(encoded)
+    ? Effect.succeed(encoded.success)
+    : Effect.fail(
         new EDADeciderError({
           decider: decider.name,
           reason: "invalid_output",
-          message: `outcome does not encode to JSON: ${cause.message}`,
+          message: `outcome ${encoded.failure}`,
         }),
-    ),
-  );
+      );
+};
 
 const hostSpanOptions = (
   trace: EDATraceMetadata,

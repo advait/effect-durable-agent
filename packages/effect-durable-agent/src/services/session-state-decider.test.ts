@@ -1,3 +1,4 @@
+import * as fc from "fast-check";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -13,12 +14,14 @@ import { makeEdaTestLayer } from "../testkit/layers";
 import { CommandIdempotencyKey, SubmitMessageCommand } from "../types/commands";
 import { CommandId, EventId, MessageId, SequenceNumber, SessionId } from "../types/core";
 import {
+  AssistantMessageImportedEvent,
   DeciderAcceptedEvent,
   DurableEventEnvelope,
   EventDedupeKey,
   SessionConfiguredEvent,
   SystemMessageCommittedEvent,
   UnixEpochMillis,
+  assistantMessageImportedEventType,
   deciderAcceptedEventType,
   effectDurableAgentNamespace,
   maxAppEventBytes,
@@ -28,7 +31,12 @@ import {
 } from "../types/events";
 import { durableEventEnvelope } from "../types/events/durable";
 import { makeEDATraceContext } from "../types/tracing";
-import { EDADecider, deciderMarkerDedupeKey, type EDADeciderOutcome } from "./decider";
+import {
+  EDADecider,
+  deciderMarkerDedupeKey,
+  type EDADeciderOutcome,
+  type EDAEventDraft,
+} from "./decider";
 import { sequentialUuidV7 } from "./id-generator";
 import { EDAReducer, getEDAReducerState } from "./reducer-registry";
 import { SessionState } from "./session-state";
@@ -63,8 +71,13 @@ const ChatEnded = Schema.Struct({
   type: Schema.Literal("ChatEnded"),
   payload: Schema.Struct({}),
 });
+const NoteSet = Schema.Struct({
+  ...appFields,
+  type: Schema.Literal("NoteSet"),
+  payload: Schema.Struct({ note: Schema.UndefinedOr(Schema.String) }),
+});
 /** What the runtime registers as `appEvents`. */
-const ChatEvents = Schema.Union([MessageRouted, ChatEnded]);
+const ChatEvents = Schema.Union([MessageRouted, ChatEnded, NoteSet]);
 
 const ChatState = Schema.Struct({ ended: Schema.Boolean, routed: Schema.Number });
 const chatReducer = EDAReducer.forEvents(ChatEvents, {
@@ -326,19 +339,58 @@ describe("SessionState deciders", () => {
       }),
       { deciders: [annotate] },
     );
-    expect(result.first).toMatchObject({ _tag: "Accepted", replayed: false });
-    expect(result.retry).toMatchObject({ _tag: "Accepted", replayed: true });
-    expect(result.retry._tag === "Accepted" && Object.keys(result.retry.result)).toEqual([]);
+    // Reviewer repro (gpt-6-astra, FR-1 review round 2): the first call returned the in-memory
+    // `{ note: undefined }` while the store kept `{}`; both calls now return what the store keeps.
+    expect(result.first).toStrictEqual({
+      _tag: "Accepted",
+      result: {},
+      acceptedSeq: 1,
+      replayed: false,
+    });
+    expect(result.retry).toStrictEqual({ ...result.first, replayed: true });
     const marker = markers(result.log)[0]?.event;
     expect(marker === undefined ? undefined : durableEventEnvelope(marker).payload).toEqual({
       decider: "test.Annotate",
       idempotencyKey: "k",
       result: {},
     });
-    expect(result.log.map((entry) => durableEventEnvelope(entry.event))).toMatchObject([
-      { type: deciderAcceptedEventType },
-      { type: "MessageRouted", payload: { text: "hi" } },
-    ]);
+    expect(result.log.map((entry) => durableEventEnvelope(entry.event).payload)[1]).toStrictEqual({
+      text: "hi",
+    });
+  });
+
+  it("refuses a result whose stored JSON its result schema refuses, and commits nothing", async () => {
+    // Reviewer repro (gpt-6-astra, FR-1 review round 2): `UndefinedOr` accepts `{ note: undefined }`,
+    // the marker kept `{}`, and every same-key retry failed with "stored result does not decode".
+    const required = EDADecider.define({
+      name: "test.RequiredUndefined",
+      input: Schema.Struct({ key: Schema.String }),
+      events: ChatEvents,
+      result: Schema.Struct({ note: Schema.UndefinedOr(Schema.String) }),
+      rejection: Schema.Never,
+      idempotencyKey: (input) => input.key,
+      decide: () => ({
+        _tag: "Accept",
+        items: [
+          { namespace: "test.chat", type: "ChatEnded", schemaVersion: schemaV1, payload: {} },
+        ],
+        result: { note: undefined },
+      }),
+    });
+    const result = await run(
+      Effect.gen(function* () {
+        const state = yield* SessionState;
+        const first = yield* Effect.exit(state.decide(required, { key: "k" }));
+        const retry = yield* Effect.exit(state.decide(required, { key: "k" }));
+        const log = yield* logOf;
+        return { first, retry, log, usable: yield* followingSubmitSucceeds };
+      }),
+      { deciders: [required] },
+    );
+    expect(reasonOf(result.first)).toBe("invalid_output");
+    expect(reasonOf(result.retry)).toBe("invalid_output");
+    expect(result.log).toHaveLength(0);
+    expect(result.usable).toBe(true);
   });
 
   it("checks the idempotency key: a line feed or 257 characters is invalid_input; 256 quotes replay", async () => {
@@ -647,62 +699,102 @@ describe("SessionState deciders", () => {
     });
   });
 
-  it("refuses an allowlisted framework event whose payload its framework schema refuses", async () => {
-    // Reviewer repro (gpt-6-astra, FR-1 review round 1): a loose decider schema let a malformed
-    // SessionConfigured reach the store, which failed it as a store error and made the runtime fatal.
-    const LooseConfigured = Schema.Struct({
-      ...DurableEventEnvelope.fields,
-      namespace: Schema.Literal(effectDurableAgentNamespace),
-      type: Schema.Literal(sessionConfiguredEventType),
-      payload: Schema.Unknown,
-    });
-    const loose = EDADecider.define({
-      name: "test.LooseConfigured",
+  const LooseConfigured = Schema.Struct({
+    ...DurableEventEnvelope.fields,
+    namespace: Schema.Literal(effectDurableAgentNamespace),
+    type: Schema.Literal(sessionConfiguredEventType),
+    payload: Schema.Unknown,
+  });
+  const importedWithUndefinedResult = {
+    messageId: MessageId.make(sequentialUuidV7(62_001)),
+    runId: sequentialUuidV7(62_002),
+    turnId: sequentialUuidV7(62_003),
+    inferenceId: sequentialUuidV7(62_004),
+    promptParts: [
+      Prompt.toolResultPart({ id: "t1", name: "noop", isFailure: false, result: undefined }),
+    ],
+  };
+  const looseDecider = <E extends DurableEventEnvelope>(
+    events: Schema.Codec<E, unknown, never, never>,
+    draft: EDAEventDraft<E>,
+  ) =>
+    EDADecider.define({
+      name: "test.Loose",
       input: Schema.Struct({ key: Schema.String }),
-      events: LooseConfigured,
+      events,
       result: Schema.Null,
       rejection: Schema.Never,
       idempotencyKey: (input) => input.key,
-      decide: () => ({
-        _tag: "Accept",
-        items: [
-          {
-            namespace: effectDurableAgentNamespace,
-            type: sessionConfiguredEventType,
-            schemaVersion: schemaV1,
-            payload: {},
-          },
-        ],
-        result: null,
-      }),
+      decide: () => ({ _tag: "Accept", items: [draft], result: null }),
     });
-    const malformed = DurableEventEnvelope.make({
-      namespace: effectDurableAgentNamespace,
-      type: sessionConfiguredEventType,
-      schemaVersion: schemaV1,
-      durability: "durable",
-      eventId: EventId.make(sequentialUuidV7(61_000)),
-      sessionId,
-      createdAtMs: NOW,
-      payload: {},
-    });
-    const result = await run(
-      Effect.gen(function* () {
-        const state = yield* SessionState;
-        const decided = yield* Effect.exit(state.decide(loose, { key: "k" }));
-        const submitted = yield* Effect.exit(state.submitBatch([malformed]));
-        const emitted = yield* Effect.exit(state.appendAppDurable(malformed));
-        const usable = yield* followingSubmitSucceeds;
-        return { decided, submitted, emitted, usable, log: yield* logOf };
-      }),
-      { deciders: [postMessage, loose] },
-    );
-    expect(reasonOf(result.decided)).toBe("invalid_output");
-    expect(reasonOf(result.submitted)).toBe("invalid_event");
-    expect(reasonOf(result.emitted)).toBe("invalid_event");
-    expect(result.usable).toBe(true);
-    expect(result.log.map((entry) => entry.event.type)).not.toContain(sessionConfiguredEventType);
-  });
+  const configuredDraft = {
+    namespace: effectDurableAgentNamespace,
+    type: sessionConfiguredEventType,
+    schemaVersion: schemaV1,
+    payload: {},
+  } as const;
+  const importedDraft = {
+    namespace: effectDurableAgentNamespace,
+    type: assistantMessageImportedEventType,
+    schemaVersion: schemaV1,
+    payload: importedWithUndefinedResult,
+  } as const;
+  const noteDraft = {
+    namespace: "test.chat",
+    type: "NoteSet",
+    schemaVersion: schemaV1,
+    payload: { note: undefined },
+  } as const;
+  it.each([
+    // Reviewer repro (gpt-6-astra, FR-1 review round 1): a loose decider schema let a malformed
+    // SessionConfigured reach the store, which failed it as a store error and made the runtime fatal.
+    {
+      name: "a SessionConfigured its framework schema refuses",
+      draft: configuredDraft,
+      loose: looseDecider(LooseConfigured, configuredDraft),
+    },
+    // Reviewer repro (gpt-6-astra, FR-1 review round 2): the in-memory part passes the framework
+    // schema, but its JSON drops the required `result`, so the store refused what admission passed.
+    {
+      name: "an imported tool result whose JSON loses its required result",
+      draft: importedDraft,
+      loose: looseDecider(AssistantMessageImportedEvent, importedDraft),
+    },
+    {
+      name: "an app event whose JSON loses a required field",
+      draft: noteDraft,
+      loose: looseDecider(ChatEvents, noteDraft),
+    },
+  ])(
+    "refuses $name as a draft, through submit and a tool's emit path",
+    async ({ draft, loose }) => {
+      const malformed = DurableEventEnvelope.make({
+        ...draft,
+        durability: "durable",
+        eventId: EventId.make(sequentialUuidV7(61_000)),
+        sessionId,
+        createdAtMs: NOW,
+      });
+      const result = await run(
+        Effect.gen(function* () {
+          const state = yield* SessionState;
+          const decided = yield* Effect.exit(state.decide(loose, { key: "k" }));
+          const submitted = yield* Effect.exit(state.submitBatch([malformed]));
+          const emitted = yield* Effect.exit(state.appendAppDurable(malformed));
+          const usable = yield* followingSubmitSucceeds;
+          return { decided, submitted, emitted, usable, log: yield* logOf };
+        }),
+        { deciders: [postMessage, loose] },
+      );
+      expect(reasonOf(result.decided)).toBe("invalid_output");
+      expect(reasonOf(result.submitted)).toBe("invalid_event");
+      expect(reasonOf(result.emitted)).toBe("invalid_event");
+      expect(result.usable).toBe(true);
+      expect(result.log.map((entry) => durableEventEnvelope(entry.event).type)).not.toContain(
+        draft.type,
+      );
+    },
+  );
 
   it("refuses a payload that is not JSON-native through submit and a tool's emit path", async () => {
     const result = await run(
@@ -877,5 +969,123 @@ describe("tools decide", () => {
     expect(recovered.filter((entry) => entry.event.type === "Foreign")).toHaveLength(1);
     const completed = recovered.find((entry) => entry.event.type === "ToolCallCompleted");
     expect(JSON.stringify(completed?.event.payload)).toContain('"replayed":true');
+  });
+});
+
+describe("what the store keeps", () => {
+  // The store keeps `JSON.parse(JSON.stringify(value))` (gpt-6-astra, FR-1 review round 2): what is
+  // committed and returned must already be that form, or admission checked something else.
+  const keys = fc.constantFrom("a", "b", "c");
+  const { value: jsonish } = fc.letrec<{ value: unknown }>((tie) => ({
+    value: fc.oneof(
+      { depthSize: "small" },
+      fc.constant(undefined),
+      fc.constant(null),
+      fc.boolean(),
+      fc.integer(),
+      fc.string({ maxLength: 4 }),
+      fc.array(tie("value"), { maxLength: 3 }),
+      fc.dictionary(keys, tie("value"), { maxKeys: 3, noNullPrototype: true }),
+    ),
+  }));
+  const holed = fc.record(
+    { optional: jsonish, required: jsonish },
+    { requiredKeys: ["required"], noNullPrototype: true },
+  );
+  const Holed = Schema.Struct({
+    optional: Schema.optional(Schema.Unknown),
+    required: Schema.Unknown,
+  });
+  const ProbeEvent = Schema.Struct({
+    ...DurableEventEnvelope.fields,
+    namespace: Schema.Literal("test.probe"),
+    type: Schema.Literal("Probed"),
+    payload: Holed,
+  });
+  const jsonForm = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+  const probe = EDADecider.define({
+    name: "test.Probe",
+    input: Schema.Struct({ key: Schema.String, result: Holed }),
+    events: ProbeEvent,
+    result: Holed,
+    rejection: Schema.Never,
+    idempotencyKey: (input) => input.key,
+    decide: (_view, input) => ({
+      _tag: "Accept",
+      items: [],
+      result: input.result,
+    }),
+  });
+  const runProbe = <A, E>(program: Effect.Effect<A, E, SessionState | EDASessionStore>) =>
+    Effect.runPromise(
+      Effect.scoped(program).pipe(
+        Effect.provide(makeEdaTestLayer({ sessionId, appEvents: ProbeEvent, deciders: [probe] })),
+      ),
+    );
+
+  it("commits an app event only in its JSON form, which its registered schema decodes", async () => {
+    await fc.assert(
+      fc.asyncProperty(holed, async (payload) => {
+        const result = await runProbe(
+          Effect.gen(function* () {
+            const state = yield* SessionState;
+            const exit = yield* Effect.exit(
+              state.submitBatch([
+                DurableEventEnvelope.make({
+                  namespace: "test.probe",
+                  type: "Probed",
+                  schemaVersion: schemaV1,
+                  durability: "durable",
+                  eventId: EventId.make(sequentialUuidV7(63_000)),
+                  sessionId,
+                  createdAtMs: NOW,
+                  payload,
+                }),
+              ]),
+            );
+            return { exit, log: yield* logOf };
+          }),
+        );
+        if (Exit.isFailure(result.exit)) {
+          expect(hasEDASessionStoreError(result.exit.cause)).toBe(false);
+          expect(result.log).toHaveLength(0);
+          return;
+        }
+        const committed = result.exit.value.map((entry) => durableEventEnvelope(entry.event));
+        for (const event of committed) {
+          expect(event.payload).toStrictEqual(jsonForm(event.payload));
+          expect(() => Schema.decodeUnknownSync(ProbeEvent)(jsonForm(event))).not.toThrow();
+        }
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  it("returns a decider's first result exactly as every replay returns it", async () => {
+    await fc.assert(
+      fc.asyncProperty(holed, async (value) => {
+        const result = await runProbe(
+          Effect.gen(function* () {
+            const state = yield* SessionState;
+            const first = yield* Effect.exit(state.decide(probe, { key: "k", result: value }));
+            const retry = yield* Effect.exit(state.decide(probe, { key: "k", result: value }));
+            return { first, retry, log: yield* logOf };
+          }),
+        );
+        if (Exit.isFailure(result.first)) {
+          expect(reasonOf(result.first)).toBe("invalid_output");
+          expect(result.log).toHaveLength(0);
+          return;
+        }
+        expect(result.first.value._tag === "Accepted" && result.first.value.result).toStrictEqual(
+          result.first.value._tag === "Accepted" && jsonForm(result.first.value.result),
+        );
+        expect(Exit.isSuccess(result.retry) && result.retry.value).toStrictEqual({
+          ...result.first.value,
+          replayed: true,
+        });
+      }),
+      { numRuns: 100 },
+    );
   });
 });

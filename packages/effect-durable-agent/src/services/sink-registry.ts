@@ -3,6 +3,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { type DecodedDurableEvent } from "../types/events/durable";
 import { selectCommittedEvent } from "./session-store";
@@ -31,6 +32,7 @@ import {
   makeAppEventAdmission,
   RegisteredAppEvents,
   SessionCommandAdmissionConflict,
+  type AdmittedAppEvent,
 } from "./session-admission";
 import { SessionContext } from "./session-context";
 import {
@@ -306,7 +308,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
 
     const baseContext = (
       sinkName: string,
-      staged: Array<DurableEventEnvelope>,
+      staged: Array<AdmittedAppEvent>,
       publishEphemeral: (
         event: EphemeralEventEnvelope,
       ) => Effect.Effect<PositionedEvent, EDASessionStoreError>,
@@ -320,8 +322,8 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
       emitEphemeral: publishEphemeral,
       stageDurable: (event) =>
         Effect.gen(function* () {
-          const refusal = appEventAdmission.refuse(event);
-          if (refusal !== undefined) return yield* appEventConflict(refusal);
+          const admitted = appEventAdmission.admit(event);
+          if (Result.isFailure(admitted)) return yield* appEventConflict(admitted.failure);
           // Staged events and the cursor commit separately; only a key collapses a restaged event.
           if (event.dedupeKey === undefined) {
             yield* Effect.logWarning("EDA sink staged a durable event without a dedupeKey", {
@@ -330,7 +332,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
               type: event.type,
             });
           }
-          staged.push(event);
+          staged.push(admitted.success);
         }),
       forkScoped: (effect) => effect.pipe(Effect.forkIn(scope), Effect.asVoid),
     });
@@ -433,7 +435,7 @@ const makeSinkRegistry = (sinks: ReadonlyArray<EDASink>) =>
 
         if (durable !== undefined && eventsForSink.length > 0) {
           yield* Effect.gen(function* () {
-            const staged: Array<DurableEventEnvelope> = [];
+            const staged: Array<AdmittedAppEvent> = [];
             const rawBatch: EDASinkRawDurableBatch = {
               allEvents: fresh,
               events: eventsForSink,

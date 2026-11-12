@@ -422,15 +422,19 @@ No `await`, model/tool calls, publishing, or external I/O may occur inside the t
 - Serialized JSON payloads are guarded below Cloudflare’s 2 MB SQL value/row limit (current hard cap around 1.5 MB).
 - Every app-written durable event (`submit`, decider drafts, `ctx.emitDurable`, `ctx.stageDurable`)
   passes the same checks before the append, none of them a store error, so a refusal leaves the
-  runtime usable:
-  - the payload is JSON-native: it survives `JSON.parse(JSON.stringify(payload))` unchanged (no
-    `Redacted`, `Option`, `Date` or class instance; a property whose value is `undefined` passes).
-    The store keeps JSON only, so anything else would be written as whatever `JSON.stringify` makes
-    of it. Code `payload_not_json`;
-  - the serialized payload is at most `maxAppEventBytes` (1 MiB, below every host's row cap). Code
+  runtime usable. The store keeps the payload's JSON form, `JSON.parse(JSON.stringify(payload))`,
+  so admission first replaces the payload with that form, runs every later check on it, and
+  appends exactly the event it checked:
+  - the payload is JSON-native: the round trip changes nothing except dropping an object property
+    whose value is `undefined` (no `Redacted`, `Option`, `Date` or class instance, no `undefined`
+    in an array, no non-finite number). Anything else would be written as whatever
+    `JSON.stringify` makes of it. Code `payload_not_json`;
+  - the JSON payload is at most `maxAppEventBytes` (1 MiB, below every host's row cap). Code
     `event_too_large`;
-  - an event in a namespace the runtime's `appEvents` registers decodes with that schema, and an
-    allowlisted framework event decodes with its framework schema. Code `invalid_event`.
+  - the event with its JSON payload decodes with the `appEvents` schema when its namespace is
+    registered, and with its framework schema when it is an allowlisted framework event. A
+    required field left `undefined` is absent from the JSON, so it is refused here rather than by
+    the store. Code `invalid_event`.
 
   `submit`, `ctx.emitDurable` and `ctx.stageDurable` fail with a
   `SessionCommandAdmissionConflict` of that code (or `framework_event`, §8), and a decider with
@@ -717,9 +721,12 @@ refuse an unregistered decider (`unknown_decider`).
    with `replayed: true`. `decide` is not called; the input of a retry is not compared.
 4. Read the state and the clock once and call `decide` (`decide_threw` if it throws).
 5. On `Reject`, return it. Nothing is committed and the control loop is not woken.
-6. On `Accept`, encode the result with `result` (JSON-native, at most 16 KiB of JSON) and store
-   its JSON form, so an optional field left `undefined` is absent from the marker, as the store
-   would keep it. Encode every draft with `events`, apply the app event checks of §9 and the
+6. On `Accept`, encode the result with `result` into its JSON form (JSON-native as in §9, so an
+   optional field left `undefined` is absent; at most 16 KiB), decode that form with `result`, and
+   check the decoded value encodes again. Any failure is `invalid_output` and commits nothing: a
+   result the replays could not read never gets a marker. The marker stores the JSON form, and
+   this call returns the decoded value, so the first call and every replay return the same
+   result, in process and over the RPC. Encode every draft with `events`, apply the app event checks of §9 and the
    framework-namespace rule of §8 to each draft (`invalid_output`), admit each command, and commit
    `[DeciderAccepted, ...items]` as one store append.
 7. Wake the control loop if the batch held a command, and return `Accepted` with the marker's seq.
@@ -734,7 +741,8 @@ command it admits still runs later on the control loop.
 
 The host RPC `decide({ sessionId, trace, decider, input })` (`edaSessionRpc.decide`) decodes
 `input` with the decider's schema and returns the outcome encoded with its `result` or
-`rejection` schema; `encodeDecideInput` and `decodeDecideOutcome` keep the caller's types.
+`rejection` schema by `encodeDeciderJson`, the policy the marker uses, so an accepted result
+always encodes; `encodeDecideInput` and `decodeDecideOutcome` keep the caller's types.
 `decodeDecideOutcome(decider, raw)` takes what the session stub's `decide` returns, unchanged, and
 decodes the envelope (`acceptedSeq` to a `SequenceNumber`) and then the result or rejection. It is
 trusted ingress, like `submitBatch`.
@@ -762,7 +770,14 @@ Durable lane:
   the rest of what it staged. If the conflict escapes `process` (as a failure, or as a defect
   through `orDie`), the runner commits none of the batch's staged events, leaves the cursor and
   stops; the next runtime start redelivers the batch. Skipping, as for other defects, would
-  acknowledge inputs whose facts never committed.
+  acknowledge inputs whose facts never committed. The sink stays stopped for the rest of that
+  runtime's life: the session keeps accepting submits, alarms and decisions, but this sink sees
+  none of them until the host builds a new runtime (an isolate restart or eviction). A refusal is
+  deterministic, so retrying the same staging would fail again. Catch
+  `SessionCommandAdmissionConflict` around `stageDurable` and decide what to do with the input.
+- a checkpoint failure inside `process` (`ctx.checkpoint.save(...).pipe(Effect.orDie)`) is a
+  generic defect, unchanged from 0.1.0: the runner logs it, discards what was staged and advances
+  the cursor past the batch.
 
 Ephemeral lane:
 
