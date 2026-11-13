@@ -107,9 +107,9 @@ import { SessionContext } from "./session-context";
 import { RunScheduler } from "./run-scheduler";
 import { RunSchedulingWakeup } from "./run-scheduling-wakeup";
 import {
-  canGrantRun,
   planRunSchedulingCancellation,
   planWaitingRunInterruption,
+  runGrantability,
   runSchedulingInputMessageIds,
   waitingRunControl,
   type RunGrantResult,
@@ -1676,6 +1676,48 @@ const makeLiveSessionState = Effect.gen(function* () {
     );
   });
 
+  /**
+   * Retire the current reservation when no grant can ever satisfy it, and cancel its owner, so the
+   * next-run slot it holds is freed. Histories written before 0.2.2 can hold such a reservation,
+   * and a queued message that clears the paused queue cancels its inputs at admission, outside the
+   * cancellation plan. Drain and grant both call this, so the next wake heals either. It decides
+   * under the append gate from the reservation it finds there, so repeated or concurrent calls
+   * append one invalidation, and a `Blocked` reservation is left to clear.
+   */
+  const retireIneligibleRequest = Effect.fnUntraced(function* () {
+    if ((yield* currentReduced()).runSchedulingRequest === undefined) return false;
+    const retired = yield* withAppendGate(
+      Effect.gen(function* () {
+        const current = yield* currentReduced();
+        const request = current.runSchedulingRequest;
+        if (request === undefined) return undefined;
+        const grantability = runGrantability(current, request.work);
+        if (grantability._tag !== "Ineligible") return undefined;
+        const owner = current.commands.get(request.work.commandId);
+        const batch = [
+          yield* events.runSchedulingInvalidated({
+            requestId: request.requestId,
+            reason: "ineligible",
+          }),
+          ...(owner?.command === undefined || owner.terminal !== undefined
+            ? []
+            : [
+                yield* events.commandCancelled({
+                  commandId: owner.commandId,
+                  reason: "run request ineligible",
+                }),
+              ]),
+        ];
+        yield* commitDurableEntriesWithinGate(batch.map((event) => ({ event })));
+        return { requestId: request.requestId, reason: grantability.reason };
+      }),
+    );
+    if (retired === undefined) return false;
+    yield* Effect.logWarning("Retired a run reservation no grant can satisfy", retired);
+    yield* reconcileSchedulingWakeup();
+    return true;
+  });
+
   const grantRun = Effect.fn("agent.run.grant")(function* (
     grant: GrantRunCommand,
     input: SessionRunInput,
@@ -1691,9 +1733,14 @@ const makeLiveSessionState = Effect.gen(function* () {
           Effect.gen(function* () {
             yield* failIfFatal;
             const initial = yield* currentReduced();
-            if (!canGrantRun(initial, grant.requestId)) return { _tag: "Stale" } as const;
             const request = initial.runSchedulingRequest;
-            if (request === undefined) return { _tag: "Stale" } as const;
+            if (request?.requestId !== grant.requestId) return { _tag: "Stale" } as const;
+            const grantability = runGrantability(initial, request.work);
+            if (grantability._tag === "Ineligible") {
+              if (yield* retireIneligibleRequest()) yield* wakeAfterCommandAdmission();
+              return { _tag: "Stale" } as const;
+            }
+            if (grantability._tag === "Blocked") return { _tag: "Stale" } as const;
             const command = initial.commands.get(request.work.commandId);
             if (command?.command === undefined) return { _tag: "Stale" } as const;
             const admitted = command.command;
@@ -1717,10 +1764,12 @@ const makeLiveSessionState = Effect.gen(function* () {
                 const started = yield* withAppendGate(
                   Effect.gen(function* () {
                     const current = yield* currentReduced();
-                    if (!canGrantRun(current, grant.requestId)) return undefined;
-                    const inputMessageIds = [
-                      ...runSchedulingInputMessageIds(current, request.work),
-                    ];
+                    const revalidated =
+                      current.runSchedulingRequest?.requestId === grant.requestId
+                        ? runGrantability(current, request.work)
+                        : undefined;
+                    if (revalidated?._tag !== "Grantable") return undefined;
+                    const inputMessageIds = [...revalidated.inputMessageIds];
                     const batch: Array<DurableEventEnvelope> = [];
                     let commandStarted: CommittedDurableEvent | undefined;
                     if (request.work._tag === "Recovery") {
@@ -2680,6 +2729,8 @@ const makeLiveSessionState = Effect.gen(function* () {
 
   const drainOneReadyCommand = Effect.fnUntraced(function* (input: SessionRunInput) {
     const execution = yield* inspectExecutionState();
+    // A reservation no grant can satisfy would hold the next-run slot from every later message.
+    yield* retireIneligibleRequest();
     const current = yield* currentReduced();
     input = { ...input, modelSelection: current.modelSelection ?? input.modelSelection };
 

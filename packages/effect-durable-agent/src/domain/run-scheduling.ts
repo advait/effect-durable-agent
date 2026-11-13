@@ -85,6 +85,37 @@ type SchedulingState = Pick<
   "commands" | "runs" | "messages" | "commandQueues" | "runSchedulingRequest"
 >;
 
+/** A work's selected messages: those a run would consume, and those a pause still holds. */
+const runSchedulingInputs = (state: SchedulingState, work: RunSchedulingWork) => {
+  const command = state.commands.get(work.commandId)?.command;
+  const resumesPaused = work._tag === "Command" && command?._tag === "ResumePendingMessages";
+  const candidates =
+    work._tag === "Recovery"
+      ? work.inputMessageIds
+      : command?._tag === "ResumePendingMessages"
+        ? command.messageIds
+        : Array.from(state.messages.values()).flatMap((message) =>
+            (message._tag === "User" || message._tag === "Steering") &&
+            message.commandId === work.commandId
+              ? [message.messageId]
+              : [],
+          );
+  const eligible: Array<MessageId> = [];
+  const held: Array<MessageId> = [];
+  for (const messageId of candidates) {
+    const message = state.messages.get(messageId);
+    if (
+      (message?._tag !== "User" && message?._tag !== "Steering") ||
+      message.consumedSeq !== undefined ||
+      message.cancelledSeq !== undefined
+    )
+      continue;
+    if (resumesPaused || message.pausedByCommandId === undefined) eligible.push(messageId);
+    else held.push(messageId);
+  }
+  return { eligible, held };
+};
+
 /**
  * The messages a run for this work would consume: its selected user and steering messages that
  * are neither consumed nor cancelled. Dispatch, grant and cancellation all read this one function,
@@ -99,74 +130,98 @@ type SchedulingState = Pick<
 export const runSchedulingInputMessageIds = (
   state: SchedulingState,
   work: RunSchedulingWork,
-): ReadonlyArray<MessageId> => {
-  const command = state.commands.get(work.commandId)?.command;
-  const resumesPaused = work._tag === "Command" && command?._tag === "ResumePendingMessages";
-  const candidates =
-    work._tag === "Recovery"
-      ? work.inputMessageIds
-      : command?._tag === "ResumePendingMessages"
-        ? command.messageIds
-        : Array.from(state.messages.values()).flatMap((message) =>
-            (message._tag === "User" || message._tag === "Steering") &&
-            message.commandId === work.commandId
-              ? [message.messageId]
-              : [],
-          );
-  return candidates.filter((messageId) => {
-    const message = state.messages.get(messageId);
-    return (
-      (message?._tag === "User" || message?._tag === "Steering") &&
-      message.consumedSeq === undefined &&
-      message.cancelledSeq === undefined &&
-      (resumesPaused || message.pausedByCommandId === undefined)
-    );
-  });
-};
+): ReadonlyArray<MessageId> => runSchedulingInputs(state, work).eligible;
 
-/** Revalidate durable ownership and pending controls immediately before granting permission. */
-export const canGrantRun = (state: SchedulingState, requestId: RunRequestId): boolean => {
-  const request = state.runSchedulingRequest;
-  if (request?.requestId !== requestId) return false;
-  const command = state.commands.get(request.work.commandId);
-  if (command?.command === undefined || command.terminal !== undefined) return false;
-  if (Array.from(state.runs.values()).some((run) => run.terminal === undefined)) return false;
-  const inputs = runSchedulingInputMessageIds(state, request.work);
-  if (request.work._tag === "Command") {
-    if (command.startedSeq !== undefined) return false;
-    // Older admitted commands did not commit their User message until run start.
-    const legacySubmit =
-      command.command._tag === "SubmitMessage" &&
-      !Array.from(state.messages.values()).some(
-        (message) =>
-          (message._tag === "User" || message._tag === "Steering") &&
-          message.commandId === command.commandId,
-      );
-    if (inputs.length === 0 && !legacySubmit) return false;
-  } else {
-    const predecessor = state.runs.get(request.work.interruptedRunId);
-    if (
-      command.startedSeq === undefined ||
-      predecessor?.terminal === undefined ||
-      !predecessor.commandIds.includes(command.commandId) ||
-      (request.work.inputMessageIds.length > 0 && inputs.length === 0)
-    )
-      return false;
-  }
-  return !state.commandQueues.activeControlCommands.some((pending) => {
-    if (pending.commandId === command.commandId) return false;
+/**
+ * Whether a reservation's work can start a run now. Grant starts a run only from `Grantable`,
+ * whose inputs are the ones the run consumes.
+ *
+ * `Blocked` clears without intervention: a non-terminal run finishes, a pending Stop, interrupt
+ * or cancellation of an input resolves the reservation itself, or a promotion releases a paused
+ * input. It is checked first, so a pending control always decides its reservation's fate.
+ *
+ * `Ineligible` never clears, because every fact behind it is absorbing: an owner command that is
+ * missing, terminal, or (for ordinary work) already started; a recovery predecessor that does not
+ * match; inputs that were all consumed or cancelled. The session retires such a reservation
+ * rather than leave every later message waiting behind it.
+ */
+export const RunGrantability = Schema.Union([
+  Schema.TaggedStruct("Grantable", { inputMessageIds: Schema.Array(MessageId) }),
+  Schema.TaggedStruct("Blocked", {
+    reason: Schema.Literals(["active-run", "pending-control", "paused-inputs"]),
+  }),
+  Schema.TaggedStruct("Ineligible", {
+    reason: Schema.Literals([
+      "owner-missing",
+      "owner-terminal",
+      "owner-started",
+      "owner-not-started",
+      "predecessor-mismatch",
+      "inputs-gone",
+    ]),
+  }),
+]);
+export type RunGrantability = typeof RunGrantability.Type;
+
+const blocked = (reason: Extract<RunGrantability, { _tag: "Blocked" }>["reason"]) =>
+  ({ _tag: "Blocked", reason }) as const;
+const ineligible = (reason: Extract<RunGrantability, { _tag: "Ineligible" }>["reason"]) =>
+  ({ _tag: "Ineligible", reason }) as const;
+
+/** Classify a reservation's work against durable ownership, runs and pending controls. */
+export const runGrantability = (
+  state: SchedulingState,
+  work: RunSchedulingWork,
+): RunGrantability => {
+  const inputs = runSchedulingInputs(state, work);
+  if (Array.from(state.runs.values()).some((run) => run.terminal === undefined))
+    return blocked("active-run");
+  const controlPending = state.commandQueues.activeControlCommands.some((pending) => {
+    if (pending.commandId === work.commandId) return false;
     switch (pending.command._tag) {
       case "StopTurn":
         return true;
       case "SubmitMessage":
         return pending.command.disposition === "interrupt";
       case "CancelPendingMessage":
-        return inputs.includes(pending.command.messageId);
+        return inputs.eligible.includes(pending.command.messageId);
       default:
         return false;
     }
   });
+  if (controlPending) return blocked("pending-control");
+  const command = state.commands.get(work.commandId);
+  if (command?.command === undefined) return ineligible("owner-missing");
+  if (command.terminal !== undefined) return ineligible("owner-terminal");
+  const inputsRequired =
+    work._tag === "Command"
+      ? // Older admitted commands did not commit their User message until run start.
+        !(
+          command.command._tag === "SubmitMessage" &&
+          !Array.from(state.messages.values()).some(
+            (message) =>
+              (message._tag === "User" || message._tag === "Steering") &&
+              message.commandId === command.commandId,
+          )
+        )
+      : work.inputMessageIds.length > 0;
+  if (work._tag === "Command") {
+    if (command.startedSeq !== undefined) return ineligible("owner-started");
+  } else {
+    if (command.startedSeq === undefined) return ineligible("owner-not-started");
+    const predecessor = state.runs.get(work.interruptedRunId);
+    if (predecessor === undefined || !predecessor.commandIds.includes(command.commandId))
+      return ineligible("predecessor-mismatch");
+  }
+  if (inputsRequired && inputs.eligible.length === 0)
+    return inputs.held.length > 0 ? blocked("paused-inputs") : ineligible("inputs-gone");
+  return { _tag: "Grantable", inputMessageIds: inputs.eligible };
 };
+
+/** Whether a grant of `requestId` would start a run now; `runGrantability` says why not. */
+export const canGrantRun = (state: SchedulingState, requestId: RunRequestId): boolean =>
+  state.runSchedulingRequest?.requestId === requestId &&
+  runGrantability(state, state.runSchedulingRequest.work)._tag === "Grantable";
 
 /** Controls may change waiting work; later messages cannot take its reserved slot. */
 export const waitingRunControl = (state: SchedulingState): PendingCommand | undefined => {
