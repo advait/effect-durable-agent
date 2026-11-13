@@ -832,11 +832,12 @@ describe("durable run authorization", () => {
   );
 });
 
-/** The host-built public runtime, with a Deferred scheduler and a recorded host wakeup. */
+/** The host-built public runtime, with a Deferred scheduler by default and a recorded host wakeup. */
 const runtimeFixture = (
   options: {
     readonly parts?: EdaTestLayerOptions["parts"];
     readonly seedEvents?: ReadonlyArray<DurableEventEnvelope>;
+    readonly scheduling?: "Deferred" | "Immediate";
   } = {},
 ) => {
   let wakeupPending = false;
@@ -851,7 +852,10 @@ const runtimeFixture = (
     modelResolverLayer: ModelResolver.Fixed.pipe(
       Layer.provide(makeLanguageModelLayer(options.parts ?? finished)),
     ),
-    runSchedulerLayer: RunScheduler.Deferred(() => Effect.void),
+    runSchedulerLayer:
+      options.scheduling === "Immediate"
+        ? RunScheduler.Immediate
+        : RunScheduler.Deferred(() => Effect.void),
     runSchedulingWakeupLayer: Layer.succeed(RunSchedulingWakeup, {
       setPending: (pending) =>
         Effect.sync(() => {
@@ -1155,4 +1159,74 @@ describe("a reservation no grant can satisfy", () => {
       assert.isUndefined(after.runSchedulingRequest);
     }).pipe(Effect.provide(test.layer));
   });
+});
+
+describe("a paused resume whose runtime died after its run started, before its turn", () => {
+  for (const scheduling of ["Deferred", "Immediate"] as const) {
+    methods.effect(
+      `the restarted runtime still runs the message, under ${scheduling} scheduling`,
+      () =>
+        Effect.gen(function* () {
+          const startRunOf = (commandId: CommandId) =>
+            scheduling === "Immediate"
+              ? waitForState((state) =>
+                  Array.from(state.runs.values()).find((run) => run.commandIds.includes(commandId)),
+                )
+              : Effect.gen(function* () {
+                  const runtime = yield* EDARuntime;
+                  const request = yield* waitForRequestOf(commandId);
+                  assert.strictEqual(
+                    (yield* runtime.grantRun(new GrantRunCommand({ requestId: request.requestId })))
+                      ._tag,
+                    "Granted",
+                  );
+                });
+          const { messageId, resume, events } = yield* Effect.gen(function* () {
+            const runtime = yield* EDARuntime;
+            yield* runtime.submit(command);
+            yield* startRunOf(command.commandId);
+            yield* runtime.submit(steerCommand);
+            const messageId = yield* waitForState(
+              (state) =>
+                state.commandQueues.pendingSteers.find(
+                  (message) => message.commandId === steerCommand.commandId,
+                )?.messageId,
+            );
+            const { stop, resume } = interruptWithPendingMessage(messageId);
+            yield* runtime.submit([stop, resume]);
+            yield* startRunOf(resume.commandId);
+            yield* runtime.blockOnCommand(resume.commandId);
+            return { messageId, resume, events: yield* committedEvents };
+          }).pipe(
+            Effect.provide(
+              runtimeFixture({
+                scheduling,
+                parts: ({ index }) => (index === 0 ? Stream.never : finished),
+              }).layer,
+            ),
+          );
+          // The resume's run-start batch ends at its RunStarted; its TurnStarted is never committed.
+          const runStarted = events.findIndex(
+            (event) =>
+              event.type === "RunStarted" && event.payload.commandIds.includes(resume.commandId),
+          );
+          assert.isAtLeast(runStarted, 0);
+          yield* Effect.gen(function* () {
+            const runtime = yield* EDARuntime;
+            yield* startRunOf(resume.commandId);
+            assert.strictEqual(
+              (yield* runtime.blockOnCommand(resume.commandId)).event.type,
+              "CommandCompleted",
+            );
+            assert.isDefined(
+              (yield* runtime.snapshot()).state.messages.get(messageId)?.consumedSeq,
+            );
+          }).pipe(
+            Effect.provide(
+              runtimeFixture({ scheduling, seedEvents: events.slice(0, runStarted + 1) }).layer,
+            ),
+          );
+        }),
+    );
+  }
 });
