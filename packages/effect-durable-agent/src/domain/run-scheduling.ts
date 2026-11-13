@@ -85,12 +85,23 @@ type SchedulingState = Pick<
   "commands" | "runs" | "messages" | "commandQueues" | "runSchedulingRequest"
 >;
 
-/** Still-unconsumed inputs owned by a reservation, derived from the existing message records. */
+/**
+ * The messages a run for this work would consume: its selected user and steering messages that
+ * are neither consumed nor cancelled. Dispatch, grant and cancellation all read this one function,
+ * so dispatch never reserves a run that grant rejects for want of inputs, and cancelling an input
+ * always finds the reservation that owns it.
+ *
+ * A paused message is an input only of an explicit `ResumePendingMessages`, because resuming
+ * paused messages is that command's purpose: a host's interrupt-with-pending-message submits
+ * `[StopTurn, ResumePendingMessages([m])]`, and the Stop pauses `m` before the Resume runs. For any
+ * other work a pause holds the message until the user promotes or resumes it.
+ */
 export const runSchedulingInputMessageIds = (
   state: SchedulingState,
   work: RunSchedulingWork,
 ): ReadonlyArray<MessageId> => {
   const command = state.commands.get(work.commandId)?.command;
+  const resumesPaused = work._tag === "Command" && command?._tag === "ResumePendingMessages";
   const candidates =
     work._tag === "Recovery"
       ? work.inputMessageIds
@@ -108,7 +119,7 @@ export const runSchedulingInputMessageIds = (
       (message?._tag === "User" || message?._tag === "Steering") &&
       message.consumedSeq === undefined &&
       message.cancelledSeq === undefined &&
-      message.pausedByCommandId === undefined
+      (resumesPaused || message.pausedByCommandId === undefined)
     );
   });
 };

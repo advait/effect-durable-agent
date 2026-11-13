@@ -1624,14 +1624,14 @@ const makeLiveSessionState = Effect.gen(function* () {
     if (command.command._tag !== "ResumePendingMessages") {
       return yield* Effect.die(new Error("Resume dispatch requires ResumePendingMessages"));
     }
-    const current = yield* currentData();
-    const pending = command.command.messageIds.flatMap((messageId) => {
-      const message = current.reduced.messages.get(messageId);
-      return (message?._tag === "User" || message?._tag === "Steering") &&
-        message.consumedSeq === undefined &&
-        message.cancelledSeq === undefined
-        ? [message]
-        : [];
+    const current = yield* currentReduced();
+    // The same inputs a deferred grant revalidates, so a reservation made here can be granted.
+    const pending = runSchedulingInputMessageIds(current, {
+      _tag: "Command",
+      commandId: command.commandId,
+    }).flatMap((messageId) => {
+      const message = current.messages.get(messageId);
+      return message?._tag === "User" || message?._tag === "Steering" ? [message] : [];
     });
     if (pending.length === 0) {
       return yield* processInactiveStopCommand(command);
