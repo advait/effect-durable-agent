@@ -23,7 +23,6 @@ export class SessionCommandAdmissionConflict extends Schema.TaggedError<SessionC
   "SessionCommandAdmissionConflict",
   {
     code: Schema.Literals([
-      "queue_paused",
       "paused_queue_changed",
       "event_too_large",
       "framework_event",
