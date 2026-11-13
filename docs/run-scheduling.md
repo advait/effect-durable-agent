@@ -60,7 +60,8 @@ under the durable append gate. A valid grant records `RunSchedulingGranted` and
 recovery-link facts. Only then does execution start. The result is
 `Granted { runId }`; duplicate, invalidated, or otherwise stale grants return
 `Stale` and cannot create another run. A stale response is terminal for that
-permission attempt. This protocol does not allocate coordinator capacity or leases.
+permission attempt. A grant of a reservation no grant can ever satisfy also
+retires it (see below), so the reconciling query then answers `Invalidated`. This protocol does not allocate coordinator capacity or leases.
 
 ## Controls and recovery
 
@@ -71,10 +72,34 @@ permission attempt. This protocol does not allocate coordinator capacity or leas
 - Promoting a paused message whose command was cancelled atomically admits a
   fresh resume owner when no existing execution owns it. Its next run requires
   fresh authorization; promotion never revives the cancelled command.
+- A run's inputs are its selected user and steering messages that are neither
+  consumed nor cancelled. Dispatch, grant, cancellation and startup recovery
+  derive them from one function, so dispatch never reserves a run that grant
+  rejects, and a replacement run selects what its predecessor would have
+  consumed. A paused message is an input only of the `ResumePendingMessages`
+  that names it: a host's interrupt-with-pending-message submits
+  `[StopTurn, ResumePendingMessages([m])]`, the Stop pauses `m`, and the Resume's
+  reservation is granted and consumes it. `m` stays paused until a turn consumes
+  it, so a Resume whose run started but whose first turn never committed keeps
+  `m` through recovery and its recovery grant. For other work a paused input
+  stays held until it is promoted or resumed.
 - Cancelling a selected pending message invalidates its request. Remaining
   eligible recovery inputs receive a fresh request in the same cancellation
   batch, preserving the predecessor reference. Cancelling unrelated queued
   messages leaves the reservation intact.
+- A current reservation no grant can ever satisfy is retired: its owner command
+  is missing, terminal, or (for ordinary work) already started, its recovery
+  predecessor does not match, or every input was consumed or cancelled. These
+  facts never revert. Each drain step and each grant of that request commit
+  `RunSchedulingInvalidated` with reason `ineligible` and the owner's
+  `CommandCancelled` in one batch, then the session dispatches its next work. The
+  decision is made under the append gate from the reservation found there, so
+  repeated wakes and concurrent grants append one invalidation. A reservation
+  blocked only by a non-terminal run, a pending Stop, interrupt or cancellation
+  of one of its inputs, or a paused input is left for that condition to clear.
+  This heals reservations that 0.2.1 and earlier left wedged, and ones emptied
+  when a queued message clears the paused queue, which cancels those messages at
+  admission.
 - Restarting while waiting keeps the same request ID and delivery acknowledgment.
   Recovery recognizes a started command intentionally parked behind a request.
 - Restarting after `RunStarted` requires a fresh scheduling decision. Deferred
