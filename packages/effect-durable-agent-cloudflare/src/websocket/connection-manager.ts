@@ -308,10 +308,6 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
             );
             return;
           }
-          if (!this.options.isSessionReady(state.sessionId)) {
-            state.catchUpDeferred = true;
-            return;
-          }
           await this.readAndDeliver(webSocket, state, state.delivery.sentDurableThroughSeq);
         }),
       );
@@ -422,6 +418,13 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
     state: EventWebSocketState<ProjectionState>,
     afterSeq: SequenceNumber,
   ): Promise<boolean> {
+    // A read waits for the runtime, and startup recovery publishes while the runtime is built, so
+    // a read from a publication (a gap, or a suppressed frame reopening the window) waits for the
+    // build it is part of. Defer it; preparing the session flushes it once the runtime is ready.
+    if (!this.options.isSessionReady(state.sessionId)) {
+      state.catchUpDeferred = true;
+      return true;
+    }
     const page = await this.options.readEventPage({
       afterSeq,
       limit: state.delivery.policy.maxInFlightFrames * state.delivery.policy.maxFrameEvents,

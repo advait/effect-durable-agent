@@ -236,9 +236,11 @@ after the frame's last durable seq, and a live frame inside a batch or a
 catch-up frame is routinely behind it. A projection that derives anything from
 `reduced` treats it as the frame's own state only when its `lastSeq` equals
 the frame's last durable seq: a deterministic fold with that `lastSeq` is
-exactly the fold through that event. A subscriber that has caught up always
-receives a frame at the head, so a rule that waits for equality still reports
-the final state of a quiet session.
+exactly the fold through that event. Once a subscriber has been sent an event,
+it is sent a frame at the head, so a rule that waits for equality still reports
+the final state of a quiet session. A socket accepted at the head is sent no
+events frame until the next publication, so a projection seeds that state from
+the snapshot `initialize` receives.
 
 ## Transcript-window stream
 

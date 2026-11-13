@@ -81,9 +81,13 @@ interface RecordedFrame {
   readonly reducedSeq: number | undefined;
 }
 
-/** Sends every frame as JSON and records each events frame's seqs and the state it was given. */
+/**
+ * Sends every frame as JSON, except events frames ending at a `suppressed` seq, and records each
+ * events frame's seqs and the state it was given.
+ */
 const recordingProjection = (
   recorded: Array<RecordedFrame>,
+  suppressed: ReadonlySet<number> = new Set(),
 ): EDAWebSocketProjection<ProjectionState> => ({
   id: EDAWebSocketProjectionId.make("test-recording-projection-v1"),
   decodeClientMessage: (message) =>
@@ -94,10 +98,9 @@ const recordingProjection = (
   encodeState: Schema.encodeUnknownSync(ProjectionState),
   encodeServerFrame: (frame, state, context) => {
     if (frame._tag === "events") {
-      recorded.push({
-        seqs: frame.events.map((event) => event.position.seq),
-        reducedSeq: context.reduced?.lastSeq,
-      });
+      const seqs = frame.events.map((event) => event.position.seq);
+      recorded.push({ seqs, reducedSeq: context.reduced?.lastSeq });
+      if (suppressed.has(seqs.at(-1) ?? 0)) return { _tag: "SuppressAndAck", state };
     }
     return { _tag: "Send", frame: JSON.stringify(frame), state };
   },
@@ -227,6 +230,43 @@ describe("EDAWebSocketConnectionManager projection context", () => {
     await publishTo(manager, 1, 1);
 
     expect(recorded).toEqual([{ seqs: [1], reducedSeq: 1 }]);
+  });
+
+  it("defers the read a suppressed frame reopens while the session recovers", async () => {
+    const recorded: RecordedFrame[] = [];
+    const readsWhileRecovering: number[] = [];
+    let ready = true;
+    let head = 1;
+    const manager = new EDAWebSocketConnectionManager({
+      isSessionReady: () => ready,
+      prepareSession: async () => undefined,
+      readEventPage: async ({ afterSeq }) => {
+        // A real read here waits for the runtime build that is publishing, so it never returns.
+        if (!ready) {
+          readsWhileRecovering.push(afterSeq);
+          return await new Promise<never>(() => undefined);
+        }
+        return pageAfter(afterSeq, head);
+      },
+      webSocketProjection: recordingProjection(recorded, new Set([2])),
+    });
+    const webSocket = new TestWebSocket();
+    await acceptAt(manager, webSocket, 0);
+
+    ready = false;
+    head = 3;
+    await publishTo(manager, 2, 3);
+    await publishTo(manager, 3, 3);
+    ready = true;
+    await manager.flushDeferredCatchUp(SESSION_ID);
+
+    expect(readsWhileRecovering).toEqual([]);
+    expect(webSocket.closeCode).toBeUndefined();
+    expect(recorded).toEqual([
+      { seqs: [1], reducedSeq: 1 },
+      { seqs: [2], reducedSeq: 3 },
+      { seqs: [3], reducedSeq: 3 },
+    ]);
   });
 
   it("takes state from a publication while the session is not ready to read", async () => {
