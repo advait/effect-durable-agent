@@ -729,8 +729,13 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
           if (history.at(-1)?.text === "pong") break;
           await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
         }
-        expect(history.map((entry) => entry.kind)).toEqual(["user", "assistant"]);
-        expect(history[1]?.text).toBe("pong");
+        const transcript = await fetch(`${host.baseUrl}/sessions/${sessionId}/transcript`, {
+          signal: AbortSignal.timeout(30_000),
+        }).then((response) => response.text());
+        expect(history, `transcript window: ${transcript.slice(0, 20_000)}`).toEqual([
+          { kind: "user", text: expect.any(String) },
+          { kind: "assistant", text: "pong" },
+        ]);
         expect(await get(`/sessions/${sessionId}/runtime-builds`)).toEqual({ count: 1 });
 
         const resumed = await EventSocket.open(host, sessionId, lastSeen);
