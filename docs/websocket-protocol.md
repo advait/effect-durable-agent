@@ -162,6 +162,14 @@ EDA append/publish
 Cloudflare implementation catches and logs platform defects before returning
 to EDA. No callback registry or runtime listener registration is exposed.
 
+`onEvent(event, state)` also receives the session's reduced state at
+publication. A durable batch folds before it publishes, so `state.lastSeq` is
+at or after the event's seq and equals it on the batch's last event; an
+ephemeral event is published at the head. The observer is pushed this state
+because it cannot pull it: during startup recovery the runtime publishes while
+it is still being built, and a read from inside the observer would wait for
+that build.
+
 Files:
 
 - `effect-durable-agent/src/websocket/protocol.ts`: app-bound wire schemas and
@@ -219,6 +227,18 @@ may return `SuppressAndAck` for an internal-only events frame; the host removes
 only that exact receipt from window capacity and persists it separately until
 all earlier client-visible frames are ACKed. It never uses a cumulative client
 ACK on the app's behalf.
+
+`encodeServerFrame(frame, state, context)` receives `context.reduced`, the
+newest reduced state the connection manager has seen from a publication or a
+page read (a page is read before the state, so the state is at or after the
+page's head). It is defined for every `events` frame. Its `lastSeq` is at or
+after the frame's last durable seq, and a live frame inside a batch or a
+catch-up frame is routinely behind it. A projection that derives anything from
+`reduced` treats it as the frame's own state only when its `lastSeq` equals
+the frame's last durable seq: a deterministic fold with that `lastSeq` is
+exactly the fold through that event. A subscriber that has caught up always
+receives a frame at the head, so a rule that waits for equality still reports
+the final state of a quiet session.
 
 ## Transcript-window stream
 

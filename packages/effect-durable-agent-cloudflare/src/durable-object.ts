@@ -68,7 +68,7 @@ import {
   type TranscriptAlert,
 } from "./durable-object-transcript-maintenance";
 
-export type { EDAWebSocketProjection } from "./websocket/projection";
+export type { EDAWebSocketProjection, EDAWebSocketProjectionContext } from "./websocket/projection";
 /** Internal Worker-to-object header selecting an app-owned WebSocket projection. */
 export const EDA_WEB_SOCKET_PROJECTION_HEADER = "x-eda-websocket-projection";
 

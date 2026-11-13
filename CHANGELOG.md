@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.0
+
+Minor release: a host WebSocket projection receives the session's reduced state with each frame,
+so it can report a fact EDA already reduces instead of rebuilding it from events. No storage,
+checkpoint or protocol change.
+
+- **Feature:** `SessionEventObserver.onEvent(event, state)` receives the reduced state at
+  publication. A durable batch folds before it publishes, so `state.lastSeq` is at or after the
+  event's seq and equals it on the batch's last event. An ephemeral event is published at the
+  head. The state is pushed because it cannot be pulled safely: startup recovery publishes while
+  the runtime is still being built, and a read from inside the observer would wait for that
+  build.
+- **Feature:** `EDAWebSocketProjection.encodeServerFrame(frame, state, context)` receives
+  `context.reduced`, the newest reduced state the Cloudflare connection manager has seen from a
+  publication or a page read. It is defined for every `events` frame and is at or after the
+  frame's last durable seq. A projection treats it as the frame's own state only when the two
+  are equal; a live frame inside a batch and a catch-up frame are routinely behind it.
+
+Storage: none. Protocol: none. API: breaking for a host that publishes on the bus itself:
+`LiveEventBusShape.publish(event, state)` takes the state to hand the observer. Additive for
+observer and projection implementers, whose existing one- and two-parameter functions stay
+assignable. `effect-durable-agent-cloudflare/durable-object` exports
+`EDAWebSocketProjectionContext`.
+
 ## 0.3.0
 
 Minor release: a Stop that paused a queued message no longer stops the session from accepting new

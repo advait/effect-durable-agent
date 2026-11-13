@@ -129,7 +129,11 @@ export class EDASessionController<ProjectionState extends object = never> {
       prepareSession: (sessionId) => this.prepareSession(sessionId),
       readEventPage: async ({ afterSeq, limit, sessionId, subscriberId, trace }) =>
         await this.runtime.run(sessionId, (eda) =>
-          eda.readEventPage(afterSeq, limit).pipe(
+          Effect.gen(function* () {
+            const page = yield* eda.readEventPage(afterSeq, limit);
+            const snapshot = yield* eda.snapshot();
+            return { ...page, reduced: snapshot.state };
+          }).pipe(
             Effect.withSpan(
               "agent.events.page",
               hostSpanOptions(trace, {

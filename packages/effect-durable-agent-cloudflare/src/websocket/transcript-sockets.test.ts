@@ -38,6 +38,7 @@ import {
   effectDurableAgentNamespace,
   schemaV1,
 } from "effect-durable-agent/types/events";
+import { initialReducedState } from "effect-durable-agent/domain/reduced-state";
 import { SessionEventObserver } from "effect-durable-agent/services/session-event-observer";
 import {
   TranscriptLogIncarnation,
@@ -115,7 +116,11 @@ class Isolate {
       getWebSockets: () => sockets().map((socket) => socket.asWebSocket()),
       isSessionReady: () => true,
       prepareSession: async () => undefined,
-      readEventPage: async () => ({ events: [], head: SequenceNumber.make(0) }),
+      readEventPage: async () => ({
+        events: [],
+        head: SequenceNumber.make(0),
+        reduced: initialReducedState,
+      }),
       transcript: {
         transcriptStore,
         flowControl,
@@ -339,7 +344,7 @@ class GatedStore {
 const publishTo = (manager: EDAWebSocketConnectionManager, event: PositionedEvent) =>
   Effect.runPromise(
     Effect.flatMap(Effect.service(SessionEventObserver), (observer) =>
-      observer.onEvent(event),
+      observer.onEvent(event, { ...initialReducedState, lastSeq: event.position.seq }),
     ).pipe(Effect.provide(manager.observerLayer)),
   );
 
@@ -561,7 +566,7 @@ describe("transcript-window sockets", () => {
     const publish = async (event: PositionedEvent) => {
       await Effect.runPromise(
         Effect.flatMap(Effect.service(SessionEventObserver), (observer) =>
-          observer.onEvent(event),
+          observer.onEvent(event, { ...initialReducedState, lastSeq: event.position.seq }),
         ).pipe(Effect.provide(isolate.manager.observerLayer)),
       );
       await isolate.manager.settled();
@@ -734,7 +739,11 @@ describe("transcript-window sockets", () => {
     const manager = new EDAWebSocketConnectionManager({
       isSessionReady: () => true,
       prepareSession: async () => undefined,
-      readEventPage: async () => ({ events: [], head: SequenceNumber.make(0) }),
+      readEventPage: async () => ({
+        events: [],
+        head: SequenceNumber.make(0),
+        reduced: initialReducedState,
+      }),
       transcript: { transcriptStore: gated.store, schedule: () => undefined },
     });
     const socket = new TestSocket();

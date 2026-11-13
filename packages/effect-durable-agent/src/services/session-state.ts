@@ -638,6 +638,7 @@ const makeLiveSessionState = Effect.gen(function* () {
             position: entry.position,
             event: durableEventEnvelope(entry.event),
           }),
+          nextReduced,
         );
       }
       return { head: nextReduced.lastSeq } satisfies PublishedDurables;
@@ -720,7 +721,7 @@ const makeLiveSessionState = Effect.gen(function* () {
           reducerStates: current.reducerStates,
           ephemeral: { anchorSeq: head, lastSubSeq: nextSubSeq },
         });
-        yield* liveBus.publish(positioned);
+        yield* liveBus.publish(positioned, current.reduced);
         yield* sinkRegistry.publishEphemeralToSinks(positioned);
         return positioned;
       }),

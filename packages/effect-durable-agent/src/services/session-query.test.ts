@@ -28,6 +28,7 @@ import { LiveEventBus } from "./live-event-bus";
 import { EDASessionQuery } from "./session-query";
 import { SessionState, type SessionStateShape } from "./session-state";
 import { makeEdaTestLayer, testNowMs } from "../testkit/layers";
+import { initialReducedState } from "../domain/reduced-state";
 
 const SESSION_ID = SessionId.make("018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a");
 const COMMAND_ID = CommandId.make("018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a");
@@ -140,9 +141,9 @@ describe("EDASessionQuery", () => {
 
         const stream = yield* query.eventsAfter(SequenceNumber.make(0));
         const collected = yield* stream.pipe(Stream.take(4), Stream.runCollect, Effect.forkScoped);
-        yield* liveBus.publish(PositionedEvent.make(committed[1]!));
+        yield* liveBus.publish(PositionedEvent.make(committed[1]!), initialReducedState);
         const newCommitted = yield* appendDurable(session, durableCommandEvent(4));
-        yield* liveBus.publish(PositionedEvent.make(newCommitted));
+        yield* liveBus.publish(PositionedEvent.make(newCommitted), initialReducedState);
         return yield* Fiber.join(collected);
       }),
     ).pipe(Effect.provide(makeTestLayer()));
@@ -167,7 +168,10 @@ describe("EDASessionQuery", () => {
         yield* commitDurables(session, 3);
 
         const stream = yield* query.eventsAfter(SequenceNumber.make(0));
-        yield* liveBus.publish(positionedEphemeral(ephemeralTextDelta(20), 3, 1));
+        yield* liveBus.publish(
+          positionedEphemeral(ephemeralTextDelta(20), 3, 1),
+          initialReducedState,
+        );
         return yield* stream.pipe(Stream.take(4), Stream.runCollect);
       }),
     ).pipe(Effect.provide(makeTestLayer()));
@@ -196,7 +200,7 @@ describe("EDASessionQuery", () => {
         const stream = yield* query.eventsAfter(SequenceNumber.make(0));
         const collected = yield* stream.pipe(Stream.take(3), Stream.runCollect, Effect.forkScoped);
         const newCommitted = yield* appendDurable(session, durableCommandEvent(3));
-        yield* liveBus.publish(PositionedEvent.make(newCommitted));
+        yield* liveBus.publish(PositionedEvent.make(newCommitted), initialReducedState);
         return yield* Fiber.join(collected);
       }),
     ).pipe(Effect.provide(makeTestLayer()));
@@ -221,8 +225,8 @@ describe("EDASessionQuery", () => {
         const liveBus = yield* LiveEventBus;
         const query = yield* EDASessionQuery;
         yield* commitDurables(session, 3);
-        yield* liveBus.publish(positionedTurnStarted(3));
-        yield* liveBus.publish(liveDelta);
+        yield* liveBus.publish(positionedTurnStarted(3), initialReducedState);
+        yield* liveBus.publish(liveDelta, initialReducedState);
 
         const stream = yield* query.eventsAfter(SequenceNumber.make(3));
         return yield* stream.pipe(Stream.take(1), Stream.runCollect);
