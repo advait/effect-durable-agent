@@ -1,11 +1,12 @@
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as Prompt from "effect/ai/Prompt";
 import * as Response from "effect/ai/Response";
 import { describe, expect, it } from "vite-plus/test";
 
-import { SubmitMessageCommand } from "../types/commands";
+import { StopTurnCommand, SubmitMessageCommand } from "../types/commands";
 import { CommandId, CompactionId, SequenceNumber, SessionId } from "../types/core";
 import {
   CompactionExecutorId,
@@ -20,6 +21,7 @@ import {
   CompactionPlan,
   CompactionPolicy,
 } from "./compaction";
+import { LiveEventBus } from "./live-event-bus";
 import { EDARuntime } from "./runtime";
 import { EDASessionStore } from "./session-store";
 import type { CommittedDurableEvent } from "./session-store";
@@ -528,6 +530,114 @@ describe("EDA compaction", () => {
         },
       },
     });
+  });
+});
+
+describe("EDA compaction at a Stop boundary (OPP-080)", () => {
+  const STOP_COMMAND_ID = CommandId.make("018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a");
+  const queuedCommand = new SubmitMessageCommand({
+    commandId: SECOND_COMMAND_ID,
+    disposition: "queue",
+    content: [Prompt.textPart({ text: "queued while running" })],
+  });
+  const partialThenNever = Stream.make(
+    Response.makePart("text-delta", { id: "text-1", delta: "partial answer" }),
+  ).pipe(Stream.concat(Stream.never));
+  // gia-cf's policy shape: the cursor is the last response, which a Stop commits after every
+  // message queued during the run.
+  const policyLayer = CompactionPolicy.ApproximateTokenThreshold({
+    thresholdTokens: 1,
+    minSummarizableTokens: 0,
+    retain: "last-response",
+  });
+
+  /** Streams `command`, queues a message while it streams, then Stops; returns after the rebase. */
+  const stopWithQueuedMessage = (
+    options: Pick<
+      Parameters<typeof makeEdaTestLayer>[0],
+      "compactionExecutorLayer" | "generateText" | "onGenerateText"
+    >,
+  ) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const state = yield* SessionState;
+        const store = yield* EDASessionStore;
+        const live = yield* (yield* LiveEventBus).subscribe();
+        const textSeen = yield* live.pipe(
+          Stream.filter((event) => event.event.type === "TextDelta"),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* state.admitCommand(command);
+        yield* state.drainReadyWork({ modelSelection });
+        yield* Fiber.join(textSeen);
+        yield* state.admitCommand(queuedCommand);
+        yield* state.admitCommand(new StopTurnCommand({ commandId: STOP_COMMAND_ID }));
+        yield* state.drainReadyWork({ modelSelection });
+        yield* waitForCommitted(store, (committed) =>
+          committed.some((entry) => entry.event.type === "ContextRebased"),
+        );
+        for (let drain = 0; drain < 20; drain += 1) {
+          yield* state.drainReadyWork({ modelSelection });
+          yield* Effect.yieldNow;
+        }
+        return {
+          types: (yield* collectCommitted(store)).map((entry) => entry.event.type),
+          queues: (yield* state.snapshot()).commandQueues,
+        };
+      }),
+    ).pipe(
+      Effect.provide(
+        makeEdaTestLayer({
+          sessionId: SESSION_ID,
+          parts: partialThenNever,
+          compactionPolicyLayer: policyLayer,
+          ...options,
+        }),
+      ),
+    );
+
+  it("leaves the message the Stop paused paused, and starts no run", async () => {
+    const { types, queues } = await Effect.runPromise(
+      stopWithQueuedMessage({
+        compactionExecutorLayer: CompactionExecutor.FromFunction("test.executor", () =>
+          Effect.succeed(
+            CompactionOutput.make({
+              text: "summary",
+              promptMessage: Prompt.makeMessage("user", {
+                content: [Prompt.textPart({ text: "Summary" })],
+              }),
+              executorId: CompactionExecutorId.make("test.executor"),
+            }),
+          ),
+        ),
+      }),
+    );
+
+    expect(types).toContain("PendingMessagesPaused");
+    expect(queues.pausedQueue.map((message) => message.commandId)).toEqual([SECOND_COMMAND_ID]);
+    expect(types.filter((type) => type === "RunStarted")).toHaveLength(1);
+    expect(types).not.toContain("UserMessageCommitted");
+  });
+
+  it("leaves a message no turn has consumed out of the summary", async () => {
+    const summaryPrompts: Array<Prompt.RawInput> = [];
+    await Effect.runPromise(
+      stopWithQueuedMessage({
+        compactionExecutorLayer: CompactionExecutor.LanguageModelSummary({
+          executorId: "test.language-model-summary",
+        }),
+        generateText: "summary",
+        onGenerateText: ({ prompt }) => summaryPrompts.push(prompt),
+      }),
+    );
+    const summaryPromptText = summaryPrompts
+      .flatMap((prompt) => Prompt.make(prompt).content.map(promptMessageText))
+      .join("\n");
+
+    expect(summaryPromptText).toContain("[User]: first");
+    expect(summaryPromptText).not.toContain("queued while running");
   });
 });
 

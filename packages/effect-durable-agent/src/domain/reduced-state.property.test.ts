@@ -11,17 +11,23 @@ import {
   initialReducedState,
   reduceCommittedEvents,
   reducedStateCheckpointEventSeqs,
+  type MessageRecord,
+  type ReducedState,
 } from "./reduced-state";
+import { runGrantability, type RunSchedulingWork } from "./run-scheduling";
 import { CommittedDurableEvent } from "../services/session-store";
 import { StopTurnCommand, SubmitMessageCommand } from "../types/commands";
 import {
   InferenceId,
   CommandId,
+  CompactionId,
+  ContextVersion,
   EventId,
   MessageId,
   RunId,
   SequenceNumber,
   SessionId,
+  SummaryId,
   ToolCallId,
   TurnId,
   durablePosition,
@@ -57,6 +63,8 @@ type EventKind =
   | "tool-started"
   | "tool-completed"
   | "user-message"
+  | "user-submitted"
+  | "messages-paused"
   | "steering-message"
   | "steering-cancelled"
   | "assistant-message"
@@ -118,6 +126,8 @@ const eventSpecArbitrary = fc.record({
     "tool-started",
     "tool-completed",
     "user-message",
+    "user-submitted",
+    "messages-paused",
     "steering-message",
     "steering-cancelled",
     "assistant-message",
@@ -244,6 +254,20 @@ const committedFromSpec = (spec: EventSpec, position: number): CommittedDurableE
         messageId: message,
         content: content("user"),
       });
+    case "user-submitted":
+      return committed(position, "UserMessageSubmitted", {
+        commandId: command,
+        messageId: message,
+        disposition: spec.commandKind === "steer" ? "steer" : "queue",
+        content: content("submitted"),
+      });
+    case "messages-paused":
+      return committed(position, "PendingMessagesPaused", {
+        interruptionCommandId: command,
+        runId: run,
+        messageIds: [message],
+        reason: "user-interrupted",
+      });
     case "steering-message":
       return committed(position, "SteeringMessageQueued", {
         commandId: command,
@@ -290,7 +314,91 @@ const committedFromSpec = (spec: EventSpec, position: number): CommittedDurableE
   }
 };
 
+/**
+ * Where a message entered the model's context, as the prompt projection defines it: a turn's
+ * consumption for an admitted message, its own commit for a legacy committed user message.
+ */
+const contextSeq = (message: MessageRecord): number | undefined => {
+  switch (message._tag) {
+    case "System":
+      return undefined;
+    case "Assistant":
+    case "AssistantPartial":
+      return message.seq;
+    case "Steering":
+      return message.consumedSeq;
+    case "User":
+      return message.requestedDisposition === undefined ? message.seq : message.consumedSeq;
+  }
+};
+
+const messagesInContextFrom = (state: ReducedState, cursor: number) =>
+  Array.from(state.messages).filter(([, message]) => {
+    const seq = contextSeq(message);
+    return seq !== undefined && seq >= cursor;
+  });
+
+/**
+ * What a scheduler does with the work. A rebase prunes terminal commands, so an owner that was
+ * terminal reads as missing afterwards; either way the work is ineligible.
+ */
+const schedulingDecision = (state: ReducedState, work: RunSchedulingWork) => {
+  const grantability = runGrantability(state, work);
+  return grantability._tag === "Ineligible" ? { _tag: "Ineligible" } : grantability;
+};
+
+const rebaseEvents = (position: number, retainedFromContextSeq: number) => [
+  committed(position, "SummaryCreated", {
+    compactionId: CompactionId.make(uuid(0x800)),
+    summaryId: SummaryId.make(uuid(0x801)),
+    sourceFromSeq: seq(1),
+    sourceToSeq: seq(Math.max(1, retainedFromContextSeq - 1)),
+    summary: { summaryId: SummaryId.make(uuid(0x801)), text: "summary" },
+  }),
+  committed(position + 1, "ContextRebased", {
+    compactionId: CompactionId.make(uuid(0x800)),
+    summaryId: SummaryId.make(uuid(0x801)),
+    contextVersion: ContextVersion.make(1),
+    retainedFromContextSeq: seq(retainedFromContextSeq),
+  }),
+];
+
 describe("reduced-state fold properties", () => {
+  it("rebases context without changing queued, paused or steering work (OPP-080)", () => {
+    fc.assert(
+      fc.property(
+        // A legacy committed user message enters context at its own commit whether or not a turn
+        // names it, so a rebase past it prunes it by design; histories here admit messages only.
+        fc.array(
+          eventSpecArbitrary.filter((spec) => spec.kind !== "user-message"),
+          { maxLength: 40 },
+        ),
+        fc.integer({ min: 0, max: 41 }),
+        (specs, cursorSeed) => {
+          const events = specs.map((spec, index) => committedFromSpec(spec, index + 1));
+          const cursor = 1 + (cursorSeed % (events.length + 1));
+          const before = reduceCommittedEvents(events);
+          const after = reduceCommittedEvents([
+            ...events,
+            ...rebaseEvents(events.length + 1, cursor),
+          ]);
+
+          for (const queue of ["pendingQueue", "pausedQueue", "pendingSteers"] as const) {
+            expect(after.commandQueues[queue]).toEqual(before.commandQueues[queue]);
+          }
+          expect(messagesInContextFrom(after, cursor)).toEqual(
+            messagesInContextFrom(before, cursor),
+          );
+          for (let slot = 0; slot <= 4; slot += 1) {
+            const work = { _tag: "Command", commandId: commandId(slot) } as const;
+            expect(schedulingDecision(after, work)).toEqual(schedulingDecision(before, work));
+          }
+        },
+      ),
+      { numRuns: propertyRuns },
+    );
+  });
+
   it("matches full replay with incremental replay and rematerializes command queues", () => {
     fc.assert(
       fc.property(

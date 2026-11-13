@@ -1,7 +1,12 @@
 import * as Prompt from "effect/ai/Prompt";
 
 import type { ContextProjection } from "./context-projection";
-import type { MessageRecord, ReducedState, ToolCallRecord } from "./reduced-state";
+import {
+  messageContextSeq,
+  type MessageRecord,
+  type ReducedState,
+  type ToolCallRecord,
+} from "./reduced-state";
 import type { UserMessageContent } from "../types/commands";
 
 /** Durable user/assistant message records suitable for a session transcript. */
@@ -29,12 +34,11 @@ export const projectionStateThrough = <S extends Pick<ReducedState, "messages">>
 ): S => ({
   ...state,
   messages: new Map(
-    Array.from(state.messages).filter(
-      ([, message]) =>
-        message._tag === "System" ||
-        !isDurableTranscriptMessage(message) ||
-        messageTranscriptSeq(message) <= throughSeq,
-    ),
+    Array.from(state.messages).filter(([, message]) => {
+      if (message._tag === "System" || !isDurableTranscriptMessage(message)) return true;
+      const seq = messageContextSeq(message);
+      return seq !== undefined && seq <= throughSeq;
+    }),
   ),
 });
 
@@ -130,7 +134,7 @@ export const contextProjectionPromptWithUserContents = (
   ]);
 
 const compareBySeq = (left: DurableTranscriptMessage, right: DurableTranscriptMessage): number =>
-  messageTranscriptSeq(left) - messageTranscriptSeq(right) || left.seq - right.seq;
+  transcriptOrder(left) - transcriptOrder(right) || left.seq - right.seq;
 
 const promptTranscriptItems = (
   state: PromptProjectionState,
@@ -206,7 +210,7 @@ const toolPromptItems = (
 const assistantPromptInfo = (
   message: Extract<PromptContextMessage, { readonly _tag: "Assistant" | "AssistantPartial" }>,
 ): AssistantPromptInfo => ({
-  order: messageTranscriptSeq(message),
+  order: message.seq,
   toolCallOrderByProviderPartId: new Map(
     assistantToolCallParts(message).map(({ part, index }) => [part.id, index] as const),
   ),
@@ -261,20 +265,15 @@ const promptContextMessages = (
   context: ContextProjection | undefined,
 ): ReadonlyArray<PromptContextMessage> => {
   const retainedFromContextSeq = context?.currentSummary?.retainedFromContextSeq ?? 0;
-  const messages = durableMessageTranscript(state).filter(
-    (message) =>
-      isConsumedForPrompt(message) && messageTranscriptSeq(message) >= retainedFromContextSeq,
-  );
+  const messages = durableMessageTranscript(state).filter((message) => {
+    const seq = messageContextSeq(message);
+    return seq !== undefined && seq >= retainedFromContextSeq;
+  });
   const system = Array.from(state.messages.values()).find(
     (message): message is SystemContextMessage => message._tag === "System",
   );
   return system === undefined ? messages : [system, ...messages];
 };
-
-const isConsumedForPrompt = (message: DurableTranscriptMessage): boolean =>
-  message._tag !== "User" ||
-  message.requestedDisposition === undefined ||
-  message.consumedSeq !== undefined;
 
 const transcriptMessageToPromptMessage = (
   message: PromptContextMessage,
@@ -293,13 +292,12 @@ const transcriptMessageToPromptMessage = (
   }
 };
 
-const messageTranscriptSeq = (message: DurableTranscriptMessage): number =>
-  message._tag === "User" || message._tag === "Steering"
-    ? (message.consumedSeq ?? message.seq)
-    : message.seq;
+/** A message in context sorts at its context position; a pending one at its submission. */
+const transcriptOrder = (message: DurableTranscriptMessage): number =>
+  messageContextSeq(message) ?? message.seq;
 
 const promptContextMessageSeq = (message: PromptContextMessage): number =>
-  message._tag === "System" ? Number.NEGATIVE_INFINITY : messageTranscriptSeq(message);
+  message._tag === "System" ? Number.NEGATIVE_INFINITY : transcriptOrder(message);
 
 const assistantParts = (
   content: Extract<

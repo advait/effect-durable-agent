@@ -23,7 +23,7 @@ import {
   CompactionPolicyId,
   CompactionSummaryArtifact,
 } from "../domain/context-projection";
-import type { ReducedState } from "../domain/reduced-state";
+import { messageContextSeq, type ReducedState } from "../domain/reduced-state";
 import { InferenceId, ContextVersion, SequenceNumber } from "../types/core";
 import { FailurePayload, UsagePayload, type AssistantMessageContent } from "../types/events";
 import { CommittedDurableEvent, DurableAppendEntry, EDASessionStoreError } from "./session-store";
@@ -678,11 +678,19 @@ const estimateCurrentPromptChars = (
 };
 
 const estimatedContextMessages = (state: ReducedState): ReadonlyArray<EstimatedContextMessage> =>
-  durableMessageTranscript(state).map((message) => ({
-    message,
-    seq: messageSeq(message),
-    chars: estimateDurableMessageChars(message) + estimateAssociatedToolChars(message, state),
-  }));
+  durableMessageTranscript(state).flatMap((message) => {
+    const seq = messageContextSeq(message);
+    return seq === undefined
+      ? []
+      : [
+          {
+            message,
+            seq,
+            chars:
+              estimateDurableMessageChars(message) + estimateAssociatedToolChars(message, state),
+          },
+        ];
+  });
 
 const estimateDurableMessageChars = (message: DurableTranscriptMessage): number => {
   switch (message._tag) {
@@ -708,9 +716,6 @@ const estimateAssociatedToolChars = (
   );
 };
 
-const messageSeq = (message: DurableTranscriptMessage): SequenceNumber =>
-  message._tag === "Steering" ? message.consumedSeq : message.seq;
-
 const charsToTokens = (chars: number, charsPerToken: number): number =>
   Math.ceil(chars / charsPerToken);
 
@@ -730,8 +735,8 @@ const buildSummaryPrompt = (input: CompactionExecutorInput): string | undefined 
 const serializeCompactionSource = (input: CompactionExecutorInput): string => {
   const lines: Array<string> = [];
   for (const message of durableMessageTranscript(input.state)) {
-    const seq = messageSeq(message);
-    if (seq < input.plan.sourceFromSeq || seq > input.plan.sourceToSeq) {
+    const seq = messageContextSeq(message);
+    if (seq === undefined || seq < input.plan.sourceFromSeq || seq > input.plan.sourceToSeq) {
       continue;
     }
     lines.push(serializeDurableMessage(message));
