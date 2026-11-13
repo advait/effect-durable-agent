@@ -146,7 +146,8 @@ Current methods:
 - `submitAndBlock(command)` — admit a command and wait for its terminal command event.
 - `blockOnCommand(commandId, afterSeq?)` — wait for `CommandCompleted | CommandFailed | CommandCancelled`.
 - `snapshot()` — read current framework/app reducer snapshot (`{ state, reducerStates }`).
-  `state.messages` is the model's working set: `ContextRebased` prunes it, so it is not history.
+  `state.messages` is the model's working set: `ContextRebased` prunes messages that left context
+  before its cursor and keeps every message no turn has consumed, so it is not history.
   Hosts read user-visible history from the transcript (`readTranscriptWindow`, transcript sockets).
 - `eventsAfter(afterSeq)` — return a reconnect-safe stream combining durable backfill, same-process active-turn ephemeral replay, buffered live prefix, and future live events.
 

@@ -394,7 +394,7 @@ export const initialReducedState: ReducedState = {
 export const frameworkReducedStateReducerName = "_eda.framework.reduced-state";
 
 /** Schema version for the framework-owned `ReducedState` checkpoint payload. */
-export const frameworkReducedStateReducerSchemaVersion = 7;
+export const frameworkReducedStateReducerSchemaVersion = 8;
 
 /** JSON payload stored for the framework-owned reduced-state reducer checkpoint. */
 export type ReducedStateCheckpointCommandRecord = Omit<CommandRecord, "command">;
@@ -1097,6 +1097,21 @@ export const foldReducedState = (
       }
       case userMessageCommittedEventType: {
         const { commandId, messageId, content } = event.payload;
+        // Up to 0.2.2 a rebase pruned a pending submission, and its command then committed the
+        // same content under a new message id at run start. That commit replaces the submission,
+        // which would otherwise stay pending forever. A current runtime commits a user message
+        // only for a command with no submission, so this matches only those logs.
+        for (const [submittedId, submitted] of messages) {
+          if (
+            submitted._tag === "User" &&
+            submitted.commandId === commandId &&
+            submittedId !== messageId &&
+            submitted.requestedDisposition !== undefined &&
+            submitted.consumedSeq === undefined
+          ) {
+            messages.delete(submittedId);
+          }
+        }
         messages.set(messageId, {
           _tag: "User",
           messageId,
@@ -1495,12 +1510,37 @@ const pruneForContextRebase = (
   }
 };
 
-const messagePruneSeq = (message: Exclude<MessageRecord, { readonly _tag: "System" }>): number => {
-  if (message._tag === "Steering") {
-    return message.consumedSeq ?? message.cancelledSeq ?? Number.POSITIVE_INFINITY;
+/**
+ * Sequence at which a message entered the model's context, or `undefined` while it has not.
+ *
+ * An admitted message (one with a submission disposition) enters context when a turn consumes
+ * it, not when it is submitted: it can wait queued, paused or steering past any number of
+ * responses. A legacy committed user message entered at its own commit. Rebase pruning,
+ * compaction planning and the prompt projection all read this one definition, so a message the
+ * prompt has not shown the model is never summarised and never pruned.
+ */
+export const messageContextSeq = (
+  message: Exclude<MessageRecord, { readonly _tag: "System" }>,
+): SequenceNumber | undefined => {
+  switch (message._tag) {
+    case "Assistant":
+    case "AssistantPartial":
+      return message.seq;
+    case "Steering":
+      return message.consumedSeq;
+    case "User":
+      return (
+        message.consumedSeq ??
+        (message.requestedDisposition === undefined ? message.seq : undefined)
+      );
   }
-  return message.seq;
 };
+
+/** A message leaves reduced state once it has left context, or once it is cancelled unconsumed. */
+const messagePruneSeq = (message: Exclude<MessageRecord, { readonly _tag: "System" }>): number =>
+  messageContextSeq(message) ??
+  (message._tag === "User" || message._tag === "Steering" ? message.cancelledSeq : undefined) ??
+  Number.POSITIVE_INFINITY;
 
 /** Pending admitted commands in deterministic scheduler order. */
 export const pendingCommands = (state: ReducedState): ReadonlyArray<PendingCommand> =>

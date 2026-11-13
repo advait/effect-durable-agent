@@ -580,10 +580,9 @@ commit. A pending user record moves into the conversation in one update when it 
 
 Separate EDA changes, each with a production prompt-replay diff:
 
-1. Stop pruning pending user messages (removes the replacement-id re-commit).
-2. One seq rule for user messages across prune, planner and summary
-   (`core/domain/reduced-state.ts:1483-1488`; `core/services/compaction.ts:711, 733` vs
-   `core/domain/message-transcript.ts:296-299`).
+1. Stop pruning pending user messages (removes the replacement-id re-commit). Shipped in 0.2.3.
+2. One seq rule for user messages across prune, planner and summary. Shipped in 0.2.3 as
+   `messageContextSeq` (`core/domain/reduced-state.ts`).
 3. Keep tool budgets across a mid-run rebase (`core/services/session-state.ts:2789-2814`).
 
 Also out of scope: a Postgres mirror of the transcript, sink bootstrap policies, and arbitrary app
