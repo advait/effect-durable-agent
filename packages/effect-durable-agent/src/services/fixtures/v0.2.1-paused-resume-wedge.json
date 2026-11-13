@@ -1,0 +1,731 @@
+{
+  "recordedBy": "effect-durable-agent@0.2.1",
+  "requestId": "00000000-0000-73a5-bea2-40b01367b486",
+  "messageId": "00000000-0000-73a5-bea2-40a122be65b9",
+  "resumeCommandId": "00000000-0000-7000-8000-0000000024ba",
+  "laterCommandId": "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a",
+  "events": [
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandAdmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-4095c6a76809",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "34dece5c08aeeade1f92de3e1d41a688",
+          "spanId": "48c345174497d16e",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "command": {
+          "_tag": "SubmitMessage",
+          "commandId": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a",
+          "disposition": "queue",
+          "content": [
+            {
+              "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
+              "options": {},
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "UserMessageSubmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-4097707a4ed0",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "282b6662b261cd79a1e3ef37e8b295e2",
+          "spanId": "89a56da4ea254dda",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a",
+        "messageId": "00000000-0000-73a5-bea2-4096978fb409",
+        "disposition": "queue",
+        "content": [
+          {
+            "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
+            "options": {},
+            "type": "text",
+            "text": "hello"
+          }
+        ]
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "RunSchedulingRequested",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-4099406da5da",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "2c2d7fc4e30dae8ae36c801a89bf83db",
+          "spanId": "6bc9f5d417bd63f5",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "requestId": "00000000-0000-73a5-bea2-4098e718f41c",
+        "work": {
+          "_tag": "Command",
+          "commandId": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-409b1a72fc2d",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "c266461070d9e20f171854e22bd8f113",
+          "spanId": "28f804275abe94c4",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "RunSchedulingGranted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-409cb9c39602",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "c266461070d9e20f171854e22bd8f113",
+          "spanId": "28f804275abe94c4",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "requestId": "00000000-0000-73a5-bea2-4098e718f41c",
+        "runId": "00000000-0000-73a5-bea2-409a90690126"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "RunStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-409df02abe08",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "c266461070d9e20f171854e22bd8f113",
+          "spanId": "28f804275abe94c4",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "00000000-0000-73a5-bea2-409a90690126",
+        "commandIds": ["018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"],
+        "modelSelection": {
+          "provider": "test",
+          "modelId": "test-model"
+        },
+        "trace": {
+          "root": {
+            "traceId": "2e51c5a434471be94bcd328387a4a0df",
+            "spanId": "6d9ec97b39a01997",
+            "sampled": true,
+            "tracestate": null
+          },
+          "links": [
+            {
+              "context": {
+                "traceId": "34dece5c08aeeade1f92de3e1d41a688",
+                "spanId": "48c345174497d16e",
+                "sampled": true,
+                "tracestate": null
+              },
+              "attributes": {
+                "eda.trace.link_type": "command_admission",
+                "eda.command.id": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "TurnStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-409f5cd34d16",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "c266461070d9e20f171854e22bd8f113",
+          "spanId": "28f804275abe94c4",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "00000000-0000-73a5-bea2-409a90690126",
+        "turnId": "00000000-0000-73a5-bea2-409ee5abe989",
+        "inputMessageIds": ["00000000-0000-73a5-bea2-4096978fb409"]
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandAdmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40a0ed27a2b7",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "231ee20b64892d41b26ead3de4fcaffd",
+          "spanId": "7c76e4c231a8e684",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "command": {
+          "_tag": "SubmitMessage",
+          "commandId": "018f6bd5-2f2a-7b1e-8f21-1f2e3d4c5b6a",
+          "disposition": "steer",
+          "content": [
+            {
+              "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
+              "options": {},
+              "type": "text",
+              "text": "steer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "UserMessageSubmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40a2ee0b19b8",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "393abc79b63cb94db5e87f86c71f3724",
+          "spanId": "79e56d893960fac5",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f21-1f2e3d4c5b6a",
+        "messageId": "00000000-0000-73a5-bea2-40a122be65b9",
+        "disposition": "steer",
+        "content": [
+          {
+            "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
+            "options": {},
+            "type": "text",
+            "text": "steer"
+          }
+        ]
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandAdmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40a380a0c049",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "a4f5b9622f1a47816583f093a67999c6",
+          "spanId": "ac088b642edc2e20",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "command": {
+          "_tag": "StopTurn",
+          "commandId": "00000000-0000-7000-8000-0000000024b9"
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandAdmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40a470dde301",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "90eb7e64d8457b26498d8fcef7ec5989",
+          "spanId": "d17819e8c9927865",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "command": {
+          "_tag": "ResumePendingMessages",
+          "commandId": "00000000-0000-7000-8000-0000000024ba",
+          "messageIds": ["00000000-0000-73a5-bea2-40a122be65b9"]
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "InferenceStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40a66bd9070e",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "2e51c5a434471be94bcd328387a4a0df",
+          "spanId": "774de48a5caf997f",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "00000000-0000-73a5-bea2-409a90690126",
+        "turnId": "00000000-0000-73a5-bea2-409ee5abe989",
+        "inferenceId": "00000000-0000-73a5-bea2-40a5f20496d3"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40a704112396",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "a8cfb4d1ea396e3e293c2452c925a554",
+          "spanId": "b15748c7e0bc493b",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "00000000-0000-7000-8000-0000000024b9"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "StopTurnRequested",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40a85bddc549",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "a143d3ab844f808dfdba3c8ffc952544",
+          "spanId": "37e9d0b4a6ab1e9e",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "00000000-0000-7000-8000-0000000024b9",
+        "runId": "00000000-0000-73a5-bea2-409a90690126",
+        "turnId": "00000000-0000-73a5-bea2-409ee5abe989"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "InferenceFailed",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40a91849a811",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "2e51c5a434471be94bcd328387a4a0df",
+          "spanId": "774de48a5caf997f",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "00000000-0000-73a5-bea2-409a90690126",
+        "turnId": "00000000-0000-73a5-bea2-409ee5abe989",
+        "inferenceId": "00000000-0000-73a5-bea2-40a5f20496d3",
+        "error": {
+          "message": "inference interrupted",
+          "code": "inference.interrupted",
+          "details": {
+            "reason": "interrupted"
+          }
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "TurnFailed",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40aad4592a5f",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "7656c26e3137c18a922c4635cfcbb93a",
+          "spanId": "87046f53df57776e",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "00000000-0000-73a5-bea2-409a90690126",
+        "turnId": "00000000-0000-73a5-bea2-409ee5abe989",
+        "error": {
+          "message": "turn interrupted: interrupted",
+          "code": "turn.interrupted",
+          "details": {
+            "runId": "00000000-0000-73a5-bea2-409a90690126",
+            "turnId": "00000000-0000-73a5-bea2-409ee5abe989",
+            "reason": "interrupted",
+            "recoverable": false
+          }
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "RunFailed",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40ab668444e3",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "45991f6f3f4e22a4c4fda75efb3d1632",
+          "spanId": "20ccb33e14b63582",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "00000000-0000-73a5-bea2-409a90690126",
+        "error": {
+          "message": "run interrupted: interrupted",
+          "code": "run.interrupted",
+          "details": {
+            "runId": "00000000-0000-73a5-bea2-409a90690126",
+            "reason": "interrupted",
+            "recoverable": false
+          }
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandCancelled",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40acb386a6ff",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "b7b643cba7b02495fe24a36abd938430",
+          "spanId": "bace1c4c9d787061",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a",
+        "reason": "interrupted"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "PendingMessagesPaused",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40add21e4c40",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "6da42b05835205d3f71dd1bb786e0d65",
+          "spanId": "0074b90300c3b38e",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "interruptionCommandId": "00000000-0000-7000-8000-0000000024b9",
+        "messageIds": ["00000000-0000-73a5-bea2-40a122be65b9"],
+        "reason": "user-interrupted",
+        "runId": "00000000-0000-73a5-bea2-409a90690126"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "StopTurnApplied",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40aece0397e4",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "7b7448043453375c8b555be246a2f90c",
+          "spanId": "fe8bb593ef2bbe73",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "00000000-0000-7000-8000-0000000024b9",
+        "runId": "00000000-0000-73a5-bea2-409a90690126",
+        "turnId": "00000000-0000-73a5-bea2-409ee5abe989",
+        "inferenceId": "00000000-0000-73a5-bea2-40a5f20496d3"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandCompleted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40afdae43022",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "64678211d37fb64a9cc4db8f5b9b5dad",
+          "spanId": "ed0881dc5f609050",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "00000000-0000-7000-8000-0000000024b9"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "RunSchedulingRequested",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40b16a7a6746",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "61b3cbd8dfb96b3f867820d800aedb23",
+          "spanId": "86f729e1eea0e107",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "requestId": "00000000-0000-73a5-bea2-40b01367b486",
+        "work": {
+          "_tag": "Command",
+          "commandId": "00000000-0000-7000-8000-0000000024ba"
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "RunSchedulingDelivered",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40b22c3cc1ab",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "351d4cc395aa549ffd12a9fb93bc0f72",
+          "spanId": "b85f42d3e513e123",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "requestId": "00000000-0000-73a5-bea2-40b01367b486"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandAdmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40b3b364aac3",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "6e8da857e5063f6f0bb75876202c4c50",
+          "spanId": "ef194d779c729ea7",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "command": {
+          "_tag": "SubmitMessage",
+          "commandId": "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a",
+          "disposition": "queue",
+          "content": [
+            {
+              "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
+              "options": {},
+              "type": "text",
+              "text": "third"
+            }
+          ],
+          "expectedPausedMessageIdsToCancel": ["00000000-0000-73a5-bea2-40a122be65b9"]
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "UserMessageCancelled",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40b6537a275f",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "a2a22c67a91c324c3997b26f338951e4",
+          "spanId": "b958a781a87d823b",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a",
+        "messageId": "00000000-0000-73a5-bea2-40a122be65b9",
+        "reason": "clear-paused-queue"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandCancelled",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40b708b22572",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "10d023ea85a69740aa1163cf2d2aa52c",
+          "spanId": "a62c22d1a226afed",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f21-1f2e3d4c5b6a",
+        "reason": "paused queue cleared by replacement message"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "UserMessageSubmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-73a5-bea2-40b5b52a5e36",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a",
+      "createdAtMs": 0,
+      "trace": {
+        "span": {
+          "traceId": "08e52fb703c2f023cb008fec8ede69c5",
+          "spanId": "e4375900aaa5e49e",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a",
+        "messageId": "00000000-0000-73a5-bea2-40b446c7d1c0",
+        "disposition": "queue",
+        "content": [
+          {
+            "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
+            "options": {},
+            "type": "text",
+            "text": "third"
+          }
+        ]
+      }
+    }
+  ]
+}

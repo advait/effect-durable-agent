@@ -9,6 +9,7 @@ import type {
   TurnRecord,
 } from "./reduced-state";
 import { classifyRecoverableWork } from "./reduced-state";
+import { runSchedulingInputMessageIds } from "./run-scheduling";
 import type { MessageId } from "../types/core";
 
 export interface SessionRecoveryPlan {
@@ -76,21 +77,14 @@ export const planSessionRecovery = (state: ReducedState): SessionRecoveryPlan =>
       !stoppedRunIds.has(run.runId) &&
       run.commandIds.includes(continuationCommand.commandId),
   );
-  const pendingMessageIds = new Set(
-    [...state.commandQueues.pendingQueue, ...state.commandQueues.pendingSteers].map(
-      (message) => message.messageId,
-    ),
-  );
+  // The inputs the interrupted run selected, including the paused messages a Resume names.
   const sourceMessageIds =
-    continuationCommand?.command?._tag === "ResumePendingMessages"
-      ? continuationCommand.command.messageIds.filter((messageId) =>
-          pendingMessageIds.has(messageId),
-        )
-      : continuationCommand === undefined
-        ? []
-        : [...state.commandQueues.pendingQueue, ...state.commandQueues.pendingSteers]
-            .filter((message) => message.commandId === continuationCommand.commandId)
-            .map((message) => message.messageId);
+    continuationCommand === undefined
+      ? []
+      : runSchedulingInputMessageIds(state, {
+          _tag: "Command",
+          commandId: continuationCommand.commandId,
+        });
   const eligibleSteerIds =
     continuationRun === undefined
       ? []

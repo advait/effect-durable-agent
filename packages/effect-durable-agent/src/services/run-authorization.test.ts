@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { assert, makeMethods } from "@effect/vitest";
 import { describe, it } from "vite-plus/test";
 import * as Deferred from "effect/Deferred";
@@ -7,7 +8,11 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Response from "effect/ai/Response";
 
-import { makeEdaTestLayer, type EdaTestLayerOptions } from "../testkit/layers";
+import {
+  makeEdaTestLayer,
+  makeLanguageModelLayer,
+  type EdaTestLayerOptions,
+} from "../testkit/layers";
 import { RunSchedulingRequestRecord, type RunSchedulingRequest } from "../domain/run-scheduling";
 import {
   decodeReducedStateCheckpoint,
@@ -21,12 +26,18 @@ import {
   EDACommand,
   GrantRunCommand,
   PromotePendingMessageCommand,
+  ResumePendingMessagesCommand,
+  StopTurnCommand,
   SubmitMessageCommand,
 } from "../types/commands";
-import { CommandId, SessionId } from "../types/core";
-import { type DurableEventEnvelope } from "../types/events";
+import { CommandId, MessageId, RunRequestId, SequenceNumber, SessionId } from "../types/core";
+import { DurableEventEnvelope } from "../types/events";
 import { EDASessionStore, EDASessionStoreError, type EDASessionStoreShape } from "./session-store";
-import { EDASessionQuery } from "./session-query";
+import { EDASessionQuery, type EDASessionSnapshot } from "./session-query";
+import { EDARuntime } from "./runtime";
+import { makeEDARuntimeLayer } from "./runtime-layer";
+import { ModelResolver } from "./model-resolver";
+import { SinkCheckpointStore } from "./sink-checkpoint-store";
 import { SessionState } from "./session-state";
 import {
   RunScheduler,
@@ -39,6 +50,8 @@ import {
   SESSION_ID,
   command,
   secondCommand,
+  thirdCommand,
+  steerCommand,
   interruptCommand,
   stopTurnCommand,
   modelSelection,
@@ -817,4 +830,403 @@ describe("durable run authorization", () => {
         }).pipe(Effect.provide(test.layer));
       }),
   );
+});
+
+/** The host-built public runtime, with a Deferred scheduler by default and a recorded host wakeup. */
+const runtimeFixture = (
+  options: {
+    readonly parts?: EdaTestLayerOptions["parts"];
+    readonly seedEvents?: ReadonlyArray<DurableEventEnvelope>;
+    readonly scheduling?: "Deferred" | "Immediate";
+  } = {},
+) => {
+  let wakeupPending = false;
+  const layer = makeEDARuntimeLayer({
+    config: { modelSelection },
+    sessionId,
+    sessionStoreLayer:
+      options.seedEvents === undefined
+        ? EDASessionStore.InMemory(sessionId)
+        : EDASessionStore.InMemorySeeded(sessionId, options.seedEvents),
+    sinkCheckpointStoreLayer: SinkCheckpointStore.InMemory,
+    modelResolverLayer: ModelResolver.Fixed.pipe(
+      Layer.provide(makeLanguageModelLayer(options.parts ?? finished)),
+    ),
+    runSchedulerLayer:
+      options.scheduling === "Immediate"
+        ? RunScheduler.Immediate
+        : RunScheduler.Deferred(() => Effect.void),
+    runSchedulingWakeupLayer: Layer.succeed(RunSchedulingWakeup, {
+      setPending: (pending) =>
+        Effect.sync(() => {
+          wakeupPending = pending;
+        }),
+    }),
+  });
+  return { layer, wakeupPending: () => wakeupPending };
+};
+
+/** Poll the runtime's live snapshot until `select` finds a value. */
+const waitForState = <A>(
+  select: (state: EDASessionSnapshot["state"]) => A | undefined,
+): Effect.Effect<A, EDASessionStoreError, EDARuntime> =>
+  Effect.gen(function* () {
+    const runtime = yield* EDARuntime;
+    for (let attempt = 0; attempt < 500; attempt += 1) {
+      const selected = select((yield* runtime.snapshot()).state);
+      if (selected !== undefined) return selected;
+      yield* Effect.yieldNow;
+    }
+    return yield* Effect.die(new Error("Timed out waiting for session state"));
+  });
+
+const waitForRequestOf = (commandId: CommandId) =>
+  waitForState((state) =>
+    state.runSchedulingRequest?.work.commandId === commandId
+      ? state.runSchedulingRequest
+      : undefined,
+  );
+
+/** Gia's interrupt-with-pending-message: one batch that stops the run and resumes the message. */
+const interruptWithPendingMessage = (messageId: MessageId) => ({
+  stop: new StopTurnCommand({ commandId: CommandId.make(sequentialUuidV7(9_401)) }),
+  resume: new ResumePendingMessagesCommand({
+    commandId: CommandId.make(sequentialUuidV7(9_402)),
+    messageIds: [messageId],
+  }),
+});
+
+/** A granted run whose turn never finishes, plus a steering message waiting for that run. */
+const runWithPendingSteer = Effect.gen(function* () {
+  const runtime = yield* EDARuntime;
+  yield* runtime.submit(command);
+  const first = yield* waitForRequestOf(command.commandId);
+  assert.strictEqual(
+    (yield* runtime.grantRun(new GrantRunCommand({ requestId: first.requestId })))._tag,
+    "Granted",
+  );
+  yield* runtime.submit(steerCommand);
+  return yield* waitForState(
+    (state) =>
+      state.commandQueues.pendingSteers.find(
+        (message) => message.commandId === steerCommand.commandId,
+      )?.messageId,
+  );
+});
+
+describe("interrupt with a pending message under deferred scheduling", () => {
+  methods.effect("grants the resume the stop paused, and runs that message", () => {
+    const test = runtimeFixture({
+      parts: ({ index }) => (index === 0 ? Stream.never : finished),
+    });
+    return Effect.gen(function* () {
+      const runtime = yield* EDARuntime;
+      const messageId = yield* runWithPendingSteer;
+      const { stop, resume } = interruptWithPendingMessage(messageId);
+      yield* runtime.submit([stop, resume]);
+      const request = yield* waitForRequestOf(resume.commandId);
+      const grant = yield* runtime.grantRun(new GrantRunCommand({ requestId: request.requestId }));
+      assert.strictEqual(grant._tag, "Granted");
+      assert.strictEqual((yield* runtime.runRequestOutcome(request.requestId))._tag, "Granted");
+      const terminal = yield* runtime.blockOnCommand(resume.commandId);
+      assert.strictEqual(terminal.event.type, "CommandCompleted");
+      const after = (yield* runtime.snapshot()).state;
+      assert.isDefined(after.messages.get(messageId)?.consumedSeq);
+      assert.isUndefined(after.runSchedulingRequest);
+      assert.isFalse(test.wakeupPending());
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  methods.effect("cancelling the message a waiting resume selected retires its request", () => {
+    const test = runtimeFixture({
+      parts: ({ index }) => (index === 0 ? Stream.never : finished),
+    });
+    return Effect.gen(function* () {
+      const runtime = yield* EDARuntime;
+      const messageId = yield* runWithPendingSteer;
+      const { stop, resume } = interruptWithPendingMessage(messageId);
+      yield* runtime.submit([stop, resume]);
+      const request = yield* waitForRequestOf(resume.commandId);
+      yield* runtime.submitAndBlock(
+        new CancelPendingMessageCommand({
+          commandId: CommandId.make(sequentialUuidV7(9_403)),
+          messageId,
+          reason: "user-cancel",
+        }),
+      );
+      assert.strictEqual((yield* runtime.runRequestOutcome(request.requestId))._tag, "Invalidated");
+      yield* runtime.submit(thirdCommand);
+      const next = yield* waitForRequestOf(thirdCommand.commandId);
+      assert.strictEqual(
+        (yield* runtime.grantRun(new GrantRunCommand({ requestId: next.requestId })))._tag,
+        "Granted",
+      );
+      assert.strictEqual(
+        (yield* runtime.blockOnCommand(thirdCommand.commandId)).event.type,
+        "CommandCompleted",
+      );
+    }).pipe(Effect.provide(test.layer));
+  });
+});
+
+/**
+ * A history effect-durable-agent 0.2.1 wrote for gia's interrupt-with-pending-message: the Stop
+ * paused `messageId`, the Resume's reservation `requestId` was delivered, and the user's next
+ * message (`laterCommandId`) cleared the paused queue, cancelling `messageId` at admission. 0.2.1
+ * answers every grant of `requestId` with Stale, and the later message waits behind it forever.
+ */
+const loadWedgedHistory = Effect.gen(function* () {
+  const json = yield* Effect.promise(() =>
+    readFile(new URL("./fixtures/v0.2.1-paused-resume-wedge.json", import.meta.url), "utf8"),
+  );
+  return yield* Schema.decodeUnknownEffect(
+    Schema.fromJsonString(
+      Schema.Struct({
+        recordedBy: Schema.Literal("effect-durable-agent@0.2.1"),
+        requestId: RunRequestId,
+        messageId: MessageId,
+        resumeCommandId: CommandId,
+        laterCommandId: CommandId,
+        events: Schema.Array(DurableEventEnvelope),
+      }),
+    ),
+  )(json).pipe(Effect.orDie);
+});
+
+const committedEvents = Effect.gen(function* () {
+  const runtime = yield* EDARuntime;
+  const page = yield* runtime.readEventPage(SequenceNumber.make(0), 10_000);
+  return page.events.flatMap(({ event }) => (event.durability === "durable" ? [event] : []));
+});
+
+const invalidationsOf = (events: ReadonlyArray<DurableEventEnvelope>, requestId: RunRequestId) =>
+  events.flatMap((event) =>
+    event.type === "RunSchedulingInvalidated" && event.payload.requestId === requestId
+      ? [event.payload.reason]
+      : [],
+  );
+
+const runsOf = (events: ReadonlyArray<DurableEventEnvelope>, commandId: CommandId) =>
+  events.filter(
+    (event) => event.type === "RunStarted" && event.payload.commandIds.includes(commandId),
+  ).length;
+
+describe("a reservation no grant can satisfy", () => {
+  methods.effect("a session 0.2.1 wedged heals on its next wake, across repeated wakes", () =>
+    Effect.gen(function* () {
+      const wedged = yield* loadWedgedHistory;
+      const afterFirstWake = yield* Effect.gen(function* () {
+        const runtime = yield* EDARuntime;
+        assert.strictEqual(
+          (yield* runtime.runRequestOutcome(wedged.requestId))._tag,
+          "Invalidated",
+        );
+        yield* waitForRequestOf(wedged.laterCommandId);
+        return yield* committedEvents;
+      }).pipe(Effect.provide(runtimeFixture({ seedEvents: wedged.events }).layer));
+      const secondWake = runtimeFixture({ seedEvents: afterFirstWake });
+      yield* Effect.gen(function* () {
+        const runtime = yield* EDARuntime;
+        assert.strictEqual(
+          (yield* runtime.grantRun(new GrantRunCommand({ requestId: wedged.requestId })))._tag,
+          "Stale",
+        );
+        const later = yield* waitForRequestOf(wedged.laterCommandId);
+        assert.strictEqual(
+          (yield* runtime.grantRun(new GrantRunCommand({ requestId: later.requestId })))._tag,
+          "Granted",
+        );
+        assert.strictEqual(
+          (yield* runtime.blockOnCommand(wedged.laterCommandId)).event.type,
+          "CommandCompleted",
+        );
+        const after = (yield* runtime.snapshot()).state;
+        assert.strictEqual(after.commands.get(wedged.resumeCommandId)?.terminal?._tag, "Cancelled");
+        assert.isUndefined(after.runSchedulingRequest);
+        assert.isFalse(secondWake.wakeupPending());
+        const events = yield* committedEvents;
+        assert.deepStrictEqual(invalidationsOf(events, wedged.requestId), ["ineligible"]);
+        assert.strictEqual(runsOf(events, wedged.laterCommandId), 1);
+      }).pipe(Effect.provide(secondWake.layer));
+    }),
+  );
+
+  methods.effect("an authorizer's grant alone retires a 0.2.1 wedged reservation", () =>
+    Effect.gen(function* () {
+      const wedged = yield* loadWedgedHistory;
+      // SessionState without start runs no control loop, so only the grant can heal.
+      yield* Effect.gen(function* () {
+        const state = yield* SessionState;
+        assert.deepStrictEqual(
+          yield* state.grantRun(new GrantRunCommand({ requestId: wedged.requestId }), {
+            modelSelection,
+          }),
+          { _tag: "Stale" },
+        );
+        assert.strictEqual(
+          (yield* (yield* EDASessionQuery).runRequestOutcome(wedged.requestId))._tag,
+          "Invalidated",
+        );
+        yield* state.drainReadyWork({ modelSelection });
+        assert.strictEqual(
+          (yield* state.snapshot()).runSchedulingRequest?.work.commandId,
+          wedged.laterCommandId,
+        );
+      }).pipe(Effect.provide(fixture({ seedEvents: wedged.events }).layer));
+    }),
+  );
+
+  methods.effect(
+    "a message that clears a waiting resume's input retires it once, with a grant racing the drain",
+    () => {
+      const test = runtimeFixture({
+        parts: ({ index }) => (index === 0 ? Stream.never : finished),
+      });
+      return Effect.gen(function* () {
+        const runtime = yield* EDARuntime;
+        const messageId = yield* runWithPendingSteer;
+        const { stop, resume } = interruptWithPendingMessage(messageId);
+        yield* runtime.submit([stop, resume]);
+        const request = yield* waitForRequestOf(resume.commandId);
+        yield* runtime.submit(
+          new SubmitMessageCommand({
+            commandId: thirdCommand.commandId,
+            disposition: "queue",
+            content: thirdCommand.content,
+            expectedPausedMessageIdsToCancel: [messageId],
+          }),
+        );
+        const raced = yield* Effect.all(
+          [
+            runtime.grantRun(new GrantRunCommand({ requestId: request.requestId })),
+            runtime.grantRun(new GrantRunCommand({ requestId: request.requestId })),
+          ],
+          { concurrency: "unbounded" },
+        );
+        assert.deepStrictEqual(
+          raced.map((result) => result._tag),
+          ["Stale", "Stale"],
+        );
+        assert.strictEqual(
+          (yield* runtime.runRequestOutcome(request.requestId))._tag,
+          "Invalidated",
+        );
+        const later = yield* waitForRequestOf(thirdCommand.commandId);
+        assert.strictEqual(
+          (yield* runtime.grantRun(new GrantRunCommand({ requestId: later.requestId })))._tag,
+          "Granted",
+        );
+        yield* runtime.blockOnCommand(thirdCommand.commandId);
+        const events = yield* committedEvents;
+        assert.deepStrictEqual(invalidationsOf(events, request.requestId), ["ineligible"]);
+        assert.strictEqual(runsOf(events, thirdCommand.commandId), 1);
+        assert.strictEqual(
+          (yield* runtime.snapshot()).state.commands.get(resume.commandId)?.terminal?._tag,
+          "Cancelled",
+        );
+      }).pipe(Effect.provide(test.layer));
+    },
+  );
+
+  methods.effect("a grant blocked by a pending stop leaves the reservation to that stop", () => {
+    const test = fixture();
+    return Effect.gen(function* () {
+      const state = yield* SessionState;
+      const store = yield* EDASessionStore;
+      yield* state.admitCommand(command);
+      yield* state.drainReadyWork({ modelSelection });
+      const request = yield* waitingRequest;
+      yield* state.admitCommand(secondCommand);
+      yield* state.admitCommand(stopTurnCommand);
+      assert.deepStrictEqual(
+        yield* state.grantRun(new GrantRunCommand({ requestId: request.requestId }), {
+          modelSelection,
+        }),
+        { _tag: "Stale" },
+      );
+      assert.strictEqual(
+        (yield* (yield* EDASessionQuery).runRequestOutcome(request.requestId))._tag,
+        "Waiting",
+      );
+      yield* state.drainReadyWork({ modelSelection });
+      const events = (yield* collectCommitted(store)).map((item) => item.event);
+      assert.deepStrictEqual(invalidationsOf(events, request.requestId), ["stopped"]);
+      const after = yield* state.snapshot();
+      assert.deepStrictEqual(
+        after.commandQueues.pausedQueue.map((message) => message.commandId),
+        [command.commandId, secondCommand.commandId],
+      );
+      assert.isUndefined(after.runSchedulingRequest);
+    }).pipe(Effect.provide(test.layer));
+  });
+});
+
+describe("a paused resume whose runtime died after its run started, before its turn", () => {
+  for (const scheduling of ["Deferred", "Immediate"] as const) {
+    methods.effect(
+      `the restarted runtime still runs the message, under ${scheduling} scheduling`,
+      () =>
+        Effect.gen(function* () {
+          const startRunOf = (commandId: CommandId) =>
+            scheduling === "Immediate"
+              ? waitForState((state) =>
+                  Array.from(state.runs.values()).find((run) => run.commandIds.includes(commandId)),
+                )
+              : Effect.gen(function* () {
+                  const runtime = yield* EDARuntime;
+                  const request = yield* waitForRequestOf(commandId);
+                  assert.strictEqual(
+                    (yield* runtime.grantRun(new GrantRunCommand({ requestId: request.requestId })))
+                      ._tag,
+                    "Granted",
+                  );
+                });
+          const { messageId, resume, events } = yield* Effect.gen(function* () {
+            const runtime = yield* EDARuntime;
+            yield* runtime.submit(command);
+            yield* startRunOf(command.commandId);
+            yield* runtime.submit(steerCommand);
+            const messageId = yield* waitForState(
+              (state) =>
+                state.commandQueues.pendingSteers.find(
+                  (message) => message.commandId === steerCommand.commandId,
+                )?.messageId,
+            );
+            const { stop, resume } = interruptWithPendingMessage(messageId);
+            yield* runtime.submit([stop, resume]);
+            yield* startRunOf(resume.commandId);
+            yield* runtime.blockOnCommand(resume.commandId);
+            return { messageId, resume, events: yield* committedEvents };
+          }).pipe(
+            Effect.provide(
+              runtimeFixture({
+                scheduling,
+                parts: ({ index }) => (index === 0 ? Stream.never : finished),
+              }).layer,
+            ),
+          );
+          // The resume's run-start batch ends at its RunStarted; its TurnStarted is never committed.
+          const runStarted = events.findIndex(
+            (event) =>
+              event.type === "RunStarted" && event.payload.commandIds.includes(resume.commandId),
+          );
+          assert.isAtLeast(runStarted, 0);
+          yield* Effect.gen(function* () {
+            const runtime = yield* EDARuntime;
+            yield* startRunOf(resume.commandId);
+            assert.strictEqual(
+              (yield* runtime.blockOnCommand(resume.commandId)).event.type,
+              "CommandCompleted",
+            );
+            assert.isDefined(
+              (yield* runtime.snapshot()).state.messages.get(messageId)?.consumedSeq,
+            );
+          }).pipe(
+            Effect.provide(
+              runtimeFixture({ scheduling, seedEvents: events.slice(0, runStarted + 1) }).layer,
+            ),
+          );
+        }),
+    );
+  }
 });

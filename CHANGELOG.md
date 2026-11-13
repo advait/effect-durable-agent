@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.2.2
+
+Patch release: a deferred interrupt-with-pending-message no longer wedges a session, and sessions
+it already wedged heal on their next wake. No storage schema or checkpoint change.
+
+- **Fix:** under a Deferred run scheduler, `[StopTurn, ResumePendingMessages([m])]` (a host's
+  interrupt-with-pending-message) reserved a run that no grant could start. The Stop paused `m`;
+  Resume dispatch counted `m` as an input and requested a run, but the grant's input check dropped
+  paused messages, so every grant returned `Stale` and the request stayed `Waiting`. The
+  cancellation plan read the same filtered inputs, so cancelling `m` did not retire the request,
+  and every later message waited behind it while the host's authorizer kept polling. Dispatch,
+  grant and cancellation now derive a run's inputs from one function,
+  `runSchedulingInputMessageIds`, in which a paused message is an input only of the
+  `ResumePendingMessages` that names it. The Immediate path already ran those messages.
+- **Fix:** a `ResumePendingMessages` whose run started but whose first turn never committed (the
+  runtime died between the two batches) recovered without the paused messages it names: startup
+  recovery chose a continuation's inputs from the unpaused queues, so the replacement run
+  completed the Resume and the user's message stayed paused and unconsumed. This affected the
+  Immediate path in 0.2.1 and earlier, and the Deferred path once its reservation became
+  grantable. Recovery now derives a continuation's inputs from `runSchedulingInputMessageIds`
+  too, and its recovery request keeps those paused inputs grantable.
+- **Fix:** a current reservation no grant can ever satisfy is retired on the next drain step or
+  grant of it: its owner is missing, terminal, or (for ordinary work) already started, its
+  recovery predecessor does not match, or every input was consumed or cancelled. One batch
+  commits `RunSchedulingInvalidated` with reason `ineligible` and `CommandCancelled` (reason
+  `run request ineligible`) for a non-terminal owner, a warning is logged with the reason, and the
+  session dispatches its next work. Reservations blocked only by a non-terminal run, a pending
+  Stop, interrupt or cancellation of an input, or a paused input are left alone. This heals
+  sessions 0.2.1 and earlier wedged (a host needs no data repair), and reservations emptied when
+  a queued message clears the paused queue, which cancels those messages at admission. The
+  decision is made under the append gate, so repeated wakes and concurrent grants append one
+  invalidation.
+
+Storage: no schema, migration or checkpoint change; the healing writes only existing event types
+(`RunSchedulingInvalidated`, whose `ineligible` reason the 0.2.1 schema already accepts, and
+`CommandCancelled`). Protocol: an authorizer can now see `runRequestOutcome` move from `Waiting`
+to `Invalidated` for a request it was granting; a grant of such a request still answers `Stale`.
+API: additive. `effect-durable-agent/domain/run-scheduling` adds `runGrantability` and its
+`RunGrantability` result (`Grantable`, `Blocked`, `Ineligible`); `canGrantRun` keeps its signature
+and is derived from it. `runSchedulingInputMessageIds` now includes the paused messages a
+`ResumePendingMessages` names, for its own work and its recovery work, matching the messages the
+Immediate path already ran.
+
 ## 0.2.1
 
 Patch release: idle session objects stop waking every 30 s. No storage, protocol or API change.

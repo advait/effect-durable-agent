@@ -179,7 +179,10 @@ wakeup retries failures. Waiting for permission holds no active-work lease.
 `GrantRun` uses a separate trusted API, excluded from ordinary `EDACommand`
 ingress. A current eligible grant and `RunStarted` commit atomically. Stop,
 interrupt, and selected-message cancellation invalidate requests; stale grants
-cannot revive them. Waiting survives restart with the same request ID, while a
+cannot revive them. The next drain or grant retires a reservation no grant can
+ever satisfy, so it cannot hold the next-run slot from later messages. Dispatch,
+grant, cancellation and recovery select a run's inputs through one function, in
+which a paused message is an input only of the `ResumePendingMessages` that names it. Waiting survives restart with the same request ID, while a
 replacement for a run that already started needs a fresh decision and request.
 See [durable run authorization](run-scheduling.md) for the complete contract,
 host obligations, and checkpoint compatibility.
