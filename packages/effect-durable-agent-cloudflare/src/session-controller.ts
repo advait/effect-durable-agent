@@ -380,7 +380,7 @@ export class EDASessionController<ProjectionState extends object = never> {
 
   async destroy(_input: EDASessionScopedInput): Promise<void> {
     await this.runtime.destroy();
-    await this.webSockets.resetTranscript();
+    await this.webSockets.sessionDestroyed();
   }
 
   async alarm(input?: EDASessionScopedInput): Promise<void> {

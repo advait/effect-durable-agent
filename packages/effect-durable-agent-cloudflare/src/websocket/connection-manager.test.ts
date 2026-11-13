@@ -209,6 +209,26 @@ describe("EDAWebSocketConnectionManager projection context", () => {
     expect(recorded).toEqual([{ seqs: [3], reducedSeq: 3 }]);
   });
 
+  it("forgets the destroyed log's state, so the new log's frames meet their own state", async () => {
+    const recorded: RecordedFrame[] = [];
+    let head = 5;
+    const manager = new EDAWebSocketConnectionManager({
+      isSessionReady: () => true,
+      prepareSession: async () => undefined,
+      readEventPage: async ({ afterSeq }) => pageAfter(afterSeq, head),
+      webSocketProjection: recordingProjection(recorded),
+    });
+    await acceptAt(manager, new TestWebSocket(), 5);
+
+    await manager.sessionDestroyed();
+    head = 0;
+    await acceptAt(manager, new TestWebSocket(), 0);
+    head = 1;
+    await publishTo(manager, 1, 1);
+
+    expect(recorded).toEqual([{ seqs: [1], reducedSeq: 1 }]);
+  });
+
   it("takes state from a publication while the session is not ready to read", async () => {
     const recorded: RecordedFrame[] = [];
     let ready = true;

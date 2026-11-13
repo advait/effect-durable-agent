@@ -844,7 +844,7 @@ describe("transcript-window sockets", () => {
 
     // The object hibernates; destroySession wakes a new isolate that has restored nothing.
     const woken = new Isolate(() => sockets, defaultEDAWebSocketFlowControl, gated.store);
-    await woken.manager.resetTranscript();
+    await woken.manager.sessionDestroyed();
     expect(transcript.closeCode).toBe(EDA_WS_CLOSE_TRANSCRIPT_RESUBSCRIBE);
     expect(raw.closeCode).toBeUndefined();
   });

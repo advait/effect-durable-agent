@@ -116,11 +116,6 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
   }
 
   /**
-   * The session's log was destroyed: drop live content and close every transcript socket,
-   * including those still hibernated, which a just-woken object has not restored yet. They are
-   * recognised by their attachment kind without being restored.
-   */
-  /**
    * Re-read every transcript socket, held or hibernated, at the current cut. The served version
    * changed without a publication (a rebuilt version activated), so each subscriber receives a
    * complete replacement (design §7 step 4, §9.4).
@@ -142,7 +137,14 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
     this.transcript.serveRestored(sockets);
   }
 
-  async resetTranscript(): Promise<void> {
+  /**
+   * The session's log was destroyed. Forget its reduced state, since the new log restarts at
+   * seq 0, then drop live content and close every transcript socket, including those still
+   * hibernated, which a just-woken object has not restored yet. They are recognised by their
+   * attachment kind without being restored.
+   */
+  async sessionDestroyed(): Promise<void> {
+    this.reduced = undefined;
     if (this.transcript === undefined) return;
     const hibernated: WebSocket[] = [];
     for (const webSocket of this.options.getWebSockets?.() ?? []) {
