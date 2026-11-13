@@ -374,7 +374,7 @@ At a completed turn boundary:
 2. snapshot all eligible pending steers;
 3. if the snapshot is non-empty, start one continuation turn in the same run;
 4. otherwise terminalize the run and active command;
-5. if the queue is not paused, start the next queue message as a new run.
+5. start the next queue message that no pause holds as a new run.
 
 ### 9.4 Unexpected run failure
 
@@ -598,8 +598,9 @@ Delete uses the normal user-cancellation path.
 ### 15.3 Queue pause
 
 The UI renders the interrupted run terminal separately from the paused queue.
-Each paused message offers Cancel/Edit and Promote. A new ordinary send opens
-the destructive confirmation flow described above.
+Each paused message offers Cancel/Edit and Promote. A new ordinary send is
+admitted as usual and leaves the paused messages held; a client may offer the
+optional clear-and-send of section 12.
 
 ## 16. Gia metadata and authorization
 
@@ -678,7 +679,7 @@ Durable Object order and are batched by EDA, not Slack, at the next turn
 boundary. Their transcript rows, authors, attachments, and cancellation audit
 identities remain separate.
 
-Slack does not expose queue, promotion, paused-queue confirmation, or browser
+Slack does not expose queue, promotion, paused-queue clearing, or browser
 edit behavior. A Slack steer can start a run while unrelated browser-created
 queue messages remain paused.
 
@@ -760,7 +761,8 @@ turn start, turn terminal, and run failure and assert the invariants in section
 - failed run preserves unconsumed steers;
 - explicit stop demotes steers and pauses all waiting work;
 - selective promotion leaves other pause members held;
-- ordinary queue submission conflicts while paused;
+- ordinary queue submission is admitted and runs while paused, and the held
+  messages stay paused;
 - conditional clear-and-submit is atomic and detects stale sets.
 - interrupting with a pending steer stops the active run and resumes exactly
   that message while other paused messages remain held.
