@@ -13,6 +13,8 @@ import {
   reduceCommittedEvents,
   reducedStateCheckpointEventSeqs,
 } from "./reduced-state";
+import { contextProjectionPrompt } from "./message-transcript";
+import { runGrantability } from "./run-scheduling";
 import { StopTurnCommand, SubmitMessageCommand } from "../types/commands";
 import {
   InferenceId,
@@ -935,5 +937,168 @@ describe("reduced-state", () => {
 
     expect(incremental).toEqual(allAtOnce);
     expect(classifyRecoverableWork(incremental).activeCommands).toEqual([]);
+  });
+});
+
+describe("a context rebase keeps every message no turn has consumed (OPP-080)", () => {
+  const FIRST = CommandId.make(uuid(0x8010));
+  const QUEUED = CommandId.make(uuid(0x8011));
+  const STOP = CommandId.make(uuid(0x8012));
+  const FIRST_MESSAGE = MessageId.make(uuid(0x8020));
+  const QUEUED_MESSAGE = MessageId.make(uuid(0x8021));
+  const REPLACEMENT_MESSAGE = MessageId.make(uuid(0x8022));
+  const FIRST_RUN = RunId.make(uuid(0x8030));
+  const SECOND_RUN = RunId.make(uuid(0x8031));
+  const FIRST_TURN = TurnId.make(uuid(0x8040));
+  const SECOND_TURN = TurnId.make(uuid(0x8041));
+  const submit = (commandId: CommandId, text: string) =>
+    new SubmitMessageCommand({
+      commandId,
+      disposition: "queue",
+      content: [Prompt.textPart({ text })],
+    });
+  const first = submit(FIRST, "first");
+  const queued = submit(QUEUED, "queued while running");
+
+  /** A run consumes `first`; `queued` is admitted while it runs. */
+  const runWithQueuedMessage = () => [
+    committed(1, "CommandAdmitted", { command: first }),
+    committed(2, "UserMessageSubmitted", {
+      commandId: FIRST,
+      messageId: FIRST_MESSAGE,
+      disposition: "queue",
+      content: first.content,
+    }),
+    committed(3, "CommandStarted", { commandId: FIRST }),
+    committed(4, "RunStarted", {
+      runId: FIRST_RUN,
+      commandIds: [FIRST],
+      modelSelection: { provider: "test", modelId: "test-model" },
+    }),
+    committed(5, "TurnStarted", {
+      runId: FIRST_RUN,
+      turnId: FIRST_TURN,
+      inputMessageIds: [FIRST_MESSAGE],
+    }),
+    committed(6, "CommandAdmitted", { command: queued }),
+    committed(7, "UserMessageSubmitted", {
+      commandId: QUEUED,
+      messageId: QUEUED_MESSAGE,
+      disposition: "queue",
+      content: queued.content,
+    }),
+  ];
+
+  const rebase = (seq: number, retainedFromContextSeq: number) => [
+    committed(seq, "SummaryCreated", {
+      compactionId: CompactionId.make(uuid(0x8050)),
+      summaryId: SummaryId.make(uuid(0x8051)),
+      sourceFromSeq: SequenceNumber.make(1),
+      sourceToSeq: SequenceNumber.make(retainedFromContextSeq - 1),
+      summary: { summaryId: SummaryId.make(uuid(0x8051)), text: "summary" },
+    }),
+    committed(seq + 1, "ContextRebased", {
+      compactionId: CompactionId.make(uuid(0x8050)),
+      summaryId: SummaryId.make(uuid(0x8051)),
+      contextVersion: ContextVersion.make(1),
+      retainedFromContextSeq: SequenceNumber.make(retainedFromContextSeq),
+    }),
+  ];
+
+  const firstRunCompleted = () => [
+    committed(8, "TurnCompleted", { runId: FIRST_RUN, turnId: FIRST_TURN }),
+    committed(9, "RunCompleted", { runId: FIRST_RUN }),
+    committed(10, "CommandCompleted", { commandId: FIRST }),
+  ];
+
+  it("keeps a queued message pending", () => {
+    const state = reduceCommittedEvents([
+      ...runWithQueuedMessage(),
+      ...firstRunCompleted(),
+      ...rebase(11, 11),
+    ]);
+    expect(state.commandQueues.pendingQueue.map((message) => message.messageId)).toEqual([
+      QUEUED_MESSAGE,
+    ]);
+  });
+
+  it("keeps a message a Stop paused paused, so no run is grantable for it", () => {
+    const state = reduceCommittedEvents([
+      ...runWithQueuedMessage(),
+      committed(8, "CommandAdmitted", { command: new StopTurnCommand({ commandId: STOP }) }),
+      committed(9, "MessageQueuePaused", {
+        stopCommandId: STOP,
+        runId: FIRST_RUN,
+        messageIds: [QUEUED_MESSAGE],
+        reason: "user-interrupted",
+      }),
+      committed(10, "RunFailed", {
+        runId: FIRST_RUN,
+        error: { message: "stopped", code: "run.interrupted" },
+      }),
+      committed(11, "CommandFailed", { commandId: FIRST, error: { message: "stopped" } }),
+      committed(12, "CommandCompleted", { commandId: STOP }),
+      ...rebase(13, 13),
+    ]);
+    expect(state.commandQueues.pausedQueue.map((message) => message.messageId)).toEqual([
+      QUEUED_MESSAGE,
+    ]);
+    expect(runGrantability(state, { _tag: "Command", commandId: QUEUED })).toEqual({
+      _tag: "Blocked",
+      reason: "paused-inputs",
+    });
+  });
+
+  it("keeps a message submitted before the cursor and consumed after it in the prompt", () => {
+    const state = reduceCommittedEvents([
+      ...runWithQueuedMessage(),
+      ...firstRunCompleted(),
+      committed(11, "CommandStarted", { commandId: QUEUED }),
+      committed(12, "RunStarted", {
+        runId: SECOND_RUN,
+        commandIds: [QUEUED],
+        modelSelection: { provider: "test", modelId: "test-model" },
+      }),
+      committed(13, "TurnStarted", {
+        runId: SECOND_RUN,
+        turnId: SECOND_TURN,
+        inputMessageIds: [QUEUED_MESSAGE],
+      }),
+      // The cursor sits after the message's submission (7) and before the turn that consumed it.
+      ...rebase(14, 11),
+    ]);
+    expect(JSON.stringify(contextProjectionPrompt(state, undefined))).toContain(
+      "queued while running",
+    );
+  });
+
+  it("drops a pending submission that 0.2.2 replaced with a new message id at run start", () => {
+    // 0.2.2 pruned the pending submission at the rebase, then its command committed the same
+    // content under a new message id. Folding that log must not resurrect the submission.
+    const state = reduceCommittedEvents([
+      ...runWithQueuedMessage(),
+      ...firstRunCompleted(),
+      ...rebase(11, 11),
+      committed(13, "CommandStarted", { commandId: QUEUED }),
+      committed(14, "UserMessageCommitted", {
+        commandId: QUEUED,
+        messageId: REPLACEMENT_MESSAGE,
+        content: queued.content,
+      }),
+      committed(15, "RunStarted", {
+        runId: SECOND_RUN,
+        commandIds: [QUEUED],
+        modelSelection: { provider: "test", modelId: "test-model" },
+      }),
+      committed(16, "TurnStarted", {
+        runId: SECOND_RUN,
+        turnId: SECOND_TURN,
+        inputMessageIds: [REPLACEMENT_MESSAGE],
+      }),
+    ]);
+    expect(state.messages.has(QUEUED_MESSAGE)).toBe(false);
+    expect(state.commandQueues.pendingQueue).toEqual([]);
+    const prompt = JSON.stringify(contextProjectionPrompt(state, undefined));
+    expect(prompt.split("queued while running")).toHaveLength(2);
   });
 });

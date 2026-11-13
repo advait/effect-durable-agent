@@ -697,6 +697,77 @@ describe("SessionState", () => {
     }),
   );
 
+  makeMethods(it).effect(
+    "restores a message a 0.2.2 checkpoint pruned at a Stop boundary, still paused",
+    () =>
+      Effect.gen(function* () {
+        const json = yield* Effect.promise(() =>
+          readFile(
+            new URL("./fixtures/v0.2.2-stop-rebase-pruned-pause.json", import.meta.url),
+            "utf8",
+          ),
+        );
+        // Recorded by 0.2.2: a Stop paused a queued message, then the boundary compaction's
+        // rebase pruned it, so the version 7 checkpoint has no record of the message.
+        const fixture = yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(
+            Schema.Struct({
+              recordedBy: Schema.Literal("effect-durable-agent@0.2.2"),
+              pausedCommandId: CommandId,
+              checkpoint: Schema.Struct({
+                schemaVersion: Schema.Literal(7),
+                throughSeq: SequenceNumber,
+                payload: Schema.Unknown,
+              }),
+              events: Schema.Array(DurableEventEnvelope),
+            }),
+          ),
+        )(json);
+        const restored = yield* Effect.gen(function* () {
+          const state = yield* SessionState;
+          const store = yield* EDASessionStore;
+          yield* state.start({ modelSelection });
+          for (let drain = 0; drain < 5; drain += 1) {
+            yield* state.drainReadyWork({ modelSelection });
+            yield* Effect.yieldNow;
+          }
+          const committed = yield* store
+            .eventsAfter(SequenceNumber.make(0))
+            .pipe(Stream.runCollect, Effect.map(Array.from));
+          return {
+            snapshot: yield* state.snapshot(),
+            runsStarted: committed.filter((entry) => entry.event.type === "RunStarted").length,
+          };
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            makeEdaTestLayer({
+              sessionId: SessionId.make("018f6bd5-2f2a-7b1e-8f1a-000000000080"),
+              seedEvents: fixture.events,
+              parts: Stream.never,
+              wrapStore: (store) => ({
+                ...store,
+                loadReducerCheckpoint: (name) =>
+                  name === frameworkReducedStateReducerName
+                    ? Effect.succeed({
+                        name,
+                        schemaVersion: fixture.checkpoint.schemaVersion,
+                        throughSeq: fixture.checkpoint.throughSeq,
+                        payload: fixture.checkpoint.payload,
+                        updatedAtMs: 1,
+                      })
+                    : store.loadReducerCheckpoint(name),
+              }),
+            }),
+          ),
+        );
+        expect(
+          restored.snapshot.commandQueues.pausedQueue.map((message) => message.commandId),
+        ).toEqual([fixture.pausedCommandId]);
+        expect(restored.runsStarted).toBe(1);
+      }),
+  );
+
   it("replays recovery continuations hidden by a version 3 rollback checkpoint", async () => {
     const LayerWithRollbackCheckpoint = makeEdaTestLayer({
       sessionId: SessionId.make(SESSION_ID),

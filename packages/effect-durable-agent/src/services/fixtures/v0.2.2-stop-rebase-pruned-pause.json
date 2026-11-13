@@ -1,0 +1,908 @@
+{
+  "recordedBy": "effect-durable-agent@0.2.2",
+  "pausedCommandId": "018f6bd5-2f2a-7b1e-8f1c-1f2e3d4c5b6a",
+  "checkpoint": {
+    "schemaVersion": 7,
+    "throughSeq": 24,
+    "payload": {
+      "lastSeq": 24,
+      "modelSelection": {
+        "provider": "test",
+        "modelId": "test-model"
+      },
+      "commands": [
+        [
+          "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a",
+          {
+            "commandId": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a",
+            "admittedSeq": 1,
+            "admissionTrace": {
+              "span": {
+                "traceId": "7aee55157982c07af21731d22b6d58fd",
+                "spanId": "2d06479b1a27bd65",
+                "sampled": true,
+                "tracestate": null
+              },
+              "links": []
+            },
+            "startedSeq": 3,
+            "terminal": {
+              "_tag": "Cancelled",
+              "seq": 16,
+              "reason": "interrupted"
+            }
+          }
+        ],
+        [
+          "018f6bd5-2f2a-7b1e-8f1c-1f2e3d4c5b6a",
+          {
+            "commandId": "018f6bd5-2f2a-7b1e-8f1c-1f2e3d4c5b6a",
+            "admittedSeq": 7,
+            "admissionTrace": {
+              "span": {
+                "traceId": "d2ec057fe950e6407608d0ea2044a191",
+                "spanId": "e041211a59ff7d24",
+                "sampled": true,
+                "tracestate": null
+              },
+              "links": []
+            }
+          }
+        ],
+        [
+          "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a",
+          {
+            "commandId": "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a",
+            "admittedSeq": 9,
+            "admissionTrace": {
+              "span": {
+                "traceId": "a99dc9a12c5f01c6317629f5cd1b0c07",
+                "spanId": "efeaca27ac15366a",
+                "sampled": true,
+                "tracestate": null
+              },
+              "links": []
+            },
+            "startedSeq": 10,
+            "terminal": {
+              "_tag": "Completed",
+              "seq": 19
+            }
+          }
+        ]
+      ],
+      "runs": [
+        [
+          "00000000-0000-7000-8000-000000000005",
+          {
+            "runId": "00000000-0000-7000-8000-000000000005",
+            "commandIds": ["018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"],
+            "startedAtMs": 1715000000000,
+            "startedSeq": 4,
+            "trace": {
+              "root": {
+                "traceId": "701648e0fda3f17e5e195661556bb3a6",
+                "spanId": "2dada08d7cdd5936",
+                "sampled": true,
+                "tracestate": null
+              },
+              "links": [
+                {
+                  "context": {
+                    "traceId": "7aee55157982c07af21731d22b6d58fd",
+                    "spanId": "2d06479b1a27bd65",
+                    "sampled": true,
+                    "tracestate": null
+                  },
+                  "attributes": {
+                    "eda.trace.link_type": "command_admission",
+                    "eda.command.id": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"
+                  }
+                }
+              ]
+            },
+            "modelSelection": {
+              "provider": "test",
+              "modelId": "test-model"
+            },
+            "terminalAtMs": 1715000000000,
+            "durationMs": 0,
+            "terminal": {
+              "_tag": "Failed",
+              "seq": 15,
+              "error": {
+                "message": "run interrupted: interrupted",
+                "code": "run.interrupted",
+                "details": {
+                  "runId": "00000000-0000-7000-8000-000000000005",
+                  "reason": "interrupted",
+                  "recoverable": false
+                }
+              }
+            }
+          }
+        ]
+      ],
+      "recoveryContinuations": [],
+      "turns": [
+        [
+          "00000000-0000-7000-8000-000000000007",
+          {
+            "runId": "00000000-0000-7000-8000-000000000005",
+            "turnId": "00000000-0000-7000-8000-000000000007",
+            "startedAtMs": 1715000000000,
+            "startedSeq": 5,
+            "terminalAtMs": 1715000000000,
+            "durationMs": 0,
+            "terminal": {
+              "_tag": "Failed",
+              "seq": 14,
+              "error": {
+                "message": "turn interrupted: interrupted",
+                "code": "turn.interrupted",
+                "details": {
+                  "runId": "00000000-0000-7000-8000-000000000005",
+                  "turnId": "00000000-0000-7000-8000-000000000007",
+                  "reason": "interrupted",
+                  "recoverable": false
+                }
+              }
+            }
+          }
+        ]
+      ],
+      "inferences": [
+        [
+          "00000000-0000-7000-8000-000000000009",
+          {
+            "runId": "00000000-0000-7000-8000-000000000005",
+            "turnId": "00000000-0000-7000-8000-000000000007",
+            "inferenceId": "00000000-0000-7000-8000-000000000009",
+            "startedAtMs": 1715000000000,
+            "startedSeq": 6,
+            "terminalAtMs": 1715000000000,
+            "durationMs": 0,
+            "terminal": {
+              "_tag": "Failed",
+              "seq": 13,
+              "error": {
+                "message": "inference interrupted",
+                "code": "inference.interrupted",
+                "details": {
+                  "reason": "interrupted"
+                }
+              }
+            }
+          }
+        ]
+      ],
+      "toolCalls": [],
+      "messages": [
+        [
+          "00000000-0000-7000-8000-000000000012",
+          {
+            "_tag": "AssistantPartial",
+            "messageId": "00000000-0000-7000-8000-000000000012",
+            "runId": "00000000-0000-7000-8000-000000000005",
+            "turnId": "00000000-0000-7000-8000-000000000007",
+            "inferenceId": "00000000-0000-7000-8000-000000000009",
+            "createdAtMs": 1715000000000,
+            "reason": "inference interrupted before completion",
+            "seq": 12
+          }
+        ]
+      ],
+      "stopRequests": [
+        [
+          "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a",
+          {
+            "commandId": "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a",
+            "requestedSeq": 11,
+            "requestedRunId": "00000000-0000-7000-8000-000000000005",
+            "requestedTurnId": "00000000-0000-7000-8000-000000000007",
+            "appliedSeq": 18,
+            "appliedRunId": "00000000-0000-7000-8000-000000000005",
+            "appliedTurnId": "00000000-0000-7000-8000-000000000007",
+            "appliedInferenceId": "00000000-0000-7000-8000-000000000009"
+          }
+        ]
+      ],
+      "compactions": [
+        [
+          "00000000-0000-7000-8000-00000000001b",
+          {
+            "compactionId": "00000000-0000-7000-8000-00000000001b",
+            "requestedSeq": 20,
+            "sourceFromSeq": 2,
+            "sourceToSeq": 11,
+            "startedSeq": 21,
+            "summaryCreatedSeq": 22,
+            "summaryId": "00000000-0000-7000-8000-00000000001c",
+            "rebasedSeq": 23,
+            "contextVersion": 1,
+            "terminal": {
+              "_tag": "Completed",
+              "seq": 24
+            }
+          }
+        ]
+      ],
+      "context": {
+        "version": 1,
+        "currentSummaryId": "00000000-0000-7000-8000-00000000001c"
+      },
+      "tokenConsumption": {
+        "byModel": []
+      }
+    }
+  },
+  "events": [
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandAdmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000001",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "7aee55157982c07af21731d22b6d58fd",
+          "spanId": "2d06479b1a27bd65",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "command": {
+          "_tag": "SubmitMessage",
+          "commandId": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a",
+          "disposition": "queue",
+          "content": [
+            {
+              "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
+              "options": {},
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "UserMessageSubmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000003",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "7a170353e2c9c2b20d2d4270d263dc0f",
+          "spanId": "2e0fdd463dd97a26",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a",
+        "messageId": "00000000-0000-7000-8000-000000000002",
+        "disposition": "queue",
+        "content": [
+          {
+            "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
+            "options": {},
+            "type": "text",
+            "text": "hello"
+          }
+        ]
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000004",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "4883e6f04eb97baad51bed7be761555b",
+          "spanId": "323c2817b1eb5e0c",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "RunStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000006",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "e7d212e89c5a8df7e4ff54aa60741d7d",
+          "spanId": "f0a5605167f68042",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "00000000-0000-7000-8000-000000000005",
+        "commandIds": ["018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"],
+        "modelSelection": {
+          "provider": "test",
+          "modelId": "test-model"
+        },
+        "trace": {
+          "root": {
+            "traceId": "701648e0fda3f17e5e195661556bb3a6",
+            "spanId": "2dada08d7cdd5936",
+            "sampled": true,
+            "tracestate": null
+          },
+          "links": [
+            {
+              "context": {
+                "traceId": "7aee55157982c07af21731d22b6d58fd",
+                "spanId": "2d06479b1a27bd65",
+                "sampled": true,
+                "tracestate": null
+              },
+              "attributes": {
+                "eda.trace.link_type": "command_admission",
+                "eda.command.id": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "TurnStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000008",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "cbc7a8738f57e0acf972763e2d09dc48",
+          "spanId": "12c13a9621aad58c",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "00000000-0000-7000-8000-000000000005",
+        "turnId": "00000000-0000-7000-8000-000000000007",
+        "inputMessageIds": ["00000000-0000-7000-8000-000000000002"]
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "InferenceStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-00000000000a",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "701648e0fda3f17e5e195661556bb3a6",
+          "spanId": "741457b9f4f22e04",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "00000000-0000-7000-8000-000000000005",
+        "turnId": "00000000-0000-7000-8000-000000000007",
+        "inferenceId": "00000000-0000-7000-8000-000000000009"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandAdmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-00000000000c",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "d2ec057fe950e6407608d0ea2044a191",
+          "spanId": "e041211a59ff7d24",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "command": {
+          "_tag": "SubmitMessage",
+          "commandId": "018f6bd5-2f2a-7b1e-8f1c-1f2e3d4c5b6a",
+          "disposition": "queue",
+          "content": [
+            {
+              "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
+              "options": {},
+              "type": "text",
+              "text": "queued while running"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "UserMessageSubmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-00000000000e",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "b40d5c5b88ddae61ef8c1a7b17c04588",
+          "spanId": "3dab2e58059689cc",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1c-1f2e3d4c5b6a",
+        "messageId": "00000000-0000-7000-8000-00000000000d",
+        "disposition": "queue",
+        "content": [
+          {
+            "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
+            "options": {},
+            "type": "text",
+            "text": "queued while running"
+          }
+        ]
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandAdmitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-00000000000f",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "a99dc9a12c5f01c6317629f5cd1b0c07",
+          "spanId": "efeaca27ac15366a",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "command": {
+          "_tag": "StopTurn",
+          "commandId": "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a"
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000010",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "be0871f6e12e2cb688dde58aeeee94ba",
+          "spanId": "355c41a99723d056",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "StopTurnRequested",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000011",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "1327645acb0ca709ae8d761416fb9e2f",
+          "spanId": "2ddd5819f53cd91d",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a",
+        "runId": "00000000-0000-7000-8000-000000000005",
+        "turnId": "00000000-0000-7000-8000-000000000007"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "AssistantPartialCommitted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000013",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "701648e0fda3f17e5e195661556bb3a6",
+          "spanId": "741457b9f4f22e04",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "messageId": "00000000-0000-7000-8000-000000000012",
+        "runId": "00000000-0000-7000-8000-000000000005",
+        "turnId": "00000000-0000-7000-8000-000000000007",
+        "inferenceId": "00000000-0000-7000-8000-000000000009",
+        "promptParts": [
+          {
+            "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
+            "options": {},
+            "type": "text",
+            "text": "partial answer"
+          }
+        ],
+        "reason": "inference interrupted before completion"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "InferenceFailed",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000014",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "701648e0fda3f17e5e195661556bb3a6",
+          "spanId": "741457b9f4f22e04",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "00000000-0000-7000-8000-000000000005",
+        "turnId": "00000000-0000-7000-8000-000000000007",
+        "inferenceId": "00000000-0000-7000-8000-000000000009",
+        "error": {
+          "message": "inference interrupted",
+          "code": "inference.interrupted",
+          "details": {
+            "reason": "interrupted"
+          }
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "TurnFailed",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000015",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "697e9a563656f9122c97a773b5c7458c",
+          "spanId": "6e9bd9ebe9fe49c9",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "00000000-0000-7000-8000-000000000005",
+        "turnId": "00000000-0000-7000-8000-000000000007",
+        "error": {
+          "message": "turn interrupted: interrupted",
+          "code": "turn.interrupted",
+          "details": {
+            "runId": "00000000-0000-7000-8000-000000000005",
+            "turnId": "00000000-0000-7000-8000-000000000007",
+            "reason": "interrupted",
+            "recoverable": false
+          }
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "RunFailed",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000016",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "601fbe29a83b58946b7eb82b5d67e737",
+          "spanId": "46f9da8415084661",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "runId": "00000000-0000-7000-8000-000000000005",
+        "error": {
+          "message": "run interrupted: interrupted",
+          "code": "run.interrupted",
+          "details": {
+            "runId": "00000000-0000-7000-8000-000000000005",
+            "reason": "interrupted",
+            "recoverable": false
+          }
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandCancelled",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000017",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "52c0d8f4501d2690f72701a4d07d0944",
+          "spanId": "e0ba4bbd9f3b5fce",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a",
+        "reason": "interrupted"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "PendingMessagesPaused",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000018",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "ac6b2939b0ad95a19061f3b7070eaec5",
+          "spanId": "026d86aa064339d5",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "interruptionCommandId": "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a",
+        "messageIds": ["00000000-0000-7000-8000-00000000000d"],
+        "reason": "user-interrupted",
+        "runId": "00000000-0000-7000-8000-000000000005"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "StopTurnApplied",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000019",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "2203a3aa11f57a0dcaedd515a2111640",
+          "spanId": "b0096ba943c71b4d",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a",
+        "runId": "00000000-0000-7000-8000-000000000005",
+        "turnId": "00000000-0000-7000-8000-000000000007",
+        "inferenceId": "00000000-0000-7000-8000-000000000009"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CommandCompleted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-00000000001a",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "f7860c7310bfb5ecaad7edd0474434ae",
+          "spanId": "145e8dc92b220e2c",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "commandId": "018f6bd5-2f2a-7b1e-8f1e-1f2e3d4c5b6a"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CompactionRequested",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-00000000001d",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "f6fd0eaf8bbf662f9344346cd4b60516",
+          "spanId": "eb0ae99d3b184847",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "compactionId": "00000000-0000-7000-8000-00000000001b",
+        "sourceFromSeq": 2,
+        "sourceToSeq": 11
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CompactionStarted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-00000000001e",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "32d1ecce052fe9d4c0f913c43c9b2362",
+          "spanId": "f0ab43fa1eeb6f7e",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "compactionId": "00000000-0000-7000-8000-00000000001b"
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "SummaryCreated",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-00000000001f",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "ed54091ac147f2cecb6f31d89a48c40c",
+          "spanId": "7df1f5bf17fe961a",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "compactionId": "00000000-0000-7000-8000-00000000001b",
+        "summaryId": "00000000-0000-7000-8000-00000000001c",
+        "sourceFromSeq": 2,
+        "sourceToSeq": 11,
+        "summary": {
+          "compactionId": "00000000-0000-7000-8000-00000000001b",
+          "summaryId": "00000000-0000-7000-8000-00000000001c",
+          "sourceFromSeq": 2,
+          "sourceToSeq": 11,
+          "retainedFromContextSeq": 12,
+          "text": "summary",
+          "promptMessage": {
+            "~effect/ai/Prompt/Message": "~effect/ai/Prompt/Message",
+            "options": {},
+            "role": "user",
+            "content": [
+              {
+                "~effect/ai/Prompt/Part": "~effect/ai/Prompt/Part",
+                "options": {},
+                "type": "text",
+                "text": "Summary"
+              }
+            ]
+          },
+          "policyId": "approximate-token-threshold",
+          "executorId": "test.executor"
+        }
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "ContextRebased",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000020",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "19f6f9ba677717677082fed09567f6e8",
+          "spanId": "5edead036b2b9f64",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "compactionId": "00000000-0000-7000-8000-00000000001b",
+        "summaryId": "00000000-0000-7000-8000-00000000001c",
+        "contextVersion": 1,
+        "retainedFromContextSeq": 12
+      }
+    },
+    {
+      "namespace": "effect-durable-agent",
+      "type": "CompactionCompleted",
+      "schemaVersion": 1,
+      "durability": "durable",
+      "eventId": "00000000-0000-7000-8000-000000000021",
+      "sessionId": "018f6bd5-2f2a-7b1e-8f1a-000000000080",
+      "createdAtMs": 1715000000000,
+      "trace": {
+        "span": {
+          "traceId": "ced6f77ae79c27a1cdf43ab719691f51",
+          "spanId": "ac5d921327e116c6",
+          "sampled": true,
+          "tracestate": null
+        },
+        "links": []
+      },
+      "payload": {
+        "compactionId": "00000000-0000-7000-8000-00000000001b",
+        "modelSelection": {
+          "provider": "test",
+          "modelId": "test-model"
+        }
+      }
+    }
+  ]
+}
