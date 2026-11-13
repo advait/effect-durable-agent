@@ -973,7 +973,47 @@ describe("SessionState control loop - ingress and active command control", () =>
     expect(result.snapshot.messages.get(result.messageId)?.consumedSeq).toBeDefined();
   });
 
-  it("rejects ordinary queue admission while paused and atomically clears an approved set", async () => {
+  it("admits an ordinary queue submission while paused and runs it, leaving the held messages paused", async () => {
+    const replacement = new SubmitMessageCommand({
+      commandId: CommandId.make("018f6bd5-2f2a-7b1e-8f34-1f2e3d4c5b6a"),
+      disposition: "queue",
+      content: [Prompt.textPart({ text: "after stop" })],
+    });
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const dispatcher = yield* SessionState;
+        yield* dispatcher.admitCommand(command);
+        yield* dispatcher.drainReadyWork({ modelSelection });
+        yield* dispatcher.admitCommand(secondCommand);
+        yield* dispatcher.admitCommand(stopTurnCommand);
+        yield* dispatcher.drainReadyWork({ modelSelection });
+        const heldIds = (yield* dispatcher.snapshot()).commandQueues.pausedQueue.map(
+          (message) => message.messageId,
+        );
+        const admitted = yield* dispatcher.admitCommand(replacement);
+        yield* dispatcher.drainReadyWork({ modelSelection });
+        return { admitted, heldIds, snapshot: yield* dispatcher.snapshot() };
+      }),
+    ).pipe(
+      Effect.provide(
+        makeEdaTestLayer({
+          sessionId: SessionId.make(SESSION_ID),
+          parts: Stream.never,
+          toolSchemas: new Map([["noop", NoopParams]]),
+        }),
+      ),
+    );
+
+    const result = await Effect.runPromise(program);
+    expect(result.heldIds).toHaveLength(1);
+    expect(result.admitted.event.type).toBe("CommandAdmitted");
+    expect(result.snapshot.commandQueues.active?.commandId).toBe(replacement.commandId);
+    expect(result.snapshot.commandQueues.pausedQueue.map((message) => message.messageId)).toEqual(
+      result.heldIds,
+    );
+  });
+
+  it("atomically clears an approved paused set and refuses a stale one", async () => {
     const replacement = new SubmitMessageCommand({
       commandId: CommandId.make("018f6bd5-2f2a-7b1e-8f34-1f2e3d4c5b6a"),
       disposition: "queue",
@@ -988,8 +1028,17 @@ describe("SessionState control loop - ingress and active command control", () =>
         yield* dispatcher.admitCommand(stopTurnCommand);
         yield* dispatcher.drainReadyWork({ modelSelection });
         const paused = yield* dispatcher.snapshot();
-        const rejected = yield* Effect.exit(dispatcher.admitCommand(replacement));
         const approvedIds = paused.commandQueues.pausedQueue.map((message) => message.messageId);
+        const stale = yield* Effect.exit(
+          dispatcher.admitCommand(
+            new SubmitMessageCommand({
+              commandId: replacement.commandId,
+              disposition: "queue",
+              content: replacement.content,
+              expectedPausedMessageIdsToCancel: [],
+            }),
+          ),
+        );
         const admitted = yield* dispatcher.admitCommand(
           new SubmitMessageCommand({
             commandId: replacement.commandId,
@@ -998,7 +1047,7 @@ describe("SessionState control loop - ingress and active command control", () =>
             expectedPausedMessageIdsToCancel: approvedIds,
           }),
         );
-        return { admitted, approvedIds, rejected, snapshot: yield* dispatcher.snapshot() };
+        return { admitted, approvedIds, snapshot: yield* dispatcher.snapshot(), stale };
       }),
     ).pipe(
       Effect.provide(
@@ -1011,10 +1060,12 @@ describe("SessionState control loop - ingress and active command control", () =>
     );
 
     const result = await Effect.runPromise(program);
-    expect(result.rejected).toMatchObject({
+    expect(result.stale).toMatchObject({
       _tag: "Failure",
       cause: {
-        reasons: [{ error: { code: "queue_paused", pausedMessageIds: result.approvedIds } }],
+        reasons: [
+          { error: { code: "paused_queue_changed", pausedMessageIds: result.approvedIds } },
+        ],
       },
     });
     expect(result.admitted.event.type).toBe("CommandAdmitted");

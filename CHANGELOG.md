@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0
+
+Minor release: a Stop that paused a queued message no longer stops the session from accepting new
+work. No storage, checkpoint or protocol change.
+
+- **Fix:** admission refused every ordinary queue submission while any message a Stop paused
+  remained, with `queue_paused`, unless the submission named the paused set to clear. A host
+  without a clear-and-send flow could not send to the session at all, and the pause became the
+  permanent session latch the steering design rules out. Dispatch already ran pending queue work
+  beside held messages, so admission now accepts the message: it starts a run when none is active
+  or waits behind the active one, and the paused messages stay held until each is promoted,
+  cancelled or cleared. A clear-and-send whose `expectedPausedMessageIdsToCancel` no longer
+  matches the paused set still refuses with `paused_queue_changed` and changes nothing.
+
+Storage: none. Protocol: none. API: breaking. `SessionCommandAdmissionConflict`'s `code` no
+longer includes `queue_paused`; a host that showed a confirmation on that code sends the message
+directly, and may still offer the atomic clear.
+
 ## 0.2.3
 
 Patch release: a Stop stops a session whose boundary compaction rebases context, and a message

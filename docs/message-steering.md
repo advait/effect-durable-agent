@@ -35,8 +35,9 @@ work after an explicit stop or interrupt.
   Unconsumed steers become paused queue messages rather than disappearing.
 - A promoted paused message starts or steers a run; other paused messages stay
   paused.
-- Clearing a paused queue and sending a replacement is one conditional atomic
-  command.
+- A new message is admitted while a queue is paused and runs as ordinary work;
+  the paused messages stay held. Clearing a paused queue and sending a
+  replacement is one optional conditional atomic command.
 - Browser mutations use authenticated HTTP. The existing WebSocket remains the
   durable and ephemeral observation channel.
 - Slack submits one steer command per inbound Slack message. Slack does not
@@ -192,7 +193,7 @@ interface SubmitMessageCommand {
 ```
 
 `expectedPausedMessageIdsToCancel` is absent for an ordinary submission. When present, it
-is the exact paused-queue set approved by the user in the confirmation modal.
+is the exact paused-queue set the user approved clearing.
 EDA atomically verifies the set, cancels those messages, and admits the new
 message. A mismatch returns a typed conflict and changes nothing.
 
@@ -345,7 +346,7 @@ consumption.
 
 | Input | No active run | Active turn | Completed turn boundary | Queue paused |
 |---|---|---|---|---|
-| Submit queue | Start new run | Wait in queue | Wait until run terminalizes | Conflict |
+| Submit queue | Start new run | Wait in queue | Wait until run terminalizes | Start new run or wait in queue; held messages stay paused |
 | Submit steer | Start new run | Wait as steer | Join next continuation | Start new run; held messages stay paused |
 | Promote queue | Start new run | Wait as steer | Join next continuation | Release selected message and start/steer |
 | Cancel pending | Cancel | Cancel if boundary has not consumed it | First serialized transition wins | Cancel selected message |
@@ -373,7 +374,7 @@ At a completed turn boundary:
 2. snapshot all eligible pending steers;
 3. if the snapshot is non-empty, start one continuation turn in the same run;
 4. otherwise terminalize the run and active command;
-5. if the queue is not paused, start the next queue message as a new run.
+5. start the next queue message that no pause holds as a new run.
 
 ### 9.4 Unexpected run failure
 
@@ -458,14 +459,16 @@ The UI waits for the durable promotion result before presenting the message as
 steering. Concurrent cancel/promote operations use first-transition-wins
 semantics and return typed conflicts to the loser.
 
-## 12. Paused queue confirmation
+## 12. Clearing a paused queue
 
-An ordinary queue submission while paused returns `queue_paused` and includes
-the current held message IDs. The UI should normally detect the projected pause
-before sending and show a confirmation modal.
+An ordinary submission while a queue is paused is admitted like any other: a
+queue message starts a new run when none is active, or waits behind the active
+one. The paused messages stay held until each is promoted, cancelled or
+cleared, so a Stop never leaves a session that refuses new work.
 
-On confirmation, it retries submission with `expectedPausedMessageIdsToCancel` equal to
-the exact IDs shown. EDA atomically:
+A client may instead clear the paused messages while it sends. It submits with
+`expectedPausedMessageIdsToCancel` equal to the exact IDs the user approved,
+and EDA atomically:
 
 1. verifies that the current paused set exactly matches the approved set;
 2. emits cancellation facts with reason `clear-paused-queue`;
@@ -473,8 +476,8 @@ the exact IDs shown. EDA atomically:
 4. begins normal dispatch.
 
 If another client or ingress changes the paused set before application, the
-operation conflicts and changes nothing. The UI refreshes the modal rather than
-deleting unseen work.
+operation conflicts with `paused_queue_changed` and changes nothing. The client
+refreshes the set it shows rather than deleting unseen work.
 
 ## 13. HTTP API
 
@@ -523,7 +526,6 @@ HTTP responses distinguish:
 
 - durable success with `commandId`, `messageId`, and admitted sequence;
 - idempotent replay of an earlier success;
-- `queue_paused` with current held IDs;
 - `message_not_pending`;
 - `message_not_queue` for invalid promotion;
 - `paused_queue_changed` for a stale clear precondition;
@@ -596,8 +598,9 @@ Delete uses the normal user-cancellation path.
 ### 15.3 Queue pause
 
 The UI renders the interrupted run terminal separately from the paused queue.
-Each paused message offers Cancel/Edit and Promote. A new ordinary send opens
-the destructive confirmation flow described above.
+Each paused message offers Cancel/Edit and Promote. A new ordinary send is
+admitted as usual and leaves the paused messages held; a client may offer the
+optional clear-and-send of section 12.
 
 ## 16. Gia metadata and authorization
 
@@ -676,7 +679,7 @@ Durable Object order and are batched by EDA, not Slack, at the next turn
 boundary. Their transcript rows, authors, attachments, and cancellation audit
 identities remain separate.
 
-Slack does not expose queue, promotion, paused-queue confirmation, or browser
+Slack does not expose queue, promotion, paused-queue clearing, or browser
 edit behavior. A Slack steer can start a run while unrelated browser-created
 queue messages remain paused.
 
@@ -758,7 +761,8 @@ turn start, turn terminal, and run failure and assert the invariants in section
 - failed run preserves unconsumed steers;
 - explicit stop demotes steers and pauses all waiting work;
 - selective promotion leaves other pause members held;
-- ordinary queue submission conflicts while paused;
+- ordinary queue submission is admitted and runs while paused, and the held
+  messages stay paused;
 - conditional clear-and-submit is atomic and detects stale sets.
 - interrupting with a pending steer stops the active run and resumes exactly
   that message while other paused messages remain held.

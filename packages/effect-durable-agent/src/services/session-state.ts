@@ -783,25 +783,9 @@ const makeLiveSessionState = Effect.gen(function* () {
         (message) => message.messageId,
       );
       const requestedClear = admitted.expectedPausedMessageIdsToCancel;
-      if (admitted.disposition === "queue" && pausedMessageIds.length > 0) {
-        if (requestedClear === undefined) {
-          return yield* new SessionCommandAdmissionConflict({
-            code: "queue_paused",
-            message: "Queue paused because you interrupted",
-            pausedMessageIds,
-          });
-        }
-        if (!sameMessageIdSet(requestedClear, pausedMessageIds)) {
-          return yield* new SessionCommandAdmissionConflict({
-            code: "paused_queue_changed",
-            message: "Paused queue changed; confirm the current messages before clearing",
-            pausedMessageIds,
-          });
-        }
-      } else if (
-        requestedClear !== undefined &&
-        !sameMessageIdSet(requestedClear, pausedMessageIds)
-      ) {
+      // A pause holds only its members: ordinary work is admitted beside them. A clear names the
+      // exact set the user approved, so a set that changed since they saw it refuses the clear.
+      if (requestedClear !== undefined && !sameMessageIdSet(requestedClear, pausedMessageIds)) {
         return yield* new SessionCommandAdmissionConflict({
           code: "paused_queue_changed",
           message: "Paused queue changed; confirm the current messages before clearing",

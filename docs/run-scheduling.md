@@ -98,7 +98,7 @@ retires it (see below), so the reconciling query then answers `Invalidated`. Thi
   blocked only by a non-terminal run, a pending Stop, interrupt or cancellation
   of one of its inputs, or a paused input is left for that condition to clear.
   This heals reservations that 0.2.1 and earlier left wedged, and ones emptied
-  when a queued message clears the paused queue, which cancels those messages at
+  when a message clears the paused queue, which cancels those messages at
   admission.
 - Restarting while waiting keeps the same request ID and delivery acknowledgment.
   Recovery recognizes a started command intentionally parked behind a request.
