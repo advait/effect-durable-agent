@@ -696,6 +696,52 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
       }
     }, 240_000);
 
+    it("finishes a run killed mid-turn from its keep-alive alarm alone, and a reconnecting socket sees it", async () => {
+      const host = await startHost(kind);
+      const sessionId =
+        kind === "cloudflare"
+          ? "018f6bd5-2f2a-7b1e-8f3a-1f2e3d4c5b6a"
+          : "018f6bd5-2f2a-7b1e-8f3b-1f2e3d4c5b6a";
+      const get = async <A>(path: string): Promise<A> =>
+        await decodeJson<A>(
+          await fetch(`${host.baseUrl}${path}`, { signal: AbortSignal.timeout(30_000) }),
+        );
+      try {
+        await host.restart({ blockModel: true });
+        const socket = await EventSocket.open(host, sessionId, 0);
+        const submission = submitMessage(host, sessionId, {
+          idempotencyKey: "conformance:alarm-recovery",
+          text: "ping through a kill",
+        }).catch(() => undefined);
+        const seen = await socket.eventsUntil("TurnStarted");
+        const lastSeen = Math.max(...seen.map((event) => event.position.seq));
+        socket.close();
+
+        // The process dies mid-turn. Nothing calls the session afterwards except storage-only
+        // transcript reads, so only the alarm the turn's keep-alive lease armed can finish it.
+        await host.restart({ hard: true });
+        await submission;
+        expect(await get(`/sessions/${sessionId}/runtime-builds`)).toEqual({ count: 0 });
+        const deadline = Date.now() + 90_000;
+        let history: ReadonlyArray<HistoryEntry> = [];
+        while (Date.now() < deadline) {
+          history = await readHistory(host, sessionId).catch(() => []);
+          if (history.at(-1)?.text === "pong") break;
+          await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
+        }
+        expect(history.map((entry) => entry.kind)).toEqual(["user", "assistant"]);
+        expect(history[1]?.text).toBe("pong");
+        expect(await get(`/sessions/${sessionId}/runtime-builds`)).toEqual({ count: 1 });
+
+        const resumed = await EventSocket.open(host, sessionId, lastSeen);
+        const replayed = await resumed.eventsUntil("CommandCompleted");
+        resumed.close();
+        expect(replayed.every((event) => event.position.seq > lastSeen)).toBe(true);
+      } finally {
+        await host.stop();
+      }
+    }, 240_000);
+
     it("collapses a keyed app event submitted again after a hard restart", async () => {
       const host = await startHost(kind);
       const sessionId =

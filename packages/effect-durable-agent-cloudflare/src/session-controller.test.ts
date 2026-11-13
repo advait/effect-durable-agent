@@ -26,7 +26,13 @@ import {
   SessionId,
 } from "effect-durable-agent/types/core";
 import { EDADecider } from "effect-durable-agent/services/decider";
-import { EDASessionController, type EDASessionDurableObjectStorage } from "./session-controller";
+import { makeEDAToolkit, ToolRecovery } from "effect-durable-agent/services/tool-registry";
+import * as Tool from "effect/ai/Tool";
+import {
+  EDASessionController,
+  type EDASessionControllerOptions,
+  type EDASessionDurableObjectStorage,
+} from "./session-controller";
 import {
   makeEDADurableObjectOpenAiModelLayer,
   makeEDADurableObjectOpenAiModelResolverLayer,
@@ -1973,5 +1979,349 @@ describe("EDASessionController decide over SQLite", () => {
     expect(result.decided).toMatchObject({ _tag: "EDADeciderError", reason: "invalid_output" });
     expect(result.submitted).toBe("committed");
     expect(result.logged).toEqual(["Fact"]);
+  });
+});
+
+/**
+ * Host lifecycle across eviction: an object loses its isolate at any await (a deploy, a resource
+ * limit, an idle eviction) and comes back on its alarm or the next request. Each journey ends with
+ * the work completed, a client seeing the result, and the object left with no alarm.
+ */
+describe("EDASessionController across eviction", () => {
+  const sessionId = SessionId.make(SESSION_ID);
+  const toolMessage = "please use the tool";
+  const LookupParams = Schema.Struct({ text: Schema.String });
+
+  const message = (commandId: string, text: string) =>
+    new SubmitMessageCommand({
+      commandId: CommandId.make(commandId),
+      disposition: "queue",
+      content: [Prompt.textPart({ text })],
+    });
+  const firstCommand = "018f6bd5-2f2a-7b1e-8f2a-1f2e3d4c5b6a";
+  const secondCommand = "018f6bd5-2f2a-7b1e-8f2b-1f2e3d4c5b6a";
+
+  /** Calls `lookup` once for the tool message, then answers; answers anything else directly. */
+  const toolModel = makeLanguageModelLayer({
+    parts: ({ prompt }) => {
+      const text = JSON.stringify(prompt);
+      return text.includes(toolMessage) && !text.includes("tool-result")
+        ? Stream.make(
+            Response.makePart("tool-call", {
+              id: "lookup-1",
+              name: "lookup",
+              params: { text: "hello" },
+              providerExecuted: false,
+            }),
+            Response.makePart("finish", {
+              reason: "tool-calls",
+              usage: usage(),
+              response: undefined,
+            }),
+          )
+        : finishedStream("done");
+    },
+  });
+
+  /** A `lookup` tool whose every call waits for `result`; `recovery` is its ToolRecovery policy. */
+  const lookupToolkit = (recovery: "fail" | "reinvoke", result: Promise<void>) => {
+    const tool = Tool.make("lookup", { parameters: LookupParams, success: Schema.Unknown });
+    const declared = recovery === "reinvoke" ? tool.annotate(ToolRecovery, "reinvoke") : tool;
+    return Effect.runSync(
+      makeEDAToolkit([declared], {
+        lookup: () => Effect.promise(() => result).pipe(Effect.as({ found: true })),
+      }),
+    );
+  };
+  const never = new Promise<void>(() => undefined);
+
+  /**
+   * One session object over real SQLite. Each incarnation reaches storage through its own view;
+   * evicting cuts the view off, so the dead incarnation's fibers stop at their next storage access
+   * and write nothing more, as an evicted isolate does. The alarm handler is the host's.
+   */
+  class EvictableSessionObject {
+    readonly storage = new SqliteDurableObjectStorage();
+    #alive = { value: false };
+    #alarms: DurableObjectAlarmScheduler | undefined;
+    #host: EDASessionController | undefined;
+    keepAlive: DurableObjectKeepAlive | undefined;
+    /** The platform clock; delivering an alarm advances it to the alarm's time. */
+    #skewMs = 0;
+    readonly now = () => Date.now() + this.#skewMs;
+
+    /** Construct a fresh incarnation, as the platform does for a cold request or alarm. */
+    async start(input: {
+      readonly toolkit?: EDASessionControllerOptions["toolkit"];
+      /** Runs before each statement this incarnation executes; throw to fail it. */
+      readonly fault?: (query: string, bindings: ReadonlyArray<unknown>) => void;
+    }): Promise<EDASessionController> {
+      const alive = { value: true };
+      this.#alive = alive;
+      const guard = () => {
+        if (!alive.value) throw new Error("evicted");
+      };
+      const storage = this.storage;
+      const view: EDASessionDurableObjectStorage = {
+        sql: {
+          exec: (query, ...bindings) => {
+            guard();
+            input.fault?.(query, bindings);
+            return storage.sql.exec(query, ...bindings);
+          },
+        },
+        transactionSync: (closure) => {
+          guard();
+          return storage.transactionSync(closure);
+        },
+        getAlarm: () => {
+          guard();
+          return storage.getAlarm();
+        },
+        setAlarm: (at) => {
+          guard();
+          storage.setAlarm(at);
+        },
+        deleteAlarm: () => {
+          guard();
+          storage.deleteAlarm();
+        },
+      };
+      await Effect.runPromise(EDASessionController.migrate(view));
+      const alarms = new DurableObjectAlarmScheduler(view, this.now);
+      await alarms.adoptUnrecordedAlarm();
+      const keepAlive = new DurableObjectKeepAlive(alarms.owner("runtime"), undefined, {
+        now: this.now,
+      });
+      const host = new EDASessionController({
+        config: { modelSelection: { provider: "test", modelId: "test-model" } },
+        keepAlive,
+        modelResolverLayer: ModelResolver.Fixed.pipe(Layer.provide(toolModel)),
+        storage: view,
+        ...(input.toolkit === undefined ? {} : { toolkit: input.toolkit }),
+      });
+      this.#alarms = alarms;
+      this.#host = host;
+      this.keepAlive = keepAlive;
+      return host;
+    }
+
+    evict(): void {
+      this.#alive.value = false;
+    }
+
+    get evicted(): boolean {
+      return !this.#alive.value;
+    }
+
+    /** The platform delivering the object's alarm to the current incarnation, at its time. */
+    fireAlarm(): Promise<void> {
+      const alarms = this.#alarms;
+      const host = this.#host;
+      const at = this.storage.alarm;
+      if (alarms === undefined || host === undefined) throw new Error("not started");
+      if (at === null) throw new Error("no alarm is armed");
+      this.#skewMs = Math.max(this.#skewMs, at - Date.now());
+      return runEDASessionAlarm({
+        alarms,
+        now: this.now,
+        runRuntime: () => host.alarm({ sessionId }),
+        runBuilderSlices: undefined,
+        maxBuilderFailures: 3,
+        builderRetryDelayMs: 1_000,
+        onBuilderFailure: () => undefined,
+      });
+    }
+
+    /** Deliver alarms until none is armed, as the platform does for an object left alone. */
+    async sleep(): Promise<number> {
+      let fired = 0;
+      while (this.storage.alarm !== null) {
+        if (fired === 3) throw new Error("the object is still waking after 3 alarms");
+        await this.fireAlarm();
+        await quiesce();
+        fired += 1;
+      }
+      return fired;
+    }
+
+    types(): Array<string> {
+      return this.storage
+        .rows<{ readonly type: string }>("SELECT type FROM _eda_event_log ORDER BY seq")
+        .map((row) => row.type);
+    }
+
+    async waitFor(type: string): Promise<void> {
+      const deadline = Date.now() + 2_000;
+      while (!this.types().includes(type)) {
+        if (Date.now() > deadline) throw new Error(`Timed out waiting for ${type}`);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+    }
+
+    async waitUntilEvicted(): Promise<void> {
+      const deadline = Date.now() + 2_000;
+      while (!this.evicted) {
+        if (Date.now() > deadline) throw new Error("Timed out waiting for the eviction");
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+    }
+  }
+
+  const openSocket = async (host: EDASessionController, afterSeq: number) => {
+    const webSocket = new TestWebSocket();
+    await host.acceptEventWebSocket({
+      afterSeq: SequenceNumber.make(afterSeq),
+      sessionId,
+      trace: TRACE,
+      webSocket: webSocket.asWebSocket(),
+    });
+    return webSocket;
+  };
+
+  const completions = (count: number) => {
+    let seen = 0;
+    return (event: CollectedTestEvent) =>
+      event.event.type === "CommandCompleted" && (seen += 1) === count;
+  };
+
+  it("an object evicted during its cold first drain finishes the queued message from the alarm it left armed", async () => {
+    const object = new EvictableSessionObject();
+    // The first incarnation admits the message and is evicted as its drain starts the command.
+    const evictAtStart = (_query: string, bindings: ReadonlyArray<unknown>) => {
+      if (bindings.includes("CommandStarted")) {
+        object.evict();
+        throw new Error("evicted");
+      }
+    };
+    const admitting = await object.start({ fault: evictAtStart });
+    const firstSocket = await openSocket(admitting, 0);
+    const seen = collectAckedEventsUntil(
+      admitting,
+      firstSocket,
+      (event) => event.event.type === "CommandAdmitted",
+    );
+    await admitting.submit({ sessionId, command: message(firstCommand, "hello") });
+    const lastSeen = Math.max(...(await seen).map((event) => event.position.seq));
+    await object.waitUntilEvicted();
+    expect(object.types()).not.toContain("CommandStarted");
+    expect(object.storage.alarm).not.toBeNull();
+
+    // The alarm cold-starts a second incarnation, which is evicted inside its inline first drain.
+    await object.start({ fault: evictAtStart });
+    await expect(object.fireAlarm()).rejects.toThrow();
+    expect(object.types()).not.toContain("CommandStarted");
+    expect(object.storage.alarm).not.toBeNull();
+    expect(object.storage.rows("SELECT owner FROM _eda_alarm_wakeups")).toEqual([
+      { owner: "runtime" },
+    ]);
+
+    // The platform retries the alarm on a third incarnation, and the reconnecting client resumes.
+    const host = await object.start({});
+    const resumed = await openSocket(host, lastSeen);
+    const events = collectAckedEventsUntil(host, resumed, completions(1));
+    await object.fireAlarm();
+    const terminal = await host.blockOnCommand({
+      sessionId,
+      commandId: CommandId.make(firstCommand),
+    });
+    expect(terminal.event.type).toBe("CommandCompleted");
+    const delivered = await events;
+    expect(delivered.every((event) => event.position.seq > lastSeen)).toBe(true);
+    expect(delivered.map((event) => event.event.type)).toContain("CommandCompleted");
+
+    expect(await object.sleep()).toBeLessThanOrEqual(1);
+    expect(object.keepAlive?.activeLeaseCount).toBe(0);
+    await host.dispose();
+    object.storage.db.close();
+  });
+
+  it.each(["fail", "reinvoke"] as const)(
+    "a new message wakes an object evicted mid-tool (%s recovery), and both messages complete",
+    async (recovery) => {
+      const object = new EvictableSessionObject();
+      const first = await object.start({ toolkit: lookupToolkit(recovery, never) });
+      await first.submit({ sessionId, command: message(firstCommand, toolMessage) });
+      await object.waitFor("ToolCallStarted");
+      object.evict();
+
+      const host = await object.start({ toolkit: lookupToolkit(recovery, Promise.resolve()) });
+      const socket = await openSocket(host, 0);
+      const events = collectAckedEventsUntil(host, socket, completions(2));
+      await host.submit({ sessionId, command: message(secondCommand, "hello") });
+      for (const commandId of [firstCommand, secondCommand]) {
+        const terminal = await host.blockOnCommand({
+          sessionId,
+          commandId: CommandId.make(commandId),
+        });
+        expect(terminal.event.type).toBe("CommandCompleted");
+      }
+      expect(
+        (await events).filter((event) => event.event.type === "CommandCompleted"),
+      ).toHaveLength(2);
+      expect(object.types()).toContain(
+        recovery === "reinvoke" ? "ToolCallCompleted" : "ToolCallFailed",
+      );
+
+      expect(await object.sleep()).toBeLessThanOrEqual(1);
+      expect(object.keepAlive?.activeLeaseCount).toBe(0);
+      await host.dispose();
+      object.storage.db.close();
+    },
+  );
+
+  it.each(["fail", "reinvoke"] as const)(
+    "an object evicted mid-tool (%s recovery) finishes the run from its alarm alone, and a reconnecting client sees it",
+    async (recovery) => {
+      const object = new EvictableSessionObject();
+      const first = await object.start({ toolkit: lookupToolkit(recovery, never) });
+      await first.submit({ sessionId, command: message(firstCommand, toolMessage) });
+      await object.waitFor("ToolCallStarted");
+      expect(object.storage.alarm).not.toBeNull();
+      object.evict();
+
+      const host = await object.start({ toolkit: lookupToolkit(recovery, Promise.resolve()) });
+      await object.fireAlarm();
+      await object.waitFor("CommandCompleted");
+
+      const socket = await openSocket(host, 0);
+      const delivered = await collectAckedEventsUntil(host, socket, completions(1));
+      expect(delivered.map((event) => event.event.type)).toContain("CommandCompleted");
+      expect(await object.sleep()).toBeLessThanOrEqual(1);
+      expect(object.keepAlive?.activeLeaseCount).toBe(0);
+      await host.dispose();
+      object.storage.db.close();
+    },
+  );
+
+  it("a tool call that outlives several keep-alive intervals keeps its heartbeat, then the object sleeps", async () => {
+    const object = new EvictableSessionObject();
+    let finishTool: () => void = () => undefined;
+    const toolResult = new Promise<void>((resolve) => (finishTool = resolve));
+    const host = await object.start({ toolkit: lookupToolkit("fail", toolResult) });
+    const socket = await openSocket(host, 0);
+    const events = collectAckedEventsUntil(host, socket, completions(1));
+    await host.submit({ sessionId, command: message(firstCommand, toolMessage) });
+    await object.waitFor("ToolCallStarted");
+
+    for (let heartbeat = 0; heartbeat < 3; heartbeat += 1) {
+      await object.fireAlarm();
+      await quiesce();
+      expect(object.storage.alarm).not.toBeNull();
+      expect(object.keepAlive?.activeLeaseCount).toBeGreaterThan(0);
+    }
+
+    finishTool();
+    const terminal = await host.blockOnCommand({
+      sessionId,
+      commandId: CommandId.make(firstCommand),
+    });
+    expect(terminal.event.type).toBe("CommandCompleted");
+    expect((await events).map((event) => event.event.type)).toContain("CommandCompleted");
+    expect(object.types()).toContain("ToolCallCompleted");
+    expect(await object.sleep()).toBe(1);
+    expect(object.keepAlive?.activeLeaseCount).toBe(0);
+    await host.dispose();
+    object.storage.db.close();
   });
 });
