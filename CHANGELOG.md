@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.2.3
+
+Patch release: a Stop stops a session whose boundary compaction rebases context, and a message
+the Stop paused stays paused. The framework checkpoint schema moves to 8, so every session folds
+its log once on its first wake after the upgrade.
+
+- **Fix:** a context rebase pruned admitted user messages no turn had consumed. Pruning and
+  compaction keyed an admitted message by its submission seq, while the prompt projection keyed it
+  by the turn that consumed it. With `retain: "last-response"` every message queued during a run
+  sits below the cursor, because a Stop commits its partial response after them. The
+  stop-boundary rebase then pruned the message the Stop had paused, its command read as a legacy
+  submit needing no inputs, and it started a new run under a newly minted message id. A queued
+  message was pruned the same way at any rebase, and a message submitted before the cursor but
+  consumed after it dropped out of the prompt. Rebase pruning, the compaction planner and summary
+  source, and the prompt projection now read one definition, `messageContextSeq`: an admitted
+  message enters context when a turn consumes it. A message never consumed leaves reduced state
+  only when it is cancelled.
+- **Fix:** compaction no longer writes a message the model has not been given into the summary.
+  A pending message whose submission fell in the source range was summarised, so the model read it
+  early and kept it after a cancellation.
+- **Migration:** logs written by 0.2.2 can hold a pruned submission whose command later committed
+  the same content under a new message id. That commit now replaces the submission, so re-folding
+  such a log shows the message once. Version 7 checkpoints can lack a message 0.2.2 pruned; the
+  framework checkpoint schema is now 8, so hydration discards them and folds from seq 0. Every
+  pruned admitted message that no turn consumed and no `CancelPendingMessage` cancelled comes back
+  as it was: a message a Stop paused comes back paused, and a queued one comes back queued.
+
+Storage: no event or table change. The framework reducer checkpoint schema moves from 7 to 8;
+version 7 checkpoints are discarded and rebuilt, a one-time full-log fold per session on its first
+wake. Protocol: none. API: additive. `effect-durable-agent/domain/reduced-state` exports
+`messageContextSeq`. `ReducedState.messages` now holds every admitted message no turn has consumed
+across a rebase.
+
 ## 0.2.2
 
 Patch release: a deferred interrupt-with-pending-message no longer wedges a session, and sessions
