@@ -1,6 +1,7 @@
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import type { ReducedState } from "effect-durable-agent/domain/reduced-state";
 import type { EDASessionSnapshot } from "effect-durable-agent/services/session-query";
 import type {
   EDAWebSocketClientFrame,
@@ -33,6 +34,16 @@ export type EDAWebSocketProjectionResult<State extends object> =
       readonly state: State;
     };
 
+/** Host context for projecting one server frame. */
+export interface EDAWebSocketProjectionContext {
+  /**
+   * The newest reduced state the host has seen, defined for every `events` frame. Its `lastSeq`
+   * is at or after the frame's last durable seq. Treat it as the frame's own state only when the
+   * two are equal; until then it can describe events the subscriber has not received.
+   */
+  readonly reduced: ReducedState | undefined;
+}
+
 /**
  * App-owned wire projection hosted directly by the EDA Durable Object.
  *
@@ -55,6 +66,7 @@ export interface EDAWebSocketProjection<State extends object> {
   readonly encodeServerFrame: (
     frame: EDAWebSocketServerFrameInput,
     state: State,
+    context: EDAWebSocketProjectionContext,
   ) => EDAWebSocketProjectionResult<State>;
   /** Seed the projection and select its default replay cursor from a durable snapshot. */
   readonly initialize: (input: {

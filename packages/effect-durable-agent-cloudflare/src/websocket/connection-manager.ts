@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 
+import type { ReducedState } from "effect-durable-agent/domain/reduced-state";
 import { SessionEventObserver } from "effect-durable-agent/services/session-event-observer";
 import type { EDASessionEventPage } from "effect-durable-agent/services/session-query";
 import { SequenceNumber, type SessionId } from "effect-durable-agent/types/core";
@@ -41,13 +42,14 @@ export interface EDAWebSocketConnectionManagerOptions<ProjectionState extends ob
   readonly getWebSockets?: () => ReadonlyArray<WebSocket>;
   readonly isSessionReady: (sessionId: SessionId) => boolean;
   readonly prepareSession: (sessionId: SessionId) => Promise<void>;
+  /** Read one page, then the reduced state, so `reduced.lastSeq` is at or after the page head. */
   readonly readEventPage: (input: {
     readonly afterSeq: SequenceNumber;
     readonly limit: number;
     readonly sessionId: SessionId;
     readonly subscriberId: SubscriberId;
     readonly trace: EDATraceMetadata;
-  }) => Promise<EDASessionEventPage>;
+  }) => Promise<EDASessionEventPage & { readonly reduced: ReducedState }>;
   readonly webSocketProjection?: EDAWebSocketProjection<ProjectionState>;
   readonly webSocketProtocol?: EDAWebSocketServerFrameEncoder;
   /** Enables transcript-window sockets beside raw event sockets. */
@@ -70,8 +72,8 @@ interface EventWebSocketState<ProjectionState extends object> {
  * the platform-neutral delivery state machine.
  */
 export class EDAWebSocketConnectionManager<ProjectionState extends object = never> {
-  readonly observerLayer = SessionEventObserver.FromHandler((event) =>
-    Effect.tryPromise(() => this.fanoutPublishedEvent(event)).pipe(
+  readonly observerLayer = SessionEventObserver.FromHandler((event, state) =>
+    Effect.tryPromise(() => this.fanoutPublishedEvent(event, state)).pipe(
       Effect.catchCause((cause) =>
         Effect.logError("EDA WebSocket event observer recovered from a host failure", { cause }),
       ),
@@ -79,6 +81,12 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
   );
 
   private readonly sockets = new Map<WebSocket, EventWebSocketState<ProjectionState>>();
+  /**
+   * The newest reduced state seen from a publication or a page read. One object serves one
+   * session, and every events frame starts from one of those two, so it is set before any
+   * events frame is encoded.
+   */
+  private reduced: ReducedState | undefined;
   private readonly transcript: EDATranscriptSockets | undefined;
 
   constructor(private readonly options: EDAWebSocketConnectionManagerOptions<ProjectionState>) {
@@ -108,11 +116,6 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
   }
 
   /**
-   * The session's log was destroyed: drop live content and close every transcript socket,
-   * including those still hibernated, which a just-woken object has not restored yet. They are
-   * recognised by their attachment kind without being restored.
-   */
-  /**
    * Re-read every transcript socket, held or hibernated, at the current cut. The served version
    * changed without a publication (a rebuilt version activated), so each subscriber receives a
    * complete replacement (design §7 step 4, §9.4).
@@ -134,7 +137,14 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
     this.transcript.serveRestored(sockets);
   }
 
-  async resetTranscript(): Promise<void> {
+  /**
+   * The session's log was destroyed. Forget its reduced state, since the new log restarts at
+   * seq 0, then drop live content and close every transcript socket, including those still
+   * hibernated, which a just-woken object has not restored yet. They are recognised by their
+   * attachment kind without being restored.
+   */
+  async sessionDestroyed(): Promise<void> {
+    this.reduced = undefined;
     if (this.transcript === undefined) return;
     const hibernated: WebSocket[] = [];
     for (const webSocket of this.options.getWebSockets?.() ?? []) {
@@ -257,7 +267,8 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
     await Promise.all(deliveries);
   }
 
-  private async fanoutPublishedEvent(event: PositionedEvent): Promise<void> {
+  private async fanoutPublishedEvent(event: PositionedEvent, reduced: ReducedState): Promise<void> {
+    this.observeReduced(reduced);
     // Fold into the transcript fence first and synchronously, even with no transcript socket
     // open, so no failure while restoring or serving raw sockets can make the live-content
     // accumulator miss a publication. Transcript sockets already held are served now.
@@ -295,10 +306,6 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
               state,
               onDurableEvents(state.delivery, [event], state.head, Date.now()),
             );
-            return;
-          }
-          if (!this.options.isSessionReady(state.sessionId)) {
-            state.catchUpDeferred = true;
             return;
           }
           await this.readAndDeliver(webSocket, state, state.delivery.sentDurableThroughSeq);
@@ -411,6 +418,13 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
     state: EventWebSocketState<ProjectionState>,
     afterSeq: SequenceNumber,
   ): Promise<boolean> {
+    // A read waits for the runtime, and startup recovery publishes while the runtime is built, so
+    // a read from a publication (a gap, or a suppressed frame reopening the window) waits for the
+    // build it is part of. Defer it; preparing the session flushes it once the runtime is ready.
+    if (!this.options.isSessionReady(state.sessionId)) {
+      state.catchUpDeferred = true;
+      return true;
+    }
     const page = await this.options.readEventPage({
       afterSeq,
       limit: state.delivery.policy.maxInFlightFrames * state.delivery.policy.maxFrameEvents,
@@ -418,6 +432,7 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
       subscriberId: state.subscriberId,
       trace: state.trace,
     });
+    this.observeReduced(page.reduced);
     state.head = SequenceNumber.make(Math.max(state.head, page.head));
     if (page.events.length === 0) return true;
     return await this.interpret(
@@ -425,6 +440,12 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
       state,
       onDurableEvents(state.delivery, page.events, state.head, Date.now()),
     );
+  }
+
+  private observeReduced(reduced: ReducedState): void {
+    if (this.reduced === undefined || reduced.lastSeq >= this.reduced.lastSeq) {
+      this.reduced = reduced;
+    }
   }
 
   private persist(webSocket: WebSocket, state: EventWebSocketState<ProjectionState>): boolean {
@@ -478,7 +499,9 @@ export class EDAWebSocketConnectionManager<ProjectionState extends object = neve
         const projected =
           state.projectionState === undefined
             ? undefined
-            : this.options.webSocketProjection?.encodeServerFrame(frame, state.projectionState);
+            : this.options.webSocketProjection?.encodeServerFrame(frame, state.projectionState, {
+                reduced: this.reduced,
+              });
         if (state.projectionState !== undefined && projected === undefined) {
           this.close(webSocket, EDA_WS_CLOSE_PROTOCOL_ERROR, "protocol");
           return false;

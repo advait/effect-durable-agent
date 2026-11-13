@@ -13,6 +13,7 @@ import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import type { ReducedState } from "../domain/reduced-state";
 import { TurnId } from "../types/core";
 import { PositionedEvent } from "../types/events";
 import { SessionEventObserver, type SessionEventObserverShape } from "./session-event-observer";
@@ -29,7 +30,8 @@ export interface ActiveTurnEphemeralReplay {
 
 /** In-memory live fanout plus active-turn replay source for reconnect streams. */
 export interface LiveEventBusShape {
-  readonly publish: (event: PositionedEvent) => Effect.Effect<boolean>;
+  /** Publish one event with the session's reduced state at publication, for the observer. */
+  readonly publish: (event: PositionedEvent, state: ReducedState) => Effect.Effect<boolean>;
   readonly subscribe: () => Effect.Effect<Stream.Stream<PositionedEvent>, never, Scope.Scope>;
   readonly subscribeQueue: () => Effect.Effect<
     PubSub.Subscription<PositionedEvent>,
@@ -69,10 +71,10 @@ const makeLiveBus = (
   activeTurnReplay: Ref.Ref<ActiveTurnEphemeralReplay>,
   observer: SessionEventObserverShape,
 ): LiveEventBusShape => ({
-  publish: (event) =>
+  publish: (event, state) =>
     Effect.gen(function* () {
       yield* updateActiveTurnReplay(activeTurnReplay, event);
-      yield* observer.onEvent(event);
+      yield* observer.onEvent(event, state);
       return yield* PubSub.publish(pubsub, event);
     }),
   subscribeQueue: () => PubSub.subscribe(pubsub),

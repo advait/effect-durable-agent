@@ -36,6 +36,7 @@ import { EDARuntime } from "./runtime";
 import { makeEDAToolkit } from "./tool-registry";
 import type { InferenceRunnerStreamPart } from "./inference-runner";
 import { makeEdaTestLayer, makeLanguageModelLayer } from "../testkit/layers";
+import { initialReducedState } from "../domain/reduced-state";
 
 const SESSION_ID = "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a";
 const COMMAND_ID = "018f6bd5-2f2a-7b1e-8f1b-1f2e3d4c5b6a";
@@ -685,7 +686,7 @@ describe("EDARuntime", () => {
           Effect.forkScoped,
         );
 
-        yield* liveBus.publish(liveEphemeral);
+        yield* liveBus.publish(liveEphemeral, initialReducedState);
         yield* runtime.submit(secondCommand);
         return {
           events: Array.from(yield* Fiber.join(replayThenLive)),

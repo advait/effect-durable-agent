@@ -32,6 +32,7 @@ import {
 } from "../types/events";
 import { LiveEventBus } from "./live-event-bus";
 import { SessionEventObserver } from "./session-event-observer";
+import { initialReducedState } from "../domain/reduced-state";
 
 const SESSION_ID = "018f6bd5-2f2a-7b1e-8f1a-1f2e3d4c5b6a";
 const EVENT_IDS = [
@@ -127,7 +128,7 @@ describe("LiveEventBus", () => {
           Effect.forkScoped,
         );
 
-        const accepted = yield* bus.publish(positionedEvent);
+        const accepted = yield* bus.publish(positionedEvent, initialReducedState);
         const firstEvents = yield* Fiber.join(first);
         const secondEvents = yield* Fiber.join(second);
 
@@ -156,7 +157,7 @@ describe("LiveEventBus", () => {
         );
 
         for (const event of events) {
-          yield* bus.publish(event);
+          yield* bus.publish(event, initialReducedState);
         }
 
         return yield* Fiber.join(collectedFiber);
@@ -186,7 +187,7 @@ describe("LiveEventBus", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const bus = yield* LiveEventBus;
-          for (const event of events) yield* bus.publish(event);
+          for (const event of events) yield* bus.publish(event, initialReducedState);
         }),
       ).pipe(Effect.provide(busLayer)),
     );
@@ -208,7 +209,7 @@ describe("LiveEventBus", () => {
         );
 
         for (const event of events) {
-          yield* bus.publish(event);
+          yield* bus.publish(event, initialReducedState);
         }
 
         const fastEvents = yield* Fiber.join(fastFiber);
@@ -228,11 +229,11 @@ describe("LiveEventBus", () => {
     const program = Effect.scoped(
       Effect.gen(function* () {
         const bus = yield* LiveEventBus;
-        yield* bus.publish(positionedEventAt(1));
+        yield* bus.publish(positionedEventAt(1), initialReducedState);
         const subscription = yield* bus.subscribeQueue();
         const beforeLivePublish = yield* PubSub.takeUpTo(subscription, 1);
         const liveEvent = positionedEventAt(2);
-        yield* bus.publish(liveEvent);
+        yield* bus.publish(liveEvent, initialReducedState);
         const afterLivePublish = yield* PubSub.take(subscription);
         return { beforeLivePublish, afterLivePublish, liveEvent };
       }),
@@ -254,7 +255,7 @@ describe("LiveEventBus", () => {
         yield* Effect.yieldNow;
         yield* Fiber.interrupt(pendingTake);
 
-        return yield* bus.publish(positionedEvent);
+        return yield* bus.publish(positionedEvent, initialReducedState);
       }),
     ).pipe(Effect.provide(LiveEventBus.Noop));
 
@@ -267,11 +268,11 @@ describe("LiveEventBus", () => {
     const program = Effect.scoped(
       Effect.gen(function* () {
         const bus = yield* LiveEventBus;
-        yield* bus.publish(positionedTurnStarted(1));
-        yield* bus.publish(firstDelta);
-        yield* bus.publish(secondDelta);
+        yield* bus.publish(positionedTurnStarted(1), initialReducedState);
+        yield* bus.publish(firstDelta, initialReducedState);
+        yield* bus.publish(secondDelta, initialReducedState);
         const active = yield* bus.activeTurnReplay();
-        yield* bus.publish(positionedTurnCompleted(2));
+        yield* bus.publish(positionedTurnCompleted(2), initialReducedState);
         const completed = yield* bus.activeTurnReplay();
         return { active, completed };
       }),

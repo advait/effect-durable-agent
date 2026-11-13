@@ -323,6 +323,45 @@ describe("SessionState", () => {
     expect(result).toEqual({ published: keyed, page: keyed, replay: keyed });
   });
 
+  it("hands the observer the reduced state at publication: a batch's end, and the head for an ephemeral event", async () => {
+    const observed: Array<readonly [seq: number, subSeq: number, stateSeq: number]> = [];
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const session = yield* SessionState;
+        yield* session.submitBatch([
+          counterFact(EVENT_ID),
+          counterFact(TURN_COMPLETED_EVENT_ID),
+          counterFact(RUN_ID),
+        ]);
+        yield* session.submitBatch([counterFact(TURN_ID)]);
+        yield* session.publishEphemeral(ephemeralEvent);
+      }),
+    ).pipe(
+      Effect.provide(
+        makeEdaTestLayer({
+          sessionId: SessionId.make(SESSION_ID),
+          reducers: [counterReducer],
+          wrapStore: (store) => registerAppEvents(store, CounterEvent),
+          sessionEventObserverLayer: SessionEventObserver.FromHandler((event, state) =>
+            Effect.sync(() => {
+              observed.push([event.position.seq, event.position.subSeq, state.lastSeq]);
+            }),
+          ),
+        }),
+      ),
+    );
+
+    await Effect.runPromise(program);
+
+    expect(observed).toEqual([
+      [1, 0, 3],
+      [2, 0, 3],
+      [3, 0, 3],
+      [4, 0, 4],
+      [4, 1, 4],
+    ]);
+  });
+
   it("starts a legacy admitted submit without migrating persisted session state", async () => {
     const prompts: Array<Prompt.RawInput> = [];
     const projectedStates: Array<ReducedState> = [];

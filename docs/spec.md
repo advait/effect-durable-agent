@@ -1150,8 +1150,10 @@ Current production host:
 - session destruction shuts down in-memory keep-alive state and deletes the Durable Object alarm before deleting storage, then recreates the empty tables (a new log and incarnation);
 - WebSocket hibernation restores exact ACK-window state from an Effect Schema attachment.
 
-Core publishes through the infallible `SessionEventObserver` port supplied at layer construction.
-The Cloudflare observer logs and contains platform failures. Core has no Cloudflare types, callback
+Core publishes through the infallible `SessionEventObserver` port supplied at layer construction,
+handing it each event with the reduced state at publication (`state.lastSeq` at or after the
+event's seq; see `docs/websocket-protocol.md`). The Cloudflare observer logs and contains platform
+failures, and passes that state to an app WebSocket projection as `context.reduced`. Core has no Cloudflare types, callback
 registry, or public listener-registration API.
 
 The host boundary supports multiple deployments. The Cloudflare and celld packages provide the same semantics: one ordered durable session log, atomic append, per-session coordination, resumable live delivery, durable sink checkpoints, clock/id services, and wakeup/keep-alive hooks.
