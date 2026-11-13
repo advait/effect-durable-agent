@@ -7,7 +7,11 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Response from "effect/ai/Response";
 
-import { makeEdaTestLayer, type EdaTestLayerOptions } from "../testkit/layers";
+import {
+  makeEdaTestLayer,
+  makeLanguageModelLayer,
+  type EdaTestLayerOptions,
+} from "../testkit/layers";
 import { RunSchedulingRequestRecord, type RunSchedulingRequest } from "../domain/run-scheduling";
 import {
   decodeReducedStateCheckpoint,
@@ -21,12 +25,18 @@ import {
   EDACommand,
   GrantRunCommand,
   PromotePendingMessageCommand,
+  ResumePendingMessagesCommand,
+  StopTurnCommand,
   SubmitMessageCommand,
 } from "../types/commands";
-import { CommandId, SessionId } from "../types/core";
+import { CommandId, type MessageId, SessionId } from "../types/core";
 import { type DurableEventEnvelope } from "../types/events";
 import { EDASessionStore, EDASessionStoreError, type EDASessionStoreShape } from "./session-store";
-import { EDASessionQuery } from "./session-query";
+import { EDASessionQuery, type EDASessionSnapshot } from "./session-query";
+import { EDARuntime } from "./runtime";
+import { makeEDARuntimeLayer } from "./runtime-layer";
+import { ModelResolver } from "./model-resolver";
+import { SinkCheckpointStore } from "./sink-checkpoint-store";
 import { SessionState } from "./session-state";
 import {
   RunScheduler,
@@ -39,6 +49,8 @@ import {
   SESSION_ID,
   command,
   secondCommand,
+  thirdCommand,
+  steerCommand,
   interruptCommand,
   stopTurnCommand,
   modelSelection,
@@ -817,4 +829,137 @@ describe("durable run authorization", () => {
         }).pipe(Effect.provide(test.layer));
       }),
   );
+});
+
+/** The host-built public runtime, with a Deferred scheduler and a recorded host wakeup. */
+const runtimeFixture = (
+  options: {
+    readonly parts?: EdaTestLayerOptions["parts"];
+    readonly seedEvents?: ReadonlyArray<DurableEventEnvelope>;
+  } = {},
+) => {
+  let wakeupPending = false;
+  const layer = makeEDARuntimeLayer({
+    config: { modelSelection },
+    sessionId,
+    sessionStoreLayer:
+      options.seedEvents === undefined
+        ? EDASessionStore.InMemory(sessionId)
+        : EDASessionStore.InMemorySeeded(sessionId, options.seedEvents),
+    sinkCheckpointStoreLayer: SinkCheckpointStore.InMemory,
+    modelResolverLayer: ModelResolver.Fixed.pipe(
+      Layer.provide(makeLanguageModelLayer(options.parts ?? finished)),
+    ),
+    runSchedulerLayer: RunScheduler.Deferred(() => Effect.void),
+    runSchedulingWakeupLayer: Layer.succeed(RunSchedulingWakeup, {
+      setPending: (pending) =>
+        Effect.sync(() => {
+          wakeupPending = pending;
+        }),
+    }),
+  });
+  return { layer, wakeupPending: () => wakeupPending };
+};
+
+/** Poll the runtime's live snapshot until `select` finds a value. */
+const waitForState = <A>(
+  select: (state: EDASessionSnapshot["state"]) => A | undefined,
+): Effect.Effect<A, EDASessionStoreError, EDARuntime> =>
+  Effect.gen(function* () {
+    const runtime = yield* EDARuntime;
+    for (let attempt = 0; attempt < 500; attempt += 1) {
+      const selected = select((yield* runtime.snapshot()).state);
+      if (selected !== undefined) return selected;
+      yield* Effect.yieldNow;
+    }
+    return yield* Effect.die(new Error("Timed out waiting for session state"));
+  });
+
+const waitForRequestOf = (commandId: CommandId) =>
+  waitForState((state) =>
+    state.runSchedulingRequest?.work.commandId === commandId
+      ? state.runSchedulingRequest
+      : undefined,
+  );
+
+/** Gia's interrupt-with-pending-message: one batch that stops the run and resumes the message. */
+const interruptWithPendingMessage = (messageId: MessageId) => ({
+  stop: new StopTurnCommand({ commandId: CommandId.make(sequentialUuidV7(9_401)) }),
+  resume: new ResumePendingMessagesCommand({
+    commandId: CommandId.make(sequentialUuidV7(9_402)),
+    messageIds: [messageId],
+  }),
+});
+
+/** A granted run whose turn never finishes, plus a steering message waiting for that run. */
+const runWithPendingSteer = Effect.gen(function* () {
+  const runtime = yield* EDARuntime;
+  yield* runtime.submit(command);
+  const first = yield* waitForRequestOf(command.commandId);
+  assert.strictEqual(
+    (yield* runtime.grantRun(new GrantRunCommand({ requestId: first.requestId })))._tag,
+    "Granted",
+  );
+  yield* runtime.submit(steerCommand);
+  return yield* waitForState(
+    (state) =>
+      state.commandQueues.pendingSteers.find(
+        (message) => message.commandId === steerCommand.commandId,
+      )?.messageId,
+  );
+});
+
+describe("interrupt with a pending message under deferred scheduling", () => {
+  methods.effect("grants the resume the stop paused, and runs that message", () => {
+    const test = runtimeFixture({
+      parts: ({ index }) => (index === 0 ? Stream.never : finished),
+    });
+    return Effect.gen(function* () {
+      const runtime = yield* EDARuntime;
+      const messageId = yield* runWithPendingSteer;
+      const { stop, resume } = interruptWithPendingMessage(messageId);
+      yield* runtime.submit([stop, resume]);
+      const request = yield* waitForRequestOf(resume.commandId);
+      const grant = yield* runtime.grantRun(new GrantRunCommand({ requestId: request.requestId }));
+      assert.strictEqual(grant._tag, "Granted");
+      assert.strictEqual((yield* runtime.runRequestOutcome(request.requestId))._tag, "Granted");
+      const terminal = yield* runtime.blockOnCommand(resume.commandId);
+      assert.strictEqual(terminal.event.type, "CommandCompleted");
+      const after = (yield* runtime.snapshot()).state;
+      assert.isDefined(after.messages.get(messageId)?.consumedSeq);
+      assert.isUndefined(after.runSchedulingRequest);
+      assert.isFalse(test.wakeupPending());
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  methods.effect("cancelling the message a waiting resume selected retires its request", () => {
+    const test = runtimeFixture({
+      parts: ({ index }) => (index === 0 ? Stream.never : finished),
+    });
+    return Effect.gen(function* () {
+      const runtime = yield* EDARuntime;
+      const messageId = yield* runWithPendingSteer;
+      const { stop, resume } = interruptWithPendingMessage(messageId);
+      yield* runtime.submit([stop, resume]);
+      const request = yield* waitForRequestOf(resume.commandId);
+      yield* runtime.submitAndBlock(
+        new CancelPendingMessageCommand({
+          commandId: CommandId.make(sequentialUuidV7(9_403)),
+          messageId,
+          reason: "user-cancel",
+        }),
+      );
+      assert.strictEqual((yield* runtime.runRequestOutcome(request.requestId))._tag, "Invalidated");
+      yield* runtime.submit(thirdCommand);
+      const next = yield* waitForRequestOf(thirdCommand.commandId);
+      assert.strictEqual(
+        (yield* runtime.grantRun(new GrantRunCommand({ requestId: next.requestId })))._tag,
+        "Granted",
+      );
+      assert.strictEqual(
+        (yield* runtime.blockOnCommand(thirdCommand.commandId)).event.type,
+        "CommandCompleted",
+      );
+    }).pipe(Effect.provide(test.layer));
+  });
 });
