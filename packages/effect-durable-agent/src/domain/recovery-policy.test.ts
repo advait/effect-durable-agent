@@ -2,7 +2,7 @@ import * as Prompt from "effect/ai/Prompt";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { PendingUserMessage } from "./command-queues";
-import { initialReducedState } from "./reduced-state";
+import { initialReducedState, type MessageRecord } from "./reduced-state";
 import { isSessionRecoveryPlanEmpty, planSessionRecovery } from "./recovery-policy";
 import { ResumePendingMessagesCommand, SubmitMessageCommand } from "../types/commands";
 import { CommandId, CompactionId, MessageId, RunId, SequenceNumber, TurnId } from "../types/core";
@@ -32,6 +32,23 @@ const queued: PendingUserMessage = {
   content: [Prompt.textPart({ text: "queue" })],
   disposition: "queue",
 };
+
+/** The durable record behind a pending-queue entry; recovery selects inputs from these records. */
+const userRecord = (
+  message: PendingUserMessage,
+  extras: Partial<Extract<MessageRecord, { readonly _tag: "User" }>> = {},
+): readonly [MessageId, MessageRecord] => [
+  message.messageId,
+  {
+    _tag: "User",
+    messageId: message.messageId,
+    commandId: message.commandId,
+    content: message.content,
+    seq: message.submittedSeq,
+    disposition: message.disposition,
+    ...extras,
+  },
+];
 
 describe("planSessionRecovery", () => {
   it("is empty for an idle session", () => {
@@ -85,6 +102,7 @@ describe("planSessionRecovery", () => {
           },
         ],
       ]),
+      messages: new Map([userRecord(steer), userRecord(queued, { consumedSeq: seq(4) })]),
       commandQueues: {
         ...initialReducedState.commandQueues,
         active: { commandId: resumeCommandId, runId },
@@ -93,6 +111,47 @@ describe("planSessionRecovery", () => {
     });
 
     expect(plan.continuation?.inputMessageIds).toEqual([messageId]);
+  });
+
+  it("continues the paused inputs an active resume names, and no other paused message", () => {
+    const stopCommandId = CommandId.make("018f6bd5-2f2a-7b1e-8f1c-1f2e3d4c5b6a");
+    const resume = new ResumePendingMessagesCommand({
+      commandId: resumeCommandId,
+      messageIds: [queuedMessageId],
+    });
+    const paused = { pausedByCommandId: stopCommandId, pausedSeq: seq(2) };
+    const plan = planSessionRecovery({
+      ...initialReducedState,
+      commands: new Map([
+        [resumeCommandId, { commandId: resumeCommandId, command: resume, startedSeq: seq(3) }],
+      ]),
+      runs: new Map([
+        [
+          runId,
+          {
+            runId,
+            commandIds: [resumeCommandId, commandId],
+            startedSeq: seq(4),
+            trace: makeEDARunTrace(),
+          },
+        ],
+      ]),
+      messages: new Map([
+        userRecord({ ...steer, disposition: "queue" }, paused),
+        userRecord(queued, paused),
+      ]),
+      commandQueues: {
+        ...initialReducedState.commandQueues,
+        active: { commandId: resumeCommandId, runId },
+        pausedQueue: [
+          { ...steer, disposition: "queue", pausedByCommandId: stopCommandId },
+          { ...queued, pausedByCommandId: stopCommandId },
+        ],
+      },
+    });
+
+    expect(plan.continuation?.inputMessageIds).toEqual([queuedMessageId]);
+    expect(plan.messageIdsToResume).toEqual([]);
   });
 
   it("continues active submit work and owns its unconsumed source message", () => {
@@ -115,6 +174,7 @@ describe("planSessionRecovery", () => {
           },
         ],
       ]),
+      messages: new Map([userRecord(queued)]),
       commandQueues: {
         ...initialReducedState.commandQueues,
         active: { commandId, runId },

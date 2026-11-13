@@ -88,7 +88,8 @@ type SchedulingState = Pick<
 /** A work's selected messages: those a run would consume, and those a pause still holds. */
 const runSchedulingInputs = (state: SchedulingState, work: RunSchedulingWork) => {
   const command = state.commands.get(work.commandId)?.command;
-  const resumesPaused = work._tag === "Command" && command?._tag === "ResumePendingMessages";
+  const resumed: ReadonlyArray<MessageId> =
+    command?._tag === "ResumePendingMessages" ? command.messageIds : [];
   const candidates =
     work._tag === "Recovery"
       ? work.inputMessageIds
@@ -110,7 +111,8 @@ const runSchedulingInputs = (state: SchedulingState, work: RunSchedulingWork) =>
       message.cancelledSeq !== undefined
     )
       continue;
-    if (resumesPaused || message.pausedByCommandId === undefined) eligible.push(messageId);
+    if (message.pausedByCommandId === undefined || resumed.includes(messageId))
+      eligible.push(messageId);
     else held.push(messageId);
   }
   return { eligible, held };
@@ -118,14 +120,18 @@ const runSchedulingInputs = (state: SchedulingState, work: RunSchedulingWork) =>
 
 /**
  * The messages a run for this work would consume: its selected user and steering messages that
- * are neither consumed nor cancelled. Dispatch, grant and cancellation all read this one function,
- * so dispatch never reserves a run that grant rejects for want of inputs, and cancelling an input
- * always finds the reservation that owns it.
+ * are neither consumed nor cancelled. Dispatch, grant, cancellation and startup recovery all read
+ * this one function, so dispatch never reserves a run that grant rejects for want of inputs,
+ * cancelling an input always finds the reservation that owns it, and a replacement run selects
+ * the inputs its interrupted run would have consumed.
  *
- * A paused message is an input only of an explicit `ResumePendingMessages`, because resuming
- * paused messages is that command's purpose: a host's interrupt-with-pending-message submits
- * `[StopTurn, ResumePendingMessages([m])]`, and the Stop pauses `m` before the Resume runs. For any
- * other work a pause holds the message until the user promotes or resumes it.
+ * A paused message is an input only of the `ResumePendingMessages` that names it, for that
+ * command's own work and for a recovery of it alike, because resuming paused messages is that
+ * command's purpose: a host's interrupt-with-pending-message submits
+ * `[StopTurn, ResumePendingMessages([m])]`, and the Stop pauses `m` before the Resume runs. Until
+ * a turn consumes `m` it stays paused, so a run that dies before its first turn leaves it paused
+ * for recovery. For any other work, and for any message the Resume does not name, a pause holds
+ * the message until the user promotes or resumes it.
  */
 export const runSchedulingInputMessageIds = (
   state: SchedulingState,
