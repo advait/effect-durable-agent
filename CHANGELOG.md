@@ -17,6 +17,11 @@ checkpoint or protocol change.
   publication or a page read. It is defined for every `events` frame and is at or after the
   frame's last durable seq. A projection treats it as the frame's own state only when the two
   are equal; a live frame inside a batch and a catch-up frame are routinely behind it.
+- **Fix:** the Cloudflare connection manager forgets a destroyed session's reduced state, so
+  frames of the log `destroySession` recreates meet their own state.
+- **Fix:** a page read reached from a publication during startup recovery (a gap, or a frame the
+  projection suppressed reopening the window) is deferred until the runtime is ready. It used to
+  wait for the runtime build that was publishing, and hang it.
 
 Storage: none. Protocol: none. API: breaking for a host that publishes on the bus itself:
 `LiveEventBusShape.publish(event, state)` takes the state to hand the observer. Additive for
