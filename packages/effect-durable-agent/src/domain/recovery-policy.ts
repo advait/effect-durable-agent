@@ -9,10 +9,10 @@ import type {
   TurnRecord,
 } from "./reduced-state";
 import { classifyRecoverableWork, type RecoverableWork } from "./reduced-state";
-import { decideRunContinuation, pendingSteerings } from "./run-continuation-policy";
+import { pendingSteerings } from "./run-continuation-policy";
 import { runSchedulingInputMessageIds } from "./run-scheduling";
-import type { MessageId } from "../types/core";
-import type { UsagePayload } from "../types/events";
+import type { MessageId, RunId, TurnId } from "../types/core";
+import type { DecodedDurableEvent, UsagePayload } from "../types/events";
 
 export interface SessionRecoveryPlan {
   readonly activeCommands: ReadonlyArray<CommandRecord>;
@@ -44,11 +44,81 @@ export interface SessionRecoveryContinuation {
 export interface SessionRecoveryCompletion {
   readonly command: CommandRecord;
   readonly run: RunRecord;
-  readonly openTurn?: { readonly turn: TurnRecord; readonly usage?: UsagePayload };
+  readonly openTurn?: { readonly turnId: TurnId; readonly usage?: UsagePayload };
 }
 
-/** Pure startup-recovery policy over one canonical durable snapshot. */
-export const planSessionRecovery = (state: ReducedState): SessionRecoveryPlan => {
+/**
+ * A run's last turn, folded from the run's own durable events. A context rebase prunes terminal
+ * turn, inference and tool records from `ReducedState`, so only the log still says how an open
+ * run's last turn ended.
+ */
+export interface RunLastTurn {
+  readonly runId: RunId;
+  readonly turnId: TurnId;
+  readonly terminal?: "Completed" | "Failed";
+  /** The turn's last inference, once it started. */
+  readonly inference?: { readonly completed: boolean; readonly usage?: UsagePayload };
+  /** Tool calls the turn created or rejected: either leaves feedback for another inference. */
+  readonly toolDecisions: number;
+}
+
+/** Folds the last turn of `runId` from the session's events in log order. */
+export const foldRunLastTurn = (
+  runId: RunId,
+  events: Iterable<DecodedDurableEvent>,
+): RunLastTurn | undefined => {
+  let last: RunLastTurn | undefined;
+  const inLastTurn = (payload: { readonly runId: RunId; readonly turnId: TurnId }) =>
+    last !== undefined && payload.runId === runId && payload.turnId === last.turnId;
+  for (const event of events) {
+    switch (event.type) {
+      case "TurnStarted":
+        if (event.payload.runId === runId) {
+          last = { runId, turnId: event.payload.turnId, toolDecisions: 0 };
+        }
+        break;
+      case "InferenceStarted":
+        if (last !== undefined && inLastTurn(event.payload)) {
+          last = { ...last, inference: { completed: false } };
+        }
+        break;
+      case "InferenceCompleted":
+        if (last !== undefined && inLastTurn(event.payload)) {
+          const usage = event.payload.usage;
+          last = {
+            ...last,
+            inference: { completed: true, ...(usage === undefined ? {} : { usage }) },
+          };
+        }
+        break;
+      case "ToolCallCreated":
+      case "ToolCallRejected":
+        if (last !== undefined && inLastTurn(event.payload)) {
+          last = { ...last, toolDecisions: last.toolDecisions + 1 };
+        }
+        break;
+      case "TurnCompleted":
+        if (last !== undefined && inLastTurn(event.payload))
+          last = { ...last, terminal: "Completed" };
+        break;
+      case "TurnFailed":
+      case "TurnStopped":
+        if (last !== undefined && inLastTurn(event.payload)) last = { ...last, terminal: "Failed" };
+        break;
+    }
+  }
+  return last;
+};
+
+/**
+ * Pure startup-recovery policy over one canonical durable snapshot. `lastTurn`, folded from the
+ * log for the plan's continuation run, lets the plan complete a run that already answered instead
+ * of replacing it; without it the run is continued.
+ */
+export const planSessionRecovery = (
+  state: ReducedState,
+  lastTurn?: RunLastTurn,
+): SessionRecoveryPlan => {
   const recoverable = classifyRecoverableWork(state);
   const pendingCommandsById = new Set(
     state.commandQueues.pendingCommands.map((command) => command.commandId),
@@ -96,7 +166,13 @@ export const planSessionRecovery = (state: ReducedState): SessionRecoveryPlan =>
   const completion =
     continuationCommand === undefined || continuationRun === undefined
       ? undefined
-      : planAnsweredRunCompletion(state, recoverable, continuationCommand, continuationRun);
+      : planAnsweredRunCompletion(
+          state,
+          recoverable,
+          continuationCommand,
+          continuationRun,
+          lastTurn,
+        );
   // The inputs the interrupted run selected, including the paused messages a Resume names.
   const sourceMessageIds =
     continuationCommand === undefined
@@ -142,7 +218,7 @@ export const planSessionRecovery = (state: ReducedState): SessionRecoveryPlan =>
     ),
     activeRuns: recoverable.activeRuns.filter((run) => run.runId !== completion?.run.runId),
     activeTurns: recoverable.activeTurns.filter(
-      (turn) => turn.turnId !== completion?.openTurn?.turn.turnId,
+      (turn) => turn.turnId !== completion?.openTurn?.turnId,
     ),
     activeInferences: recoverable.activeInferences,
     openToolCalls: recoverable.openToolCalls,
@@ -165,65 +241,37 @@ export const planSessionRecovery = (state: ReducedState): SessionRecoveryPlan =>
   };
 };
 
+/**
+ * `decideRunContinuation`'s `CompleteRun` over the run's durable last turn: its inference
+ * completed, it decided no tool calls (no feedback to answer), and no steering is pending.
+ */
 const planAnsweredRunCompletion = (
   state: ReducedState,
   recoverable: RecoverableWork,
   command: CommandRecord,
   run: RunRecord,
+  lastTurn: RunLastTurn | undefined,
 ): SessionRecoveryCompletion | undefined => {
   if (
+    lastTurn?.runId !== run.runId ||
+    lastTurn.terminal === "Failed" ||
+    lastTurn.inference?.completed !== true ||
+    lastTurn.toolDecisions > 0 ||
+    pendingSteerings(state, run.runId).length > 0 ||
     recoverable.activeInferences.some((inference) => inference.runId === run.runId) ||
     recoverable.openToolCalls.some((tool) => tool.decision?.runId === run.runId)
   ) {
     return undefined;
   }
-  const lastTurn = latestStarted(
-    Array.from(state.turns.values()).filter((turn) => turn.runId === run.runId),
-  );
-  if (lastTurn === undefined) {
-    // A rebase prunes a run's terminal turns. Boundary compaction runs while a run is open only
-    // after a completed turn, so a run whose turns a rebase pruned ended on a completed turn,
-    // and only pending steering can continue it.
-    const rebasedSinceRunStarted = Array.from(state.compactions.values()).some(
-      (compaction) => compaction.rebasedSeq !== undefined && compaction.rebasedSeq > run.startedSeq,
-    );
-    return rebasedSinceRunStarted && pendingSteerings(state, run.runId).length === 0
-      ? { command, run }
-      : undefined;
-  }
-  if (lastTurn.terminal !== undefined && lastTurn.terminal._tag !== "Completed") {
-    return undefined;
-  }
-  const lastInference = latestStarted(
-    Array.from(state.inferences.values()).filter(
-      (inference) => inference.turnId === lastTurn.turnId,
-    ),
-  );
-  if (lastInference?.terminal?._tag !== "Completed") return undefined;
-  const decision = decideRunContinuation({
-    runId: run.runId,
-    turnId: lastTurn.turnId,
-    state,
-  });
-  if (decision._tag !== "CompleteRun") return undefined;
-  const usage = lastInference.terminal.usage;
+  const usage = lastTurn.inference.usage;
   return {
     command,
     run,
     ...(lastTurn.terminal === undefined
-      ? { openTurn: { turn: lastTurn, ...(usage === undefined ? {} : { usage }) } }
+      ? { openTurn: { turnId: lastTurn.turnId, ...(usage === undefined ? {} : { usage }) } }
       : {}),
   };
 };
-
-const latestStarted = <A extends { readonly startedSeq: number }>(
-  records: ReadonlyArray<A>,
-): A | undefined =>
-  records.reduce<A | undefined>(
-    (latest, record) =>
-      latest === undefined || record.startedSeq > latest.startedSeq ? record : latest,
-    undefined,
-  );
 
 export const isSessionRecoveryPlanEmpty = (plan: SessionRecoveryPlan): boolean =>
   plan.activeCommands.length === 0 &&

@@ -40,7 +40,11 @@ import {
 } from "../domain/reduced-state";
 import { ContextProjection, emptyContextProjection } from "../domain/context-projection";
 import { decideRunContinuation } from "../domain/run-continuation-policy";
-import { isSessionRecoveryPlanEmpty, planSessionRecovery } from "../domain/recovery-policy";
+import {
+  foldRunLastTurn,
+  isSessionRecoveryPlanEmpty,
+  planSessionRecovery,
+} from "../domain/recovery-policy";
 import { planRunFailure, planUserInterruption } from "../domain/run-terminal-policy";
 import {
   GrantRunCommand,
@@ -2003,7 +2007,22 @@ const makeLiveSessionState = Effect.gen(function* () {
     reason: string,
     input: SessionRunInput,
   ) {
-    const plan = planSessionRecovery(reduced);
+    const candidate = planSessionRecovery(reduced).continuation?.run;
+    const plan =
+      candidate === undefined
+        ? planSessionRecovery(reduced)
+        : planSessionRecovery(
+            reduced,
+            foldRunLastTurn(
+              candidate.runId,
+              Array.from(
+                yield* store.eventsAfter(SequenceNumber.make(candidate.startedSeq - 1)).pipe(
+                  Stream.map((entry) => entry.event),
+                  Stream.runCollect,
+                ),
+              ),
+            ),
+          );
     input = {
       ...input,
       modelSelection: plan.continuation?.run.modelSelection ?? input.modelSelection,
@@ -2145,7 +2164,7 @@ const makeLiveSessionState = Effect.gen(function* () {
         recoveryEvents.push(
           yield* events.turnCompleted({
             runId: run.runId,
-            turnId: openTurn.turn.turnId,
+            turnId: openTurn.turnId,
             ...(openTurn.usage === undefined ? {} : { usage: openTurn.usage }),
           }),
         );
