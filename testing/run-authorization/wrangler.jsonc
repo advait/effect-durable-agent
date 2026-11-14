@@ -8,6 +8,7 @@
   "preview_urls": false,
   "define": {
     "EDA_CONFORMANCE_BLOCK_MODEL": "false",
+    "EDA_CONFORMANCE_BLOCK_SUMMARY": "false",
     "EDA_AUTHORIZER_OFFLINE": "false",
   },
   "secrets": { "required": ["STAGING_TOKEN"] },

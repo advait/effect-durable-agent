@@ -38,6 +38,8 @@ import {
 } from "../../packages/effect-durable-agent-cloudflare/dist/index.js";
 
 declare const EDA_CONFORMANCE_BLOCK_MODEL: boolean;
+/** The compaction summary never returns, so a kill can land inside boundary compaction. */
+declare const EDA_CONFORMANCE_BLOCK_SUMMARY: boolean;
 /** The one session this launch leaves out of the transcript rollout ring ("" for none). */
 declare const EDA_CONFORMANCE_TRANSCRIPT_DISABLED: string;
 
@@ -197,9 +199,9 @@ export const conformanceHostOptions = (): EDASessionDurableObjectOptions => ({
   compactionPolicyLayer: CompactionPolicy.FromFunction("conformance.on-request", (input) =>
     compactsOnRequest(input.state) ? everyTurnPolicy.plan(input) : Effect.succeed(undefined),
   ),
-  compactionExecutorLayer: CompactionExecutor.LanguageModelSummary({
-    executorId: "conformance.summary",
-  }),
+  compactionExecutorLayer: EDA_CONFORMANCE_BLOCK_SUMMARY
+    ? CompactionExecutor.FromFunction("conformance.blocked-summary", () => Effect.never)
+    : CompactionExecutor.LanguageModelSummary({ executorId: "conformance.summary" }),
   modelResolverLayer: Layer.merge(
     ModelResolver.Fixed.pipe(
       Layer.provide(
