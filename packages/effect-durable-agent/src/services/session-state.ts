@@ -2019,6 +2019,7 @@ const makeLiveSessionState = Effect.gen(function* () {
       "eda.recovery.open_compactions": plan.openCompactions.length,
       "eda.recovery.messages_to_pause": plan.messageIdsToPause.length,
       "eda.recovery.messages_to_resume": plan.messageIdsToResume.length,
+      "eda.recovery.completed_answered_run": plan.completion !== undefined,
     });
     const recoveryEvents: Array<DurableEventEnvelope> = [];
 
@@ -2136,6 +2137,21 @@ const makeLiveSessionState = Effect.gen(function* () {
             })
           : yield* events.compactionCompleted({ compactionId: compaction.compactionId }),
       );
+    }
+
+    if (plan.completion !== undefined) {
+      const { command, run, openTurn } = plan.completion;
+      if (openTurn !== undefined) {
+        recoveryEvents.push(
+          yield* events.turnCompleted({
+            runId: run.runId,
+            turnId: openTurn.turn.turnId,
+            ...(openTurn.usage === undefined ? {} : { usage: openTurn.usage }),
+          }),
+        );
+      }
+      recoveryEvents.push(yield* events.runCompleted({ runId: run.runId }));
+      recoveryEvents.push(yield* events.commandCompleted({ commandId: command.commandId }));
     }
 
     if (plan.messageIdsToResume.length > 0) {

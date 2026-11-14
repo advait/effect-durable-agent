@@ -8,9 +8,11 @@ import type {
   ToolCallRecord,
   TurnRecord,
 } from "./reduced-state";
-import { classifyRecoverableWork } from "./reduced-state";
+import { classifyRecoverableWork, type RecoverableWork } from "./reduced-state";
+import { decideRunContinuation, pendingSteerings } from "./run-continuation-policy";
 import { runSchedulingInputMessageIds } from "./run-scheduling";
 import type { MessageId } from "../types/core";
+import type { UsagePayload } from "../types/events";
 
 export interface SessionRecoveryPlan {
   readonly activeCommands: ReadonlyArray<CommandRecord>;
@@ -22,13 +24,27 @@ export interface SessionRecoveryPlan {
   readonly openCompactions: ReadonlyArray<CompactionRecord>;
   readonly messageIdsToPause: ReadonlyArray<MessageId>;
   readonly messageIdsToResume: ReadonlyArray<MessageId>;
+  /** The interrupted run still has work to answer, so a replacement run continues it. */
   readonly continuation?: SessionRecoveryContinuation;
+  /** The interrupted run already committed its final answer, so recovery only closes it. */
+  readonly completion?: SessionRecoveryCompletion;
 }
 
 export interface SessionRecoveryContinuation {
   readonly command: CommandRecord;
   readonly run: RunRecord;
   readonly inputMessageIds: ReadonlyArray<MessageId>;
+}
+
+/**
+ * An interrupted run whose last turn's inference completed with nothing left to continue (no
+ * tool feedback, no steering). Its run, command and, when still open, its turn are completed,
+ * never failed or replaced, so the answer is not inferred a second time.
+ */
+export interface SessionRecoveryCompletion {
+  readonly command: CommandRecord;
+  readonly run: RunRecord;
+  readonly openTurn?: { readonly turn: TurnRecord; readonly usage?: UsagePayload };
 }
 
 /** Pure startup-recovery policy over one canonical durable snapshot. */
@@ -77,6 +93,10 @@ export const planSessionRecovery = (state: ReducedState): SessionRecoveryPlan =>
       !stoppedRunIds.has(run.runId) &&
       run.commandIds.includes(continuationCommand.commandId),
   );
+  const completion =
+    continuationCommand === undefined || continuationRun === undefined
+      ? undefined
+      : planAnsweredRunCompletion(state, recoverable, continuationCommand, continuationRun);
   // The inputs the interrupted run selected, including the paused messages a Resume names.
   const sourceMessageIds =
     continuationCommand === undefined
@@ -99,9 +119,8 @@ export const planSessionRecovery = (state: ReducedState): SessionRecoveryPlan =>
               ),
           )
           .map((message) => message.messageId);
-  const continuationInputMessageIds = Array.from(
-    new Set([...sourceMessageIds, ...eligibleSteerIds]),
-  );
+  const continuationInputMessageIds =
+    completion === undefined ? Array.from(new Set([...sourceMessageIds, ...eligibleSteerIds])) : [];
   const continuationInputIds = new Set(continuationInputMessageIds);
   const messageIdsToResume = state.commandQueues.pendingSteers
     .filter(
@@ -118,16 +137,23 @@ export const planSessionRecovery = (state: ReducedState): SessionRecoveryPlan =>
     .map((message) => message.messageId);
 
   return {
-    activeCommands: recoverable.activeCommands,
-    activeRuns: recoverable.activeRuns,
-    activeTurns: recoverable.activeTurns,
+    activeCommands: recoverable.activeCommands.filter(
+      (command) => command.commandId !== completion?.command.commandId,
+    ),
+    activeRuns: recoverable.activeRuns.filter((run) => run.runId !== completion?.run.runId),
+    activeTurns: recoverable.activeTurns.filter(
+      (turn) => turn.turnId !== completion?.openTurn?.turn.turnId,
+    ),
     activeInferences: recoverable.activeInferences,
     openToolCalls: recoverable.openToolCalls,
     pendingStopRequests: recoverable.pendingStopRequests,
     openCompactions: recoverable.openCompactions,
     messageIdsToPause,
     messageIdsToResume,
-    ...(continuationCommand === undefined || continuationRun === undefined
+    ...(completion === undefined ? {} : { completion }),
+    ...(continuationCommand === undefined ||
+    continuationRun === undefined ||
+    completion !== undefined
       ? {}
       : {
           continuation: {
@@ -139,6 +165,66 @@ export const planSessionRecovery = (state: ReducedState): SessionRecoveryPlan =>
   };
 };
 
+const planAnsweredRunCompletion = (
+  state: ReducedState,
+  recoverable: RecoverableWork,
+  command: CommandRecord,
+  run: RunRecord,
+): SessionRecoveryCompletion | undefined => {
+  if (
+    recoverable.activeInferences.some((inference) => inference.runId === run.runId) ||
+    recoverable.openToolCalls.some((tool) => tool.decision?.runId === run.runId)
+  ) {
+    return undefined;
+  }
+  const lastTurn = latestStarted(
+    Array.from(state.turns.values()).filter((turn) => turn.runId === run.runId),
+  );
+  if (lastTurn === undefined) {
+    // A rebase prunes a run's terminal turns. Boundary compaction runs while a run is open only
+    // after a completed turn, so a run whose turns a rebase pruned ended on a completed turn,
+    // and only pending steering can continue it.
+    const rebasedSinceRunStarted = Array.from(state.compactions.values()).some(
+      (compaction) => compaction.rebasedSeq !== undefined && compaction.rebasedSeq > run.startedSeq,
+    );
+    return rebasedSinceRunStarted && pendingSteerings(state, run.runId).length === 0
+      ? { command, run }
+      : undefined;
+  }
+  if (lastTurn.terminal !== undefined && lastTurn.terminal._tag !== "Completed") {
+    return undefined;
+  }
+  const lastInference = latestStarted(
+    Array.from(state.inferences.values()).filter(
+      (inference) => inference.turnId === lastTurn.turnId,
+    ),
+  );
+  if (lastInference?.terminal?._tag !== "Completed") return undefined;
+  const decision = decideRunContinuation({
+    runId: run.runId,
+    turnId: lastTurn.turnId,
+    state,
+  });
+  if (decision._tag !== "CompleteRun") return undefined;
+  const usage = lastInference.terminal.usage;
+  return {
+    command,
+    run,
+    ...(lastTurn.terminal === undefined
+      ? { openTurn: { turn: lastTurn, ...(usage === undefined ? {} : { usage }) } }
+      : {}),
+  };
+};
+
+const latestStarted = <A extends { readonly startedSeq: number }>(
+  records: ReadonlyArray<A>,
+): A | undefined =>
+  records.reduce<A | undefined>(
+    (latest, record) =>
+      latest === undefined || record.startedSeq > latest.startedSeq ? record : latest,
+    undefined,
+  );
+
 export const isSessionRecoveryPlanEmpty = (plan: SessionRecoveryPlan): boolean =>
   plan.activeCommands.length === 0 &&
   plan.activeRuns.length === 0 &&
@@ -149,4 +235,5 @@ export const isSessionRecoveryPlanEmpty = (plan: SessionRecoveryPlan): boolean =
   plan.openCompactions.length === 0 &&
   plan.messageIdsToPause.length === 0 &&
   plan.messageIdsToResume.length === 0 &&
-  plan.continuation === undefined;
+  plan.continuation === undefined &&
+  plan.completion === undefined;
