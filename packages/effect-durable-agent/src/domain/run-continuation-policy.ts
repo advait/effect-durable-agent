@@ -86,7 +86,8 @@ export const decideRunContinuation = (input: {
     : { _tag: "ContinueWithSteering", steerings };
 };
 
-const pendingSteerings = (
+/** Steering messages pending for a run, in effective order. */
+export const pendingSteerings = (
   state: ReducedState,
   runId: RunId,
 ): ReadonlyArray<PendingUserMessage | PendingSteeringMessage> => {

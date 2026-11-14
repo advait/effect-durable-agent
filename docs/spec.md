@@ -1057,8 +1057,8 @@ checking that it reached a fixed point. A background recovery that fails records
 state: later work fails, as after a store failure, rather than being accepted and never run.
 
 `RecoveryCompleted` is emitted only when startup recovery commits at least one
-lifecycle repair, stop application, compaction repair, message resumption, or
-replacement run. An idle cold start emits no recovery event. The event is last
+lifecycle repair, stop application, compaction repair, message resumption,
+answered-run completion, or replacement run. An idle cold start emits no recovery event. The event is last
 in the same atomic batch as the repairs, so its presence is the durable boundary
 for a completed recovery transaction. Its optional `continuation` payload
 records `{ commandId, interruptedRunId, replacementRunId }` when recovery
@@ -1079,6 +1079,7 @@ Current recovery behavior includes:
 - open inferences → `InferenceFailed`;
 - open turns/runs → `TurnFailed` / `RunFailed` with interruption-coded failure metadata;
 - one eligible active user-work command remains open and continues in an atomically scheduled replacement run; any additional stale active commands are cancelled;
+- an eligible command whose run already committed its final answer is completed, not continued. Recovery folds the run's last turn from the run's own events in the log (`stepRunLastTurn`), reading them as `ReducedState` does (retained attempt events count as inferences, and the terminal of the latest started inference counts), because a context rebase prunes terminal turn, inference and tool records from `ReducedState`. When that turn's inference completed, the turn did not fail, it decided no tool calls, the run has no open inference or tool call and no steering is pending (`decideRunContinuation`'s `CompleteRun`), the batch writes `TurnCompleted` if the turn is still open, then `RunCompleted` and `CommandCompleted`, and `RecoveryCompleted` carries no `continuation`. A kill after the answer commits, or during the boundary compaction before `RunCompleted`, therefore never infers the answer twice;
 - pending `StopTurnRequested` takes precedence, cancels the targeted work, pauses pending messages, and prevents transparent continuation;
 - completed tool calls are not rerun blindly;
 - pending queued commands remain pending;

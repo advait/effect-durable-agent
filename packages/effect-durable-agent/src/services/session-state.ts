@@ -40,7 +40,12 @@ import {
 } from "../domain/reduced-state";
 import { ContextProjection, emptyContextProjection } from "../domain/context-projection";
 import { decideRunContinuation } from "../domain/run-continuation-policy";
-import { isSessionRecoveryPlanEmpty, planSessionRecovery } from "../domain/recovery-policy";
+import {
+  isSessionRecoveryPlanEmpty,
+  planSessionRecovery,
+  stepRunLastTurn,
+  type RunLastTurn,
+} from "../domain/recovery-policy";
 import { planRunFailure, planUserInterruption } from "../domain/run-terminal-policy";
 import {
   GrantRunCommand,
@@ -2003,7 +2008,19 @@ const makeLiveSessionState = Effect.gen(function* () {
     reason: string,
     input: SessionRunInput,
   ) {
-    const plan = planSessionRecovery(reduced);
+    const candidate = planSessionRecovery(reduced).continuation?.run;
+    const plan =
+      candidate === undefined
+        ? planSessionRecovery(reduced)
+        : planSessionRecovery(
+            reduced,
+            yield* store.eventsAfter(SequenceNumber.make(candidate.startedSeq - 1)).pipe(
+              Stream.runFold(
+                (): RunLastTurn | undefined => undefined,
+                (last, entry) => stepRunLastTurn(candidate.runId, last, entry.event),
+              ),
+            ),
+          );
     input = {
       ...input,
       modelSelection: plan.continuation?.run.modelSelection ?? input.modelSelection,
@@ -2019,6 +2036,7 @@ const makeLiveSessionState = Effect.gen(function* () {
       "eda.recovery.open_compactions": plan.openCompactions.length,
       "eda.recovery.messages_to_pause": plan.messageIdsToPause.length,
       "eda.recovery.messages_to_resume": plan.messageIdsToResume.length,
+      "eda.recovery.completed_answered_run": plan.completion !== undefined,
     });
     const recoveryEvents: Array<DurableEventEnvelope> = [];
 
@@ -2136,6 +2154,21 @@ const makeLiveSessionState = Effect.gen(function* () {
             })
           : yield* events.compactionCompleted({ compactionId: compaction.compactionId }),
       );
+    }
+
+    if (plan.completion !== undefined) {
+      const { command, run, openTurn } = plan.completion;
+      if (openTurn !== undefined) {
+        recoveryEvents.push(
+          yield* events.turnCompleted({
+            runId: run.runId,
+            turnId: openTurn.turnId,
+            ...(openTurn.usage === undefined ? {} : { usage: openTurn.usage }),
+          }),
+        );
+      }
+      recoveryEvents.push(yield* events.runCompleted({ runId: run.runId }));
+      recoveryEvents.push(yield* events.commandCompleted({ commandId: command.commandId }));
     }
 
     if (plan.messageIdsToResume.length > 0) {

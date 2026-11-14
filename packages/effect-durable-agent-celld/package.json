@@ -1,6 +1,6 @@
 {
   "name": "effect-durable-agent-celld",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "celld host for effect-durable-agent.",
   "keywords": [
     "agents",

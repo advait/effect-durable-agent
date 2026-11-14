@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.1
+
+Patch release: a session killed after its run committed the answer no longer answers the same
+message twice. No storage, checkpoint or protocol change.
+
+- **Fix:** startup recovery continued any command with an open run in a replacement run, even
+  when the interrupted run had already committed its final answer, so a kill after
+  `[AssistantMessageCommitted, InferenceCompleted]` or after `TurnCompleted` inferred and committed
+  a second answer. The window spans a boundary compaction's summary call, which runs between
+  `TurnCompleted` and `RunCompleted`. Recovery now applies `decideRunContinuation`'s `CompleteRun`
+  conditions to the run's last turn, as the live loop does, reading that turn from the run's events in the log because a
+  context rebase prunes it from the reduced state. When the run has no open inference or tool
+  call, its last inference completed, the turn decided no tool calls and no steering is pending
+  (`CompleteRun`), the repair batch writes `TurnCompleted` (if the turn is still open),
+  `RunCompleted` and `CommandCompleted`, and `RecoveryCompleted` carries no `continuation`. A
+  failed turn, tool feedback and steering still continue in a replacement run, and a pending stop
+  keeps its precedence. Gia measured 73 such duplicates in 35,366 production recovery
+  continuations since July 2026.
+- **Test:** the crash simulation asserts one final answer per command at every durable prefix,
+  including a run that compacts at its boundary, recovery is tested on runs a rebase pruned
+  (a failed turn, tool feedback, a kept turn whose inference was pruned), and host conformance kills a session during a
+  blocked boundary compaction (`EDA_CONFORMANCE_BLOCK_SUMMARY`). The two existing kill tests kill
+  after `InferenceStarted` instead of racing it, and accept the interrupted inference's empty
+  `Failed` assistant record beside the one `Completed` answer.
+
+Storage: none. Protocol: none. API: none.
+
 ## 0.4.0
 
 Minor release: a host WebSocket projection receives the session's reduced state with each frame,

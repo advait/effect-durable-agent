@@ -23,6 +23,8 @@ interface HostProcess {
   readonly baseUrl: string;
   restart(options?: {
     readonly blockModel?: boolean;
+    /** The compaction summary never returns. */
+    readonly blockSummary?: boolean;
     readonly hard?: boolean;
     /** A session left out of the transcript rollout ring by this launch. */
     readonly transcriptDisabled?: string;
@@ -77,7 +79,11 @@ interface WireRecord {
     readonly content?: string | ReadonlyArray<{ readonly type: string; readonly text?: string }>;
     readonly parts?: ReadonlyArray<{ readonly _tag: string; readonly text?: string }>;
     readonly summaryId?: string;
-    readonly lifecycle?: { readonly _tag: string; readonly result?: WireBody };
+    readonly lifecycle?: {
+      readonly _tag: string;
+      readonly result?: WireBody;
+      readonly error?: { readonly code?: string };
+    };
   };
 }
 
@@ -203,11 +209,16 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
   }
 
   const launch = async (
-    options: { readonly blockModel?: boolean; readonly transcriptDisabled?: string } = {},
+    options: {
+      readonly blockModel?: boolean;
+      readonly blockSummary?: boolean;
+      readonly transcriptDisabled?: string;
+    } = {},
   ): Promise<void> => {
     const transcriptDisabled = JSON.stringify(options.transcriptDisabled ?? "");
     logs = "";
     const blockModel = options.blockModel === true;
+    const blockSummary = options.blockSummary === true;
     let launchedChild: ChildProcess;
     if (kind === "cloudflare") {
       launchedChild = spawn(
@@ -230,6 +241,8 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
           "--define",
           `EDA_CONFORMANCE_BLOCK_MODEL:${String(blockModel)}`,
           "--define",
+          `EDA_CONFORMANCE_BLOCK_SUMMARY:${String(blockSummary)}`,
+          "--define",
           `EDA_CONFORMANCE_TRANSCRIPT_DISABLED:${transcriptDisabled}`,
           "--persist-to",
           dataDirectory,
@@ -250,6 +263,7 @@ const startHost = async (kind: HostKind): Promise<HostProcess> => {
         conditions: ["workerd", "worker", "browser"],
         define: {
           EDA_CONFORMANCE_BLOCK_MODEL: String(blockModel),
+          EDA_CONFORMANCE_BLOCK_SUMMARY: String(blockSummary),
           EDA_CONFORMANCE_TRANSCRIPT_DISABLED: transcriptDisabled,
         },
         entryPoints: [
@@ -422,10 +436,10 @@ const recordText = (record: WireRecord): string => {
 };
 
 /** Read the session's user-visible history from its transcript window, which must be ready. */
-const readHistory = async (
+const readWindowRecords = async (
   host: HostProcess,
   sessionId: string,
-): Promise<ReadonlyArray<HistoryEntry>> => {
+): Promise<ReadonlyArray<WireRecord>> => {
   const read = await decodeJson<TranscriptRead>(
     await fetch(`${host.baseUrl}/sessions/${sessionId}/transcript`, {
       signal: AbortSignal.timeout(30_000),
@@ -434,7 +448,43 @@ const readHistory = async (
   if (read._tag !== "Window" || read.window.readiness._tag !== "Ready") {
     throw new Error(`Expected a ready transcript window, got ${JSON.stringify(read)}`);
   }
-  return read.window.records.map((record) => ({ kind: record.kind, text: recordText(record) }));
+  return read.window.records;
+};
+
+const toHistoryEntry = (record: WireRecord): HistoryEntry => ({
+  kind: record.kind,
+  text: recordText(record),
+});
+
+const readHistory = async (
+  host: HostProcess,
+  sessionId: string,
+): Promise<ReadonlyArray<HistoryEntry>> =>
+  (await readWindowRecords(host, sessionId)).map(toHistoryEntry);
+
+const isFailedAssistant = (record: WireRecord): boolean =>
+  record.kind === "assistant" && record.body?.lifecycle?._tag === "Failed";
+
+/**
+ * The window's user and assistant records as answers. A run killed after `InferenceStarted`
+ * leaves its interrupted inference as an empty `Failed` assistant record, which answers nothing;
+ * every such record must be exactly that and is dropped. Every other assistant record must be a
+ * `Completed` answer.
+ */
+const answeredHistory = (records: ReadonlyArray<WireRecord>): ReadonlyArray<HistoryEntry> => {
+  const window = JSON.stringify(records).slice(0, 20_000);
+  for (const record of records.filter(isFailedAssistant)) {
+    expect(record.body?.lifecycle?.error?.code, window).toBe("inference.interrupted");
+    expect(record.body?.parts ?? [], window).toEqual([]);
+  }
+  const answers = records.filter(
+    (record) =>
+      (record.kind === "user" || record.kind === "assistant") && !isFailedAssistant(record),
+  );
+  for (const record of answers.filter((entry) => entry.kind === "assistant")) {
+    expect(record.body?.lifecycle?._tag, window).toBe("Completed");
+  }
+  return answers.map(toHistoryEntry);
 };
 
 class EventSocket {
@@ -637,7 +687,8 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
           idempotencyKey: "conformance:crash-recovery",
           text: "ping through crash",
         }).catch(() => undefined);
-        const interruptedEvents = await recoverySocket.eventsUntil("TurnStarted");
+        // With the model blocked, InferenceStarted is the last event this process can write.
+        const interruptedEvents = await recoverySocket.eventsUntil("InferenceStarted");
         expect(interruptedEvents.some((event) => event.event.type === "CommandAdmitted")).toBe(
           true,
         );
@@ -654,7 +705,8 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
           text: "this recovered duplicate must not run twice",
         });
         expect(recovered.terminal.event.type).toBe("CommandCompleted");
-        expect(recovered.history.map((entry) => entry.kind)).toEqual([
+        const recoveredAnswers = answeredHistory(await readWindowRecords(host, sessionId));
+        expect(recoveredAnswers.map((entry) => entry.kind)).toEqual([
           "user",
           "assistant",
           "user",
@@ -662,7 +714,7 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
           "user",
           "assistant",
         ]);
-        expect(recovered.history[5]?.text).toBe("pong");
+        expect(recoveredAnswers[5]?.text).toBe("pong");
         if (projectedRecoverySocket !== undefined) {
           const projectedRecoveryEvents =
             await projectedRecoverySocket.eventsUntil("CommandCompleted");
@@ -713,7 +765,8 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
           idempotencyKey: "conformance:alarm-recovery",
           text: "ping through a kill",
         }).catch(() => undefined);
-        const seen = await socket.eventsUntil("TurnStarted");
+        // With the model blocked, InferenceStarted is the last event this process can write.
+        const seen = await socket.eventsUntil("InferenceStarted");
         const lastSeen = Math.max(...seen.map((event) => event.position.seq));
         socket.close();
 
@@ -723,16 +776,13 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         await submission;
         expect(await get(`/sessions/${sessionId}/runtime-builds`)).toEqual({ count: 0 });
         const deadline = Date.now() + 90_000;
-        let history: ReadonlyArray<HistoryEntry> = [];
+        let records: ReadonlyArray<WireRecord> = [];
         while (Date.now() < deadline) {
-          history = await readHistory(host, sessionId).catch(() => []);
-          if (history.at(-1)?.text === "pong") break;
+          records = await readWindowRecords(host, sessionId).catch(() => []);
+          if (records.at(-1) !== undefined && recordText(records.at(-1)!) === "pong") break;
           await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
         }
-        const transcript = await fetch(`${host.baseUrl}/sessions/${sessionId}/transcript`, {
-          signal: AbortSignal.timeout(30_000),
-        }).then((response) => response.text());
-        expect(history, `transcript window: ${transcript.slice(0, 20_000)}`).toEqual([
+        expect(answeredHistory(records)).toEqual([
           { kind: "user", text: expect.any(String) },
           { kind: "assistant", text: "pong" },
         ]);
@@ -742,6 +792,44 @@ export const defineHostConformanceSuite = (kind: HostKind): void => {
         const replayed = await resumed.eventsUntil("CommandCompleted");
         resumed.close();
         expect(replayed.every((event) => event.position.seq > lastSeen)).toBe(true);
+      } finally {
+        await host.stop();
+      }
+    }, 240_000);
+
+    it("answers once when killed during a blocked boundary compaction", async () => {
+      const host = await startHost(kind);
+      const sessionId =
+        kind === "cloudflare"
+          ? "018f6bd5-2f2a-7b1e-8f4a-1f2e3d4c5b6a"
+          : "018f6bd5-2f2a-7b1e-8f4b-1f2e3d4c5b6a";
+      try {
+        await host.restart({ blockSummary: true });
+        const socket = await EventSocket.open(host, sessionId, 0);
+        const submission = submitMessage(host, sessionId, {
+          idempotencyKey: "conformance:compaction-kill",
+          text: "please compact",
+        }).catch(() => undefined);
+        // The answer is durable and the summary never returns, so the kill lands between
+        // TurnCompleted and RunCompleted.
+        const seen = await socket.eventsUntil("CompactionStarted");
+        socket.close();
+        expect(seen.map((event) => event.event.type)).toEqual(
+          expect.arrayContaining(["AssistantMessageCommitted", "TurnCompleted"]),
+        );
+        expect(seen.map((event) => event.event.type)).not.toContain("RunCompleted");
+
+        await host.restart({ hard: true });
+        await submission;
+        const recovered = await submitMessage(host, sessionId, {
+          idempotencyKey: "conformance:compaction-kill",
+          text: "this recovered duplicate must not run",
+        });
+        expect(recovered.terminal.event.type).toBe("CommandCompleted");
+        expect(answeredHistory(await readWindowRecords(host, sessionId))).toEqual([
+          { kind: "user", text: "please compact" },
+          { kind: "assistant", text: "pong" },
+        ]);
       } finally {
         await host.stop();
       }

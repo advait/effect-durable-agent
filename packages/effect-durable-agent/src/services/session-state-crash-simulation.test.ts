@@ -33,6 +33,7 @@ import type { SessionStateShape } from "./session-state";
 import { makeEDAToolkit, type EDAModelToolkit } from "./tool-registry";
 import type { InferenceRunnerStreamPart } from "./inference-runner";
 import { makeEdaTestLayer, type TestModelParts } from "../testkit/layers";
+import { CompactionExecutor, CompactionPolicy } from "./compaction";
 import {
   projectBatches,
   reducedStateHistory,
@@ -138,6 +139,25 @@ const plainSubmitIds = [
 const toolSubmitIds = Array.from({ length: 40 }, (_, index) => sequentialUuidV7(1_000 + index));
 const stopTurnIds = Array.from({ length: 80 }, (_, index) => sequentialUuidV7(2_000 + index));
 const controlIds = Array.from({ length: 140 }, (_, index) => sequentialUuidV7(3_000 + index));
+const compactingSubmitIds = Array.from({ length: 60 }, (_, index) =>
+  sequentialUuidV7(4_000 + index),
+);
+/** Compacts the whole history at the first turn boundary, between TurnCompleted and RunCompleted. */
+const boundaryCompaction = {
+  compactionPolicyLayer: CompactionPolicy.ApproximateTokenThreshold({
+    policyId: "test.crash-boundary",
+    thresholdTokens: 1,
+    retainTailTokens: 0,
+    minSummarizableTokens: 1,
+    charsPerToken: 1,
+  }),
+  compactionExecutorLayer: CompactionExecutor.LanguageModelSummary({
+    executorId: "test.crash-boundary-summary",
+    summaryMessagePrefix: "Summary:",
+  }),
+  generateText: "summary of the first answer",
+};
+type BoundaryCompaction = typeof boundaryCompaction;
 const NoopTool = Tool.make("noop", { parameters: NoopParams, success: Schema.Unknown });
 
 const plainSubmitStream = (): Stream.Stream<InferenceRunnerStreamPart, unknown> =>
@@ -253,11 +273,14 @@ describe("SessionState crash-point simulation", () => {
             const state = yield* SessionState;
             const store = yield* EDASessionStore;
             yield* state.start({ modelSelection });
-            if (prefix.commands.get(command.commandId)?.terminal === undefined) {
-              yield* waitForDurableStore(
-                store,
-                (entries) => reduceCommittedEvents(entries).runSchedulingRequest !== undefined,
-              );
+            // A prefix whose run already answered completes in recovery and needs no new grant.
+            const recoveredPrefix = yield* waitForDurableStore(
+              store,
+              (entries) =>
+                hasCommandCompleted(command.commandId)(entries) ||
+                reduceCommittedEvents(entries).runSchedulingRequest !== undefined,
+            );
+            if (!hasCommandCompleted(command.commandId)(recoveredPrefix)) {
               const request = Schema.decodeUnknownSync(RunSchedulingRequestRecord)(
                 (yield* state.snapshot()).runSchedulingRequest,
               );
@@ -279,6 +302,7 @@ describe("SessionState crash-point simulation", () => {
               committed.filter((entry) => entry.event.type === "CommandCompleted").length,
               1,
             );
+            assert.strictEqual(finalAnswersByCommand(committed).get(command.commandId), 1);
             assert.deepStrictEqual(yield* state.snapshot(), reduceCommittedEvents(committed));
             assert.isTrue(
               recovered.checkpoints
@@ -308,6 +332,7 @@ describe("SessionState crash-point simulation", () => {
       }),
       recover: (checkpoint) =>
         recoverWithoutContext(recoverFromCheckpoint(checkpoint, { parts: plainSubmitStream() })),
+      assertCheckpoint: ({ recovered }) => assertOneAnswerAndCompletion(recovered),
       assertGolden: ({ committed, checkpoints }) => {
         expect(committed.map((entry) => entry.event.type)).toEqual([
           "CommandAdmitted",
@@ -376,6 +401,35 @@ describe("SessionState crash-point simulation", () => {
           ],
         ]);
       },
+    });
+  });
+
+  it("commits one answer from every durable prefix of a run that compacts at its boundary", async () => {
+    await runCrashPrefixSimulation({
+      name: "boundary compaction",
+      runGolden: async (wrapStore) => ({
+        committed: await Effect.runPromise(runCompactingSubmit({ wrapStore })),
+        context: undefined,
+      }),
+      recover: (checkpoint) =>
+        recoverWithoutContext(
+          recoverFromCheckpoint(checkpoint, {
+            parts: plainSubmitStream(),
+            compaction: boundaryCompaction,
+          }),
+        ),
+      assertGolden: ({ committed, checkpoints }) => {
+        const types = committed.map((entry) => entry.event.type);
+        expect(types.indexOf("CompactionStarted")).toBeGreaterThan(types.indexOf("TurnCompleted"));
+        expect(types.indexOf("CompactionCompleted")).toBeLessThan(types.indexOf("RunCompleted"));
+        expect(
+          checkpoints.some((checkpoint) => {
+            const prefix = eventTypesAtCheckpoint(checkpoint);
+            return prefix.includes("CompactionStarted") && !prefix.includes("CompactionCompleted");
+          }),
+        ).toBe(true);
+      },
+      assertCheckpoint: ({ recovered }) => assertOneAnswerAndCompletion(recovered),
     });
   });
 
@@ -599,14 +653,22 @@ const assertCommonRecovery = (input: {
   assertDurableSequences(input.recovered.committed);
   assertNoRecoverableWork(input.recovered.snapshot);
   assertLifecycleTerminals(input.recovered.committed);
+  for (const [commandId, answers] of finalAnswersByCommand(input.recovered.committed)) {
+    expect(
+      answers,
+      `final answers for ${commandId} after ${eventTypesAtCheckpoint(input.checkpoint).join(" -> ")}`,
+    ).toBeLessThanOrEqual(1);
+  }
   expect(input.recovered.snapshot).toEqual(reduceCommittedEvents(input.recovered.committed));
-  // The transcript interprets every real recovered log without failing, and renders exactly the
-  // history the model sees today (these logs are never compacted).
+  // The transcript interprets every real recovered log without failing. Until a rebase prunes the
+  // model's history, it renders exactly the history the model sees.
   const transcript = projectBatches(crashTranscriptDefinition, [input.recovered.committed]);
   expect(transcript.meta.status).toEqual({ _tag: "Ok" });
-  expect(renderedTranscriptHistory(transcript)).toEqual(
-    reducedStateHistory(input.recovered.committed),
-  );
+  if (!input.recovered.committed.some(({ event }) => event.type === "ContextRebased")) {
+    expect(renderedTranscriptHistory(transcript)).toEqual(
+      reducedStateHistory(input.recovered.committed),
+    );
+  }
 };
 
 const crashTranscriptDefinition = testDefinition();
@@ -638,6 +700,17 @@ const runPlainSubmit = (input: {
     ids: plainSubmitIds,
     parts: plainSubmitStream(),
     expectedTurnCompletions: 1,
+    wrapStore: input.wrapStore,
+  });
+
+const runCompactingSubmit = (input: {
+  readonly wrapStore?: (inner: EDASessionStoreShape) => EDASessionStoreShape;
+}) =>
+  runSubmitScenario({
+    ids: compactingSubmitIds,
+    parts: plainSubmitStream(),
+    expectedTurnCompletions: 1,
+    compaction: boundaryCompaction,
     wrapStore: input.wrapStore,
   });
 
@@ -722,6 +795,7 @@ const runSubmitScenario = (input: {
   readonly parts: TestModelParts;
   readonly expectedTurnCompletions: number;
   readonly toolkit?: EDAModelToolkit;
+  readonly compaction?: BoundaryCompaction;
   readonly wrapStore?: (inner: EDASessionStoreShape) => EDASessionStoreShape;
 }) =>
   Effect.scoped(
@@ -754,6 +828,7 @@ const runSubmitScenario = (input: {
         ids: input.ids,
         parts: input.parts,
         ...(input.toolkit === undefined ? {} : { toolkit: input.toolkit }),
+        ...input.compaction,
         wrapStore: input.wrapStore,
       }),
     ),
@@ -877,7 +952,11 @@ const recoverControlCheckpoint = (checkpoint: DurableCheckpoint) =>
 
 const recoverFromCheckpoint = (
   checkpoint: DurableCheckpoint,
-  input: { readonly parts: TestModelParts; readonly toolkit?: EDAModelToolkit },
+  input: {
+    readonly parts: TestModelParts;
+    readonly toolkit?: EDAModelToolkit;
+    readonly compaction?: BoundaryCompaction;
+  },
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -893,6 +972,7 @@ const recoverFromCheckpoint = (
         seedEvents: checkpoint.committed.map((entry) => entry.event),
         parts: input.parts,
         ...(input.toolkit === undefined ? {} : { toolkit: input.toolkit }),
+        ...input.compaction,
       }),
     ),
   );
@@ -1047,6 +1127,45 @@ const assertRecoveredPrefix = (
   checkpoint.committed.forEach((entry, index) => {
     expect(recovered[index]).toEqual(entry);
   });
+};
+
+/**
+ * Counts each command's final answers: assistant messages from a completed inference that
+ * requested no tools, across every run (interrupted or replacement) the command owns.
+ */
+const finalAnswersByCommand = (
+  committed: ReadonlyArray<CommittedDurableEvent>,
+): ReadonlyMap<string, number> => {
+  const commandIdsByRun = new Map<string, ReadonlyArray<string>>();
+  const completedInferences = new Set<string>();
+  const toolInferences = new Set<string>();
+  for (const { event } of committed) {
+    if (event.type === "RunStarted")
+      commandIdsByRun.set(event.payload.runId, event.payload.commandIds);
+    if (event.type === "InferenceCompleted") completedInferences.add(event.payload.inferenceId);
+    if (event.type === "ToolCallCreated" || event.type === "ToolCallRejected") {
+      toolInferences.add(event.payload.inferenceId);
+    }
+  }
+  const answers = new Map<string, number>();
+  for (const { event } of committed) {
+    if (event.type !== "AssistantMessageCommitted") continue;
+    const { inferenceId, runId } = event.payload;
+    if (!completedInferences.has(inferenceId) || toolInferences.has(inferenceId)) continue;
+    for (const commandId of commandIdsByRun.get(runId) ?? []) {
+      answers.set(commandId, (answers.get(commandId) ?? 0) + 1);
+    }
+  }
+  return answers;
+};
+
+const assertOneAnswerAndCompletion = (committed: ReadonlyArray<CommittedDurableEvent>) => {
+  expect(finalAnswersByCommand(committed).get(COMMAND_ID) ?? 0).toBe(1);
+  expect(
+    committed.filter(
+      ({ event }) => event.type === "CommandCompleted" && event.payload.commandId === COMMAND_ID,
+    ),
+  ).toHaveLength(1);
 };
 
 const assertNoRecoverableWork = (snapshot: ReducedState) => {
