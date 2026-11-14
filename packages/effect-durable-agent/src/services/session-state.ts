@@ -41,9 +41,10 @@ import {
 import { ContextProjection, emptyContextProjection } from "../domain/context-projection";
 import { decideRunContinuation } from "../domain/run-continuation-policy";
 import {
-  foldRunLastTurn,
   isSessionRecoveryPlanEmpty,
   planSessionRecovery,
+  stepRunLastTurn,
+  type RunLastTurn,
 } from "../domain/recovery-policy";
 import { planRunFailure, planUserInterruption } from "../domain/run-terminal-policy";
 import {
@@ -2013,13 +2014,10 @@ const makeLiveSessionState = Effect.gen(function* () {
         ? planSessionRecovery(reduced)
         : planSessionRecovery(
             reduced,
-            foldRunLastTurn(
-              candidate.runId,
-              Array.from(
-                yield* store.eventsAfter(SequenceNumber.make(candidate.startedSeq - 1)).pipe(
-                  Stream.map((entry) => entry.event),
-                  Stream.runCollect,
-                ),
+            yield* store.eventsAfter(SequenceNumber.make(candidate.startedSeq - 1)).pipe(
+              Stream.runFold(
+                (): RunLastTurn | undefined => undefined,
+                (last, entry) => stepRunLastTurn(candidate.runId, last, entry.event),
               ),
             ),
           );

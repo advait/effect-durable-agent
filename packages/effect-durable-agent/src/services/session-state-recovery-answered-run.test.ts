@@ -10,6 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { CompactionPolicyId } from "../domain/context-projection";
 import { CancelPendingMessageCommand } from "../types/commands";
 import { CommandId, SequenceNumber, SessionId } from "../types/core";
+import { decodeUnknownEDADurableEventSync } from "../types/events";
 import { makeEdaTestLayer, type TestModelParts } from "../testkit/layers";
 import { CompactionExecutor, CompactionPolicy } from "./compaction";
 import { sequentialUuidV7 } from "./id-generator";
@@ -273,6 +274,98 @@ describe("startup recovery after a context rebase pruned the interrupted run", (
     expect(eventTypes(recovered).filter((type) => type === "RunStarted")).toHaveLength(1);
     expect(eventTypes(recovered.slice(prefix.length))).toEqual(
       expect.arrayContaining(["RunCompleted", "CommandCompleted", "RecoveryCompleted"]),
+    );
+  });
+});
+
+/** Runs one plain submit until `done` holds, and returns the log. */
+const runSubmitUntil = (
+  parts: TestModelParts,
+  done: (log: ReadonlyArray<CommittedDurableEvent>) => boolean,
+) =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const session = yield* SessionState;
+        const store = yield* EDASessionStore;
+        yield* session.admitCommand(command);
+        yield* session.drainReadyWork({ modelSelection });
+        return yield* waitForLog(store, done);
+      }),
+    ).pipe(
+      Effect.provide(
+        makeEdaTestLayer({
+          sessionId,
+          ids: Array.from({ length: 200 }, (_, index) => sequentialUuidV7(10_000 + index)),
+          parts,
+        }),
+      ),
+    ),
+  );
+
+describe("startup recovery reads the interrupted run's last turn as the reducer does", () => {
+  it("completes a historical turn whose answer was written as retained attempt events", async () => {
+    const live = await runSubmitUntil([textStream("historical answer")], (log) =>
+      eventTypes(log).includes("TurnCompleted"),
+    );
+    // The same turn as a release before inferences wrote it: TurnAttempt events, attempt ids.
+    const prefix = live
+      .slice(0, eventTypes(live).indexOf("TurnCompleted") + 1)
+      .map(({ position, event }) => {
+        if (
+          event.type !== "InferenceStarted" &&
+          event.type !== "InferenceCompleted" &&
+          event.type !== "AssistantMessageCommitted"
+        ) {
+          return { position, event };
+        }
+        const { inferenceId, ...payload } = event.payload;
+        const type =
+          event.type === "InferenceStarted"
+            ? "TurnAttemptStarted"
+            : event.type === "InferenceCompleted"
+              ? "TurnAttemptCompleted"
+              : event.type;
+        return {
+          position,
+          event: decodeUnknownEDADurableEventSync({
+            ...event,
+            type,
+            payload: { ...payload, attemptId: inferenceId },
+          }),
+        };
+      });
+    expect(eventTypes(prefix)).toEqual(
+      expect.arrayContaining(["TurnAttemptStarted", "TurnAttemptCompleted", "TurnCompleted"]),
+    );
+
+    const recovered = await recover(prefix);
+    expect(
+      eventTypes(recovered).filter((type) => type === "AssistantMessageCommitted"),
+    ).toHaveLength(1);
+    expect(eventTypes(recovered.slice(prefix.length))).toEqual(
+      expect.arrayContaining(["RunCompleted", "CommandCompleted", "RecoveryCompleted"]),
+    );
+  });
+
+  it("continues a run whose inference failed after it completed, as the reducer records it", async () => {
+    const live = await runSubmitUntil(
+      [
+        textStream("first answer").pipe(
+          Stream.concat(Stream.die(new Error("defect after finish"))),
+        ),
+      ],
+      (log) => eventTypes(log).includes("InferenceFailed"),
+    );
+    const prefix = live.slice(0, eventTypes(live).indexOf("InferenceFailed") + 1);
+    expect(eventTypes(prefix)).toEqual(
+      expect.arrayContaining(["InferenceCompleted", "InferenceFailed"]),
+    );
+    expect(eventTypes(prefix)).not.toContain("TurnFailed");
+
+    const recovered = await recover(prefix);
+    expect(eventTypes(recovered.slice(prefix.length))).toEqual(
+      expect.arrayContaining(["TurnFailed", "RunFailed", "RunStarted", "RecoveryCompleted"]),
     );
   });
 });

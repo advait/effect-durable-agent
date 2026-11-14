@@ -12,7 +12,12 @@ import { classifyRecoverableWork, type RecoverableWork } from "./reduced-state";
 import { pendingSteerings } from "./run-continuation-policy";
 import { runSchedulingInputMessageIds } from "./run-scheduling";
 import type { MessageId, RunId, TurnId } from "../types/core";
-import type { DecodedDurableEvent, UsagePayload } from "../types/events";
+import {
+  effectDurableAgentNamespace,
+  type DecodedDurableEvent,
+  type UsagePayload,
+} from "../types/events";
+import { interpretLegacyAttemptForReduction } from "../types/events/durable";
 
 export interface SessionRecoveryPlan {
   readonly activeCommands: ReadonlyArray<CommandRecord>;
@@ -62,52 +67,53 @@ export interface RunLastTurn {
   readonly toolDecisions: number;
 }
 
-/** Folds the last turn of `runId` from the session's events in log order. */
-export const foldRunLastTurn = (
+/**
+ * One step of folding `runId`'s last turn from the session's events in log order. Events are read
+ * as `ReducedState` reads them: framework events only, retained attempt events as inferences, and
+ * the latest inference terminal wins.
+ */
+export const stepRunLastTurn = (
   runId: RunId,
-  events: Iterable<DecodedDurableEvent>,
+  last: RunLastTurn | undefined,
+  entry: DecodedDurableEvent,
 ): RunLastTurn | undefined => {
-  let last: RunLastTurn | undefined;
+  if (entry.namespace !== effectDurableAgentNamespace) return last;
+  const event = interpretLegacyAttemptForReduction(entry);
+  if (event.type === "TurnStarted") {
+    return event.payload.runId === runId
+      ? { runId, turnId: event.payload.turnId, toolDecisions: 0 }
+      : last;
+  }
   const inLastTurn = (payload: { readonly runId: RunId; readonly turnId: TurnId }) =>
     last !== undefined && payload.runId === runId && payload.turnId === last.turnId;
-  for (const event of events) {
-    switch (event.type) {
-      case "TurnStarted":
-        if (event.payload.runId === runId) {
-          last = { runId, turnId: event.payload.turnId, toolDecisions: 0 };
-        }
-        break;
-      case "InferenceStarted":
-        if (last !== undefined && inLastTurn(event.payload)) {
-          last = { ...last, inference: { completed: false } };
-        }
-        break;
-      case "InferenceCompleted":
-        if (last !== undefined && inLastTurn(event.payload)) {
-          const usage = event.payload.usage;
-          last = {
-            ...last,
-            inference: { completed: true, ...(usage === undefined ? {} : { usage }) },
-          };
-        }
-        break;
-      case "ToolCallCreated":
-      case "ToolCallRejected":
-        if (last !== undefined && inLastTurn(event.payload)) {
-          last = { ...last, toolDecisions: last.toolDecisions + 1 };
-        }
-        break;
-      case "TurnCompleted":
-        if (last !== undefined && inLastTurn(event.payload))
-          last = { ...last, terminal: "Completed" };
-        break;
-      case "TurnFailed":
-      case "TurnStopped":
-        if (last !== undefined && inLastTurn(event.payload)) last = { ...last, terminal: "Failed" };
-        break;
+  switch (event.type) {
+    case "InferenceStarted":
+    case "InferenceFailed":
+      return last !== undefined && inLastTurn(event.payload)
+        ? { ...last, inference: { completed: false } }
+        : last;
+    case "InferenceCompleted": {
+      if (last === undefined || !inLastTurn(event.payload)) return last;
+      const usage = event.payload.usage;
+      return { ...last, inference: { completed: true, ...(usage === undefined ? {} : { usage }) } };
     }
+    case "ToolCallCreated":
+    case "ToolCallRejected":
+      return last !== undefined && inLastTurn(event.payload)
+        ? { ...last, toolDecisions: last.toolDecisions + 1 }
+        : last;
+    case "TurnCompleted":
+      return last !== undefined && inLastTurn(event.payload)
+        ? { ...last, terminal: "Completed" }
+        : last;
+    case "TurnFailed":
+    case "TurnStopped":
+      return last !== undefined && inLastTurn(event.payload)
+        ? { ...last, terminal: "Failed" }
+        : last;
+    default:
+      return last;
   }
-  return last;
 };
 
 /**
