@@ -11,7 +11,7 @@ import type {
 import { classifyRecoverableWork, type RecoverableWork } from "./reduced-state";
 import { pendingSteerings } from "./run-continuation-policy";
 import { runSchedulingInputMessageIds } from "./run-scheduling";
-import type { MessageId, RunId, TurnId } from "../types/core";
+import type { InferenceId, MessageId, RunId, TurnId } from "../types/core";
 import {
   effectDurableAgentNamespace,
   type DecodedDurableEvent,
@@ -62,7 +62,11 @@ export interface RunLastTurn {
   readonly turnId: TurnId;
   readonly terminal?: "Completed" | "Failed";
   /** The turn's last inference, once it started. */
-  readonly inference?: { readonly completed: boolean; readonly usage?: UsagePayload };
+  readonly inference?: {
+    readonly inferenceId: InferenceId;
+    readonly completed: boolean;
+    readonly usage?: UsagePayload;
+  };
   /** Tool calls the turn created or rejected: either leaves feedback for another inference. */
   readonly toolDecisions: number;
 }
@@ -88,14 +92,32 @@ export const stepRunLastTurn = (
     last !== undefined && payload.runId === runId && payload.turnId === last.turnId;
   switch (event.type) {
     case "InferenceStarted":
-    case "InferenceFailed":
       return last !== undefined && inLastTurn(event.payload)
-        ? { ...last, inference: { completed: false } }
+        ? { ...last, inference: { inferenceId: event.payload.inferenceId, completed: false } }
+        : last;
+    case "InferenceFailed":
+      return last?.inference !== undefined &&
+        inLastTurn(event.payload) &&
+        event.payload.inferenceId === last.inference.inferenceId
+        ? { ...last, inference: { inferenceId: last.inference.inferenceId, completed: false } }
         : last;
     case "InferenceCompleted": {
-      if (last === undefined || !inLastTurn(event.payload)) return last;
+      if (
+        last?.inference === undefined ||
+        !inLastTurn(event.payload) ||
+        event.payload.inferenceId !== last.inference.inferenceId
+      ) {
+        return last;
+      }
       const usage = event.payload.usage;
-      return { ...last, inference: { completed: true, ...(usage === undefined ? {} : { usage }) } };
+      return {
+        ...last,
+        inference: {
+          inferenceId: last.inference.inferenceId,
+          completed: true,
+          ...(usage === undefined ? {} : { usage }),
+        },
+      };
     }
     case "ToolCallCreated":
     case "ToolCallRejected":
