@@ -345,6 +345,7 @@ describe("native compaction executors", () => {
     expect(recorded).toHaveLength(1);
     expect(recorded[0]?.url).toBe("https://api.openai.com/v1/responses/compact");
     expect(Object.keys(recorded[0]?.body ?? {}).sort()).toEqual(["input", "model"]);
+    expect(recorded[0]?.body?.["model"]).toBe("gpt-6.2-sol");
     expect(output.usage).toEqual({
       inputTokens: 36_547,
       cachedInputTokens: 36_346,
