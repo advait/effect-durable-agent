@@ -27,7 +27,7 @@ const live = process.env.EDA_LIVE_PROVIDERS === "true";
 const MODELS = [
   { provider: "anthropic", modelId: "claude-opus-5-5", key: "ANTHROPIC_API_KEY" },
   { provider: "anthropic", modelId: "claude-sonnet-5-5", key: "ANTHROPIC_API_KEY" },
-  { provider: "openai", modelId: "gpt-6.1-sol", key: "OPENAI_API_KEY" },
+  { provider: "openai", modelId: "gpt-6.2-sol", key: "OPENAI_API_KEY" },
 ] as const;
 
 const WORDS =

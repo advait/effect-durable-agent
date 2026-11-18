@@ -340,7 +340,7 @@ describe("native compaction executors", () => {
       },
     }));
 
-    const output = await runCompaction("openai", "gpt-6.1-sol");
+    const output = await runCompaction("openai", "gpt-6.2-sol");
 
     expect(recorded).toHaveLength(1);
     expect(recorded[0]?.url).toBe("https://api.openai.com/v1/responses/compact");
