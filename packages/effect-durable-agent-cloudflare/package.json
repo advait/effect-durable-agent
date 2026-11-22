@@ -41,6 +41,10 @@
       "types": "./dist/durable-object.d.ts",
       "import": "./dist/durable-object.js"
     },
+    "./google": {
+      "types": "./dist/google.d.ts",
+      "import": "./dist/google.js"
+    },
     "./openai": {
       "types": "./dist/openai.d.ts",
       "import": "./dist/openai.js"

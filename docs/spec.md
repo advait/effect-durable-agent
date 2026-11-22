@@ -45,6 +45,10 @@ package manifests plus local `node_modules` before changing API-shaped docs.
 | --- | --- | --- |
 | `effect` | `~4.1.2` | Core Effect modules and `effect/ai`. |
 | `@effect/ai-openai` | `~4.1.2` | OpenAI provider adapter. |
+| `@effect/ai-anthropic` | `~4.1.2` | Anthropic provider adapter (optional peer). |
+
+The Google Gemini adapter (`effect-durable-agent-cloudflare/google`) is EDA's own, built on
+`effect/ai/LanguageModel.make`, because Effect has no v4 Google provider package.
 
 Important version facts:
 

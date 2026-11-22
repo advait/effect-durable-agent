@@ -21,6 +21,7 @@ export default defineConfig({
       anthropic: "src/providers/anthropic.ts",
       index: "src/index.ts",
       "durable-object": "src/durable-object.ts",
+      google: "src/providers/google.ts",
       openai: "src/providers/openai.ts",
       providers: "src/providers/providers.ts",
       rpc: "src/rpc.ts",

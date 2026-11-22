@@ -18,6 +18,42 @@ hosts; such hosts must ensure their recorded selection matches their fixed
 provider. Multi-model hosts use a real resolver. The Cloudflare OpenAI resolver
 shares its gateway/client transport and builds a model from each selection.
 
+## Cloudflare providers
+
+`makeEDAMultiProviderModelResolverLayer` (`effect-durable-agent-cloudflare/providers`) serves
+every provider a host configures. Each provider gets one client for the runtime lifetime. Its
+requests go through EDA's provider transport: the Cloudflare AI Gateway binding when the host
+passes one, and `fetch` otherwise. The host's `resolve` turns each recorded selection into
+`{ provider, modelId, config }`, and the resolver builds that provider's model.
+
+| Provider | Subpath | Adapter | Config helper | Prompt preparation | Compaction |
+| --- | --- | --- | --- | --- | --- |
+| OpenAI | `/openai` | `@effect/ai-openai` (Responses API) | none | replays native compaction items | `/responses/compact` |
+| Anthropic | `/anthropic` | `@effect/ai-anthropic` | `anthropicAgentModelConfig` | EDA cache hints become `cache_control`; replays native compaction blocks | on-demand compaction (`compact-2026-09-04`) |
+| Google | `/google` | EDA's own Gemini API adapter | `googleAgentModelConfig` | none | prompt-prefix summary |
+
+Effect has no v4 Google provider, so `/google` calls the Gemini API
+(`v1beta/models/{model}:streamGenerateContent?alt=sse` and `:generateContent`) directly and
+parses responses with a small schema. Through the AI Gateway it uses the `google-ai-studio`
+provider and sends the key in `x-goog-api-key`. Gemini differs from the other two in these ways:
+
+- Effort maps to `thinkingConfig.thinkingLevel` one to one: `low`, `medium` and `high`. Gemini 4
+  cannot turn thinking off and rejects `minimal`. It returns 400 when `thinkingBudget` is sent
+  with `thinkingLevel`, so EDA sends only `thinkingLevel`. Gemini's `xhigh` is not an effort.
+- A thought signature stays on the part Gemini sent it on. EDA stores it as
+  `options.google.thoughtSignature` on the committed prompt part and sends it back on the same
+  part. Gemini rejects a function call replayed without its signature. In a parallel call only
+  the first call carries one. A streamed answer's signature arrives on an empty text part at the
+  end, and EDA keeps it on the answer's text part.
+- Caching is implicit, for prompts of 4,096 tokens or more, with no write charge. EDA keeps every
+  request's `contents` an unchanged prefix of the next request's. Only the results of one step's
+  calls share a turn. Usage reports `cachedContentTokenCount` as cached input and no cache writes.
+  Thinking tokens are output.
+- Gemini has no compaction endpoint. `makeEDANativeCompactionExecutorLayer` compacts Google
+  sessions with `promptPrefixSummaryCompactionExecutor`. That executor re-sends an earlier
+  request with the summary request appended as its own turn, so the call reads the conversation
+  from the cache.
+
 Token consumption now contains `byModel` buckets keyed by provider and model ID.
 Input, cached input, cache-write input, output, text, and reasoning counters are
 preserved. Text and reasoning are output breakdowns. Costs and pricing tiers

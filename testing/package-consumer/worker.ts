@@ -30,6 +30,7 @@ import * as Events from "effect-durable-agent/types/events";
 import * as DurableEvents from "effect-durable-agent/types/events/durable";
 import * as TraceTypes from "effect-durable-agent/types/tracing";
 import * as DurableObjectHost from "effect-durable-agent-cloudflare/durable-object";
+import * as GoogleProvider from "effect-durable-agent-cloudflare/google";
 import * as OpenAiProvider from "effect-durable-agent-cloudflare/openai";
 import * as Rpc from "effect-durable-agent-cloudflare/rpc";
 import * as SessionController from "effect-durable-agent-cloudflare/session-controller";
@@ -44,6 +45,7 @@ const publicModules = [
   ReducedState,
   ReducedStateSchema,
   DurableObjectHost,
+  GoogleProvider,
   OpenAiProvider,
   Rpc,
   SessionController,

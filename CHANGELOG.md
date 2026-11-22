@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+Gemini sessions: `effect-durable-agent-cloudflare/google` is a native Gemini API provider, and
+the multi-provider resolver serves it beside OpenAI and Anthropic. No storage, checkpoint or
+protocol change.
+
+- **Feature:** `effect-durable-agent-cloudflare/google` exports `EDAGoogleClient` and
+  `makeEDAGoogleClientLayer(options)` over EDA's provider transport, and
+  `makeEDAGoogleLanguageModel({ modelId, config })`, an Effect AI `LanguageModel` for
+  `streamGenerateContent` (inference) and `generateContent` (compaction). It also exports
+  `EDAGoogleModelConfig`, `EDAGoogleClientOptions` and `googleAgentModelConfig({ effort,
+  maxOutputTokens?, includeThoughts? })`. Effort maps to `thinkingLevel` one to one (`low`,
+  `medium`, `high`). `xhigh` is not exposed and `thinkingBudget` is never sent. Output defaults to
+  65,536 tokens and thought summaries are on. Through a Cloudflare AI Gateway binding, requests use
+  the `google-ai-studio` provider with the key in `x-goog-api-key`.
+- Thought signatures: response text, reasoning and tool-call parts carry
+  `metadata.google.thoughtSignature`. EDA persists it on the committed prompt part, as it does
+  Anthropic signatures, and the next request sends it back on the same part. A streamed answer's
+  signature arrives on an empty text part after the text and stays on the answer's text part. The
+  results of one step's parallel calls go back in one user turn; every other message keeps its own
+  turn, so each request's contents start with the previous request's.
+- Usage: input is `promptTokenCount` plus `toolUsePromptTokenCount`, cached input is
+  `cachedContentTokenCount` (Gemini's implicit cache), cache-write input is 0, and output is
+  `candidatesTokenCount` (text) plus `thoughtsTokenCount` (reasoning). Finish metadata keeps the raw
+  `usageMetadata` and finish reason. Gemini finishes a function-call response with `STOP`; EDA
+  records it as `tool-calls`.
+- Errors map to the `AiError` reasons the Anthropic adapter uses: by HTTP status, also for an error
+  event inside the stream, and `InvalidResponseError` for a response that does not decode. A
+  blocked prompt fails with `ContentPolicyError`. A stream that ends without a finish reason emits
+  no finish part, so EDA records the inference as failed.
+- `./providers`: `EDAResolvedModel` gains `{ provider: "google"; modelId; config:
+  EDAGoogleModelConfig }` and `EDAMultiProviderModelResolverOptions` gains `google`. Resolution,
+  prompt preparation and compaction routing read one table with an entry per provider.
+  `makeEDANativeCompactionExecutorLayer` compacts Google sessions with
+  `promptPrefixSummaryCompactionExecutor`, because Gemini has no compaction endpoint.
+- Transport: `EDAProvider` gains `"google"`. Gateway requests keep the `v1beta/...` path and query.
+- **Test:** a canned journey runs recorded Gemini streams through the EDA runtime and checks the
+  request bodies, including signature replay and parallel results. The live provider test
+  (`EDA_LIVE_PROVIDERS=true GEMINI_API_KEY=...`) covers `gemini-4-neon` and `gemini-4-hydrogen`,
+  including cached input before and after compaction and the cached prefix.
+
+Storage: none. Google signatures and usage are stored in the existing prompt-part options and
+finish metadata. Protocol: none. API: additive. A new `./google` subpath, `"google"` in
+`EDAProvider` and `EDAResolvedModel["provider"]`, and `google` in
+`EDAMultiProviderModelResolverOptions`. A host that switches exhaustively over either union gets a
+new case.
+
 ## 0.4.1
 
 Patch release: a session killed after its run committed the answer no longer answers the same

@@ -26,6 +26,13 @@ import {
   type EDAAnthropicClientOptions,
   type EDAAnthropicModelConfig,
 } from "./anthropic";
+import {
+  EDAGoogleClient,
+  makeEDAGoogleClientLayer,
+  makeEDAGoogleLanguageModel,
+  type EDAGoogleClientOptions,
+  type EDAGoogleModelConfig,
+} from "./google";
 import { makeEDAOpenAiClientLayer, type EDAOpenAiModelConfig } from "./openai";
 import {
   ANTHROPIC_COMPACTION_BETA,
@@ -46,6 +53,11 @@ export type EDAResolvedModel =
       readonly provider: "anthropic";
       readonly modelId: string;
       readonly config: EDAAnthropicModelConfig;
+    }
+  | {
+      readonly provider: "google";
+      readonly modelId: string;
+      readonly config: EDAGoogleModelConfig;
     };
 
 /** Clients for every provider a host serves; a session runs on the one its selection names. */
@@ -56,6 +68,7 @@ export interface EDAMultiProviderModelResolverOptions {
     readonly apiUrl?: string | undefined;
   };
   readonly anthropic?: EDAAnthropicClientOptions;
+  readonly google?: EDAGoogleClientOptions;
   /** Host policy: validate the recorded selection and choose request settings. Throw to reject. */
   readonly resolve: (selection: ModelSelectionPayload | undefined) => EDAResolvedModel;
 }
@@ -118,6 +131,23 @@ const PROVIDERS: { readonly [P in Provider]: ProviderAdapter<P> } = {
     preparePrompt: prepareEDAAnthropicPrompt,
     compact: (input, options) => anthropicCompaction(input, options),
   },
+  google: {
+    name: "Google",
+    connect: (options) => {
+      const layer = makeEDAGoogleClientLayer(options);
+      return Effect.map(
+        EDAGoogleClient.pipe(Effect.provide(layer)),
+        (client) => (resolved) =>
+          makeEDAGoogleLanguageModel({ modelId: resolved.modelId, config: resolved.config }).pipe(
+            Effect.provideService(EDAGoogleClient, client),
+          ),
+      );
+    },
+    // Gemini caches prompt prefixes implicitly and stores no native compaction items.
+    preparePrompt: (prompt) => prompt,
+    // Gemini has no compaction endpoint.
+    compact: undefined,
+  },
 };
 
 const isProvider = (provider: string | undefined): provider is Provider =>
@@ -150,6 +180,7 @@ export const makeEDAMultiProviderModelResolverLayer = (
   const clients = {
     openai: connect("openai", options.openai),
     anthropic: connect("anthropic", options.anthropic),
+    google: connect("google", options.google),
   } satisfies { readonly [P in Provider]: Effect.Effect<ModelMaker<P> | undefined> };
   return Layer.effect(
     ModelResolver,
@@ -184,9 +215,9 @@ export interface EDANativeCompactionOptions {
  * Compacts with the session provider's own endpoint: OpenAI `/responses/compact`, Anthropic
  * on-demand compaction (`compact-2026-09-04`). Each call carries the exact earlier request prompt,
  * so it reads the conversation from the provider cache, and the returned native items replace the
- * summarized history on later requests. Other providers summarize with
- * `promptPrefixSummaryCompactionExecutor`, which re-sends the same earlier prompt with the summary
- * request appended.
+ * summarized history on later requests. Providers without one (Google, and any selection EDA does
+ * not know) summarize with `promptPrefixSummaryCompactionExecutor`, which re-sends the same
+ * earlier prompt with the summary request appended.
  */
 export const makeEDANativeCompactionExecutorLayer = (
   options: EDANativeCompactionOptions = {},
@@ -427,4 +458,5 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 export { prepareEDAAnthropicPrompt } from "./anthropic";
 export type { EDAAnthropicModelConfig } from "./anthropic";
+export type { EDAGoogleModelConfig } from "./google";
 export type { EDAOpenAiModelConfig } from "./openai";
