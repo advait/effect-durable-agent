@@ -14,7 +14,9 @@ import {
 } from "effect-durable-agent/domain/context-projection";
 import { initialReducedState } from "effect-durable-agent/domain/reduced-state";
 import { SequenceNumber } from "effect-durable-agent/types/core";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Prompt from "effect/ai/Prompt";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -450,41 +452,17 @@ describe("native compaction executors", () => {
   });
 });
 
-describe("multi-provider prompt preparation", () => {
-  it("prepares the prompt for the provider the request was resolved to, asking the host once", async () => {
-    const selections: Array<string> = [];
-    // A stateful host: its first answer is Anthropic, every later one OpenAI.
+describe("multi-provider resolution", () => {
+  it("rejects a host that resolves a selection to another provider", async () => {
     const layer = makeEDAMultiProviderModelResolverLayer({
       openai: { apiKey: "test-key" },
       anthropic: { apiKey: "test-key" },
-      resolve: (selection) => {
-        selections.push(selection?.modelId ?? "none");
-        return selections.length === 1
-          ? { provider: "anthropic", modelId: "claude-model", config: {} }
-          : { provider: "openai", modelId: "gpt-model", config: {} };
-      },
+      resolve: () => ({ provider: "anthropic", modelId: "claude-model", config: {} }),
     });
-    // Anthropic's redacted thinking: no text, metadata only Anthropic reads.
-    const redacted = Prompt.makePart("reasoning", {
-      text: "",
-      options: { anthropic: { info: { type: "redacted_thinking", redactedData: "UkVE" } } },
-    });
-    const history = Prompt.fromMessages([
-      Prompt.makeMessage("user", { content: [Prompt.textPart({ text: "first" })] }),
-      Prompt.makeMessage("assistant", {
-        content: [redacted, Prompt.textPart({ text: "answer" })],
-      }),
-      Prompt.makeMessage("user", { content: [Prompt.textPart({ text: "second" })] }),
-    ]);
-    const selection = { provider: "openai", modelId: "alias" };
-    const prepared = await Effect.gen(function* () {
+    const exit = await Effect.gen(function* () {
       const resolver = yield* ModelResolver;
-      yield* resolver.resolve(selection);
-      return resolver.preparePrompt?.(selection, history);
-    }).pipe(Effect.provide(layer), Effect.runPromise);
-    expect(selections).toEqual(["alias"]);
-    // Prepared for Anthropic, the provider that receives the request: its own part stays.
-    const assistant = prepared?.content.find((message) => message.role === "assistant");
-    expect(assistant?.content.map((part) => part.type)).toEqual(["reasoning", "text"]);
+      return yield* resolver.resolve({ provider: "openai", modelId: "alias" });
+    }).pipe(Effect.provide(layer), Effect.exit, Effect.runPromise);
+    expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
   });
 });

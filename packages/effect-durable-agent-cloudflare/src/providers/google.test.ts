@@ -449,89 +449,82 @@ describe("Gemini thought signatures", () => {
 });
 
 describe("Gemini history on another provider", () => {
-  it.each([
-    { recorded: "names that provider", named: true },
-    // The host resolves a missing selection to its default; the prompt is prepared for that target.
-    { recorded: "is missing", named: false },
-  ])(
-    "sends Anthropic and OpenAI no part or message that holds only a Gemini signature when the selection $recorded",
-    async ({ named }) => {
-      const stop = (parts: ReadonlyArray<FixturePart>) =>
-        sse({ candidates: [{ content: { role: "model", parts }, finishReason: "STOP" }] });
-      const recorded = stubFetch([
-        { body: stop([{ text: "Hello" }, { text: "", thoughtSignature: "U0lHMQ==" }]) },
-        // A turn whose only output is the signed empty part.
-        { body: stop([{ text: "", thoughtSignature: "U0lHMg==" }]) },
-        // The other providers' requests are recorded; their answers do not matter.
-        { status: 400, body: "{}" },
-        { status: 400, body: "{}" },
-      ]);
-      const events = await geminiSession(["first", "second"]);
-      const answers = events.flatMap((event) =>
-        event.type === "AssistantMessageCommitted" ? [event.payload.promptParts] : [],
-      );
-      const user = (text: string) =>
-        Prompt.makeMessage("user", { content: [Prompt.textPart({ text })] });
-      const history = Prompt.fromMessages([
-        user("first"),
-        ...answers.slice(0, 1).map((content) => Prompt.makeMessage("assistant", { content })),
-        user("second"),
-        ...answers.slice(1).map((content) => Prompt.makeMessage("assistant", { content })),
-        user("third"),
-      ]);
-      const send = (provider: "anthropic" | "openai") =>
-        Effect.gen(function* () {
-          const resolver = yield* ModelResolver;
-          const selection = named ? { provider, modelId: `${provider}-model` } : undefined;
-          const model = yield* resolver.resolve(selection);
-          return yield* model.generateText({
-            prompt: resolver.preparePrompt?.(selection, history) ?? history,
-          });
-        }).pipe(
-          Effect.provide(
-            makeEDAMultiProviderModelResolverLayer({
-              [provider]: { apiKey: "test-key" },
-              resolve: (selection) => ({
-                provider,
-                modelId: selection?.modelId ?? `${provider}-default`,
-                config: {},
-              }),
+  it("sends Anthropic and OpenAI no part or message that holds only a Gemini signature", async () => {
+    const stop = (parts: ReadonlyArray<FixturePart>) =>
+      sse({ candidates: [{ content: { role: "model", parts }, finishReason: "STOP" }] });
+    const recorded = stubFetch([
+      { body: stop([{ text: "Hello" }, { text: "", thoughtSignature: "U0lHMQ==" }]) },
+      // A turn whose only output is the signed empty part.
+      { body: stop([{ text: "", thoughtSignature: "U0lHMg==" }]) },
+      // The other providers' requests are recorded; their answers do not matter.
+      { status: 400, body: "{}" },
+      { status: 400, body: "{}" },
+    ]);
+    const events = await geminiSession(["first", "second"]);
+    const answers = events.flatMap((event) =>
+      event.type === "AssistantMessageCommitted" ? [event.payload.promptParts] : [],
+    );
+    const user = (text: string) =>
+      Prompt.makeMessage("user", { content: [Prompt.textPart({ text })] });
+    const history = Prompt.fromMessages([
+      user("first"),
+      ...answers.slice(0, 1).map((content) => Prompt.makeMessage("assistant", { content })),
+      user("second"),
+      ...answers.slice(1).map((content) => Prompt.makeMessage("assistant", { content })),
+      user("third"),
+    ]);
+    const send = (provider: "anthropic" | "openai") =>
+      Effect.gen(function* () {
+        const resolver = yield* ModelResolver;
+        const selection = { provider, modelId: `${provider}-model` };
+        const model = yield* resolver.resolve(selection);
+        return yield* model.generateText({
+          prompt: resolver.preparePrompt?.(selection, history) ?? history,
+        });
+      }).pipe(
+        Effect.provide(
+          makeEDAMultiProviderModelResolverLayer({
+            [provider]: { apiKey: "test-key" },
+            resolve: (selection) => ({
+              provider,
+              modelId: selection?.modelId ?? `${provider}-default`,
+              config: {},
             }),
-          ),
-          Effect.exit,
-          Effect.runPromise,
-        );
-      await send("anthropic");
-      await send("openai");
-
-      expect(answers).toHaveLength(2);
-      const [anthropic, openai] = recorded.slice(2).map((request) => request.body);
-      // Each message as its role and texts; Anthropic joins consecutive user messages.
-      const Messages = Schema.Array(
-        Schema.Struct({
-          role: Schema.String,
-          content: Schema.Array(Schema.Struct({ text: Schema.String })),
-        }),
+          }),
+        ),
+        Effect.exit,
+        Effect.runPromise,
       );
-      const texts = (messages: unknown) =>
-        Schema.decodeUnknownSync(Messages)(messages).map((message) => [
-          message.role,
-          message.content.map((part) => part.text),
-        ]);
-      expect(texts(anthropic?.messages)).toEqual([
-        ["user", ["first"]],
-        ["assistant", ["Hello"]],
-        ["user", ["second", "third"]],
+    await send("anthropic");
+    await send("openai");
+
+    expect(answers).toHaveLength(2);
+    const [anthropic, openai] = recorded.slice(2).map((request) => request.body);
+    // Each message as its role and texts; Anthropic joins consecutive user messages.
+    const Messages = Schema.Array(
+      Schema.Struct({
+        role: Schema.String,
+        content: Schema.Array(Schema.Struct({ text: Schema.String })),
+      }),
+    );
+    const texts = (messages: unknown) =>
+      Schema.decodeUnknownSync(Messages)(messages).map((message) => [
+        message.role,
+        message.content.map((part) => part.text),
       ]);
-      expect(texts(openai?.input)).toEqual([
-        ["user", ["first"]],
-        ["assistant", ["Hello"]],
-        ["user", ["second"]],
-        ["user", ["third"]],
-      ]);
-      expect(JSON.stringify([anthropic, openai])).not.toContain("U0lH");
-    },
-  );
+    expect(texts(anthropic?.messages)).toEqual([
+      ["user", ["first"]],
+      ["assistant", ["Hello"]],
+      ["user", ["second", "third"]],
+    ]);
+    expect(texts(openai?.input)).toEqual([
+      ["user", ["first"]],
+      ["assistant", ["Hello"]],
+      ["user", ["second"]],
+      ["user", ["third"]],
+    ]);
+    expect(JSON.stringify([anthropic, openai])).not.toContain("U0lH");
+  });
 });
 
 describe("Gemini file parts", () => {

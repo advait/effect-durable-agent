@@ -188,32 +188,29 @@ export const makeEDAMultiProviderModelResolverLayer = (
     ModelResolver,
     Effect.gen(function* () {
       const makers = yield* Effect.all(clients);
-      // The provider each selection last resolved to. The runtime resolves a selection before it
-      // prepares that request's prompt, so preparation targets the provider that receives the
-      // request without asking the host twice.
-      const resolvedProviders = new Map<string, Provider>();
-      const resolveProvider = (selection: ModelSelectionPayload | undefined) => {
-        const resolved = options.resolve(selection);
-        resolvedProviders.set(selectionKey(selection), resolved.provider);
-        return resolved;
-      };
       return {
         resolve: Effect.fn("MultiProviderModelResolver.resolve")(function* (selection) {
-          const resolved = resolveProvider(selection);
+          const resolved = options.resolve(selection);
+          // Prompts are prepared for the provider a selection names, so a selection must run there.
+          if (selection !== undefined && resolved.provider !== selection.provider) {
+            return yield* Effect.die(
+              new Error(
+                `A ${selection.provider} selection resolved to ${resolved.provider}; a selection must resolve to the provider it names.`,
+              ),
+            );
+          }
           return yield* makeModel(makers, resolved.provider, resolved);
         }),
-        preparePrompt: (selection, prompt) => {
-          const provider =
-            resolvedProviders.get(selectionKey(selection)) ?? resolveProvider(selection).provider;
-          return PROVIDERS[provider].preparePrompt(withoutOtherProvidersState(provider, prompt));
-        },
+        preparePrompt: (selection, prompt) =>
+          isProvider(selection?.provider)
+            ? PROVIDERS[selection.provider].preparePrompt(
+                withoutOtherProvidersState(selection.provider, prompt),
+              )
+            : prompt,
       };
     }),
   );
 };
-
-const selectionKey = (selection: ModelSelectionPayload | undefined): string =>
-  JSON.stringify(selection ?? null);
 
 /** Options for provider-native compaction. */
 export interface EDANativeCompactionOptions {

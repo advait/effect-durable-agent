@@ -17,11 +17,11 @@ change.
 - **Fix (core):** the `LanguageModelSummary` executor's conversation leaves out text and
   reasoning parts with no text. Anthropic's omitted-display thinking and OpenAI's encrypted
   reasoning used to add an empty `[Assistant reasoning]:` line.
-- **Change:** the multi-provider resolver's `preparePrompt` prepares the prompt for the provider
-  the host's `resolve` returns, the one that receives the request, instead of the provider the
-  recorded selection names (they differ only when a host maps one to another or resolves a missing
-  selection to a default). It removes the assistant parts that hold only another provider's state,
-  and an assistant message they leave empty. Such a part has no
+- **Change:** the multi-provider resolver's `resolve` dies when the host resolves a selection to a
+  provider other than the one it names. `preparePrompt` prepares for the named provider, so this
+  keeps the request and its prompt on one provider; both hosts in use already resolve that way.
+- **Change:** the multi-provider resolver's `preparePrompt` removes the assistant parts that hold
+  only another provider's state, and an assistant message they leave empty. Such a part has no
   text, and its metadata names only other providers. This is the rule the Anthropic and OpenAI
   adapters already apply to reasoning. Anthropic rejects an empty text block and an empty
   assistant message with a 400, so a Gemini history sent to Anthropic used to fail.

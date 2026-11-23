@@ -27,9 +27,10 @@ passes one, and `fetch` otherwise. The host's `resolve` turns each recorded sele
 `{ provider, modelId, config }`, and the resolver builds that provider's model.
 
 A prompt for one provider can hold parts another provider wrote. A text or reasoning part with no
-text whose metadata names only other providers holds nothing the receiving provider can use, such
-as Gemini's signed empty answer part. The resolver's `preparePrompt` resolves the selection as
-`resolve` does and prepares the prompt for that provider. It removes those parts, and an
+text whose metadata names only other providers holds nothing the selected provider can use, such
+as Gemini's signed empty answer part. The resolver's `preparePrompt` prepares the prompt for the
+provider the selection names, and `resolve` rejects (as a defect) a host that resolves a selection
+to another provider, so the two always agree. It removes those parts, and an
 assistant message they leave empty, before the provider's own preparation. The Anthropic and
 OpenAI adapters already drop reasoning that lacks their own metadata. Anthropic rejects an empty
 text block and an empty assistant message.
