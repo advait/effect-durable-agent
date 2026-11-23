@@ -17,8 +17,11 @@ change.
 - **Fix (core):** the `LanguageModelSummary` executor's conversation leaves out text and
   reasoning parts with no text. Anthropic's omitted-display thinking and OpenAI's encrypted
   reasoning used to add an empty `[Assistant reasoning]:` line.
-- **Change:** the multi-provider resolver's `preparePrompt` removes the assistant parts that hold
-  only another provider's state, and an assistant message they leave empty. Such a part has no
+- **Change:** the multi-provider resolver's `preparePrompt` prepares the prompt for the provider
+  the host's `resolve` returns, the one that receives the request, instead of the provider the
+  recorded selection names (they differ only when a host maps one to another or resolves a missing
+  selection to a default). It removes the assistant parts that hold only another provider's state,
+  and an assistant message they leave empty. Such a part has no
   text, and its metadata names only other providers. This is the rule the Anthropic and OpenAI
   adapters already apply to reasoning. Anthropic rejects an empty text block and an empty
   assistant message with a 400, so a Gemini history sent to Anthropic used to fail.
@@ -58,7 +61,7 @@ change.
   tool call that the response streamed.
 - File parts: EDA holds file data as a string, bytes as a base64 `data:` URL and a URL as its href.
   Every `data:` URL goes to Gemini as `inlineData` with its own media type, decoded as the Fetch
-  standard decodes it. The payload is percent-decoded, so `data:text/plain;base64,aGk%3D` sends
+  standard decodes it. A fragment (`#...`) is not data; the payload is percent-decoded, so `data:text/plain;base64,aGk%3D` sends
   `aGk=`. A payload without `;base64` is the bytes themselves, which EDA base64-encodes. A string
   with another URL scheme (an https or Gemini Files URI) goes as `fileData.fileUri`, and bare
   base64 as `inlineData`. `image/*` goes as `image/jpeg`, as the Anthropic and OpenAI adapters
@@ -75,12 +78,12 @@ change.
   including cached input before and after compaction and the cached prefix.
 
 Storage: no schema change. Google signatures and usage are stored in the existing prompt-part
-options and finish metadata. New `AssistantMessageCommitted` and `AssistantPartialCommitted` events
-may hold an empty text part with provider metadata,
-`{ type: "text", text: "", options: { google: { thoughtSignature } } }`, possibly as the message's
-only part. The durable schema already admits it: `Prompt.TextPart.text` is any string and
-`promptParts` only has to be non-empty. Stored histories replay unchanged, because no earlier
-version committed such a part. The reducer, checkpoints, prompt projection and transcript treat it
+options and finish metadata. New `AssistantMessageCommitted` events may hold an empty text part with
+provider metadata, `{ type: "text", text: "", options: { google: { thoughtSignature } } }`,
+possibly as the message's only part. An `AssistantPartialCommitted` event may hold one beside
+visible text or reasoning, never alone: a partial commit still needs visible output. The durable schema already admits it: `Prompt.TextPart.text` is any string and
+`promptParts` only has to be non-empty. Histories stored by released versions replay unchanged, because
+no released version committed such a part or any Google state. The reducer, checkpoints, prompt projection and transcript treat it
 as any other text part, with no reducer or projection requiring non-empty text. The transcript
 shows it as an empty `Text` part, which Gia's transcript view skips as it skips blank text, so
 `transcriptSemanticRevision` stays as it is. Protocol: none. API: additive. A new `./google`

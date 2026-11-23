@@ -193,12 +193,12 @@ export const makeEDAMultiProviderModelResolverLayer = (
           const resolved = options.resolve(selection);
           return yield* makeModel(makers, resolved.provider, resolved);
         }),
-        preparePrompt: (selection, prompt) =>
-          isProvider(selection?.provider)
-            ? PROVIDERS[selection.provider].preparePrompt(
-                withoutOtherProvidersState(selection.provider, prompt),
-              )
-            : prompt,
+        // Prepared for the provider the host resolves the selection to, which receives the request;
+        // the runtime resolves the same selection before it prepares the prompt.
+        preparePrompt: (selection, prompt) => {
+          const provider = options.resolve(selection).provider;
+          return PROVIDERS[provider].preparePrompt(withoutOtherProvidersState(provider, prompt));
+        },
       };
     }),
   );

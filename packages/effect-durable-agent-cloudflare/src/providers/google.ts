@@ -514,7 +514,8 @@ const geminiMediaType = (mediaType: string): string =>
 const parseDataUrl = (
   value: string,
 ): { readonly mediaType: string; readonly base64: string } | undefined => {
-  const match = DATA_URL.exec(value);
+  // A URL's fragment is not part of its data; an encoded `%23` is.
+  const match = DATA_URL.exec(value.split("#", 1)[0] ?? "");
   if (match === null) return undefined;
   const [, header = "", payload = ""] = match;
   const mediaType = (header.split(";")[0] ?? "").trim().toLowerCase();
