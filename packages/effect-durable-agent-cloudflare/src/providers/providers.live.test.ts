@@ -186,14 +186,20 @@ interface GeminiCall {
   };
   /** Characters of thought-summary text in the response. */
   thoughtChars?: number;
+  /** The response parts that carried a thought signature, as Gemini sent them. */
+  signedParts?: ReadonlyArray<GeminiPart>;
+}
+
+interface GeminiPart {
+  readonly text?: string;
+  readonly thought?: boolean;
+  readonly thoughtSignature?: string;
 }
 
 interface GeminiChunk {
   readonly usageMetadata?: GeminiCall["usage"];
   readonly candidates?: ReadonlyArray<{
-    readonly content?: {
-      readonly parts?: ReadonlyArray<{ readonly text?: string; readonly thought?: boolean }>;
-    };
+    readonly content?: { readonly parts?: ReadonlyArray<GeminiPart> };
   }>;
 }
 
@@ -220,11 +226,12 @@ const recordGeminiCalls = () => {
               .filter((line) => line.startsWith("data: "))
               .map((line) => line.slice("data: ".length));
         const parsed = chunks.map((chunk): GeminiChunk => JSON.parse(chunk));
+        const parts = parsed.flatMap((chunk) => chunk.candidates?.[0]?.content?.parts ?? []);
         call.usage = parsed.at(-1)?.usageMetadata;
-        call.thoughtChars = parsed
-          .flatMap((chunk) => chunk.candidates?.[0]?.content?.parts ?? [])
+        call.thoughtChars = parts
           .filter((part) => part.thought === true)
           .reduce((sum, part) => sum + (part.text?.length ?? 0), 0);
+        call.signedParts = parts.filter((part) => part.thoughtSignature !== undefined);
       }),
     );
     return new Response(forCaller, response);
@@ -406,6 +413,7 @@ describe.skipIf(!live)("live provider caching and native compaction", () => {
         if (model.provider === "google") {
           expect(gemini.calls).toHaveLength(calls.length);
           expectGeminiCachedPrefix(gemini.calls, calls);
+          expectGeminiSignaturesReplayed(gemini.calls, calls);
           // Every thought summary of an answer is committed as reasoning; summary calls are not.
           expect(reasoningChars).toBe(
             gemini.calls
@@ -504,3 +512,38 @@ const expectGeminiCachedPrefix = (
   const post = rows.flatMap((row, index) => (row.kind === "post" ? [index] : []));
   expect(gemini[post[1] ?? -1]?.usage?.cachedContentTokenCount ?? 0).toBeGreaterThan(0);
 };
+
+/**
+ * Check that every part Gemini signed comes back unchanged, as its own part, in the next request
+ * of the same context version (the request that replays the response), and print how many of them
+ * were empty text parts, the form a streamed answer's signature arrives in.
+ */
+const expectGeminiSignaturesReplayed = (
+  gemini: ReadonlyArray<GeminiCall>,
+  rows: ReadonlyArray<CallRow>,
+) => {
+  let replayed = 0;
+  let emptyText = 0;
+  for (const [index, call] of gemini.entries()) {
+    const next = gemini[index + 1];
+    const kind = rows[index]?.kind;
+    if (next === undefined || kind === "compaction" || rows[index + 1]?.kind !== kind) continue;
+    const sent = next.body.contents.flatMap((content) =>
+      isRecord(content) && Array.isArray(content.parts) ? (content.parts as Array<unknown>) : [],
+    );
+    for (const part of call.signedParts ?? []) {
+      expect(sent).toContainEqual(part);
+      const carriers = sent.filter(
+        (candidate) => isRecord(candidate) && candidate.thoughtSignature === part.thoughtSignature,
+      );
+      expect(carriers).toHaveLength(1);
+      replayed++;
+      if (part.text === "" && part.thought !== true) emptyText++;
+    }
+  }
+  console.log(JSON.stringify({ signedPartsReplayed: replayed, emptySignedTextParts: emptyText }));
+  expect(emptyText).toBeGreaterThan(0);
+};
+
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);

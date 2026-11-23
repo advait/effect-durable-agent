@@ -1,11 +1,13 @@
 import { readFile } from "node:fs/promises";
 
+import { sequentialUuidV7 } from "effect-durable-agent/services/id-generator";
 import { ModelResolver } from "effect-durable-agent/services/model-resolver";
 import { EDARuntime } from "effect-durable-agent/services/runtime";
 import { makeEDAToolkit } from "effect-durable-agent/services/tool-registry";
 import { makeEdaTestLayer } from "effect-durable-agent/testkit/layers";
 import { SubmitMessageCommand } from "effect-durable-agent/types/commands";
 import { CommandId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
+import { DurableEventEnvelope } from "effect-durable-agent/types/events";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -99,6 +101,65 @@ const toolkit = Effect.runSync(
   }),
 );
 
+/** A stored event as a Durable Object reads it back: encoded, through JSON, and decoded. */
+const reloaded = (event: DurableEventEnvelope): DurableEventEnvelope =>
+  Schema.decodeUnknownSync(DurableEventEnvelope)(
+    JSON.parse(JSON.stringify(Schema.encodeSync(DurableEventEnvelope)(event))),
+  );
+
+/**
+ * Sends each message as one turn of a Gemini session through the EDA runtime. Every turn after the
+ * first runs in a new runtime that starts from the previous one's event log, reloaded as a Durable
+ * Object reloads its stored history, so each request after a turn boundary is built from storage.
+ * Returns the final event log.
+ */
+const geminiSession = async (
+  turns: ReadonlyArray<string | ReadonlyArray<Prompt.UserMessagePart>>,
+  options: { readonly systemPrompt?: string } = {},
+): Promise<ReadonlyArray<DurableEventEnvelope>> => {
+  const sessionId = SessionId.make(crypto.randomUUID());
+  let log: ReadonlyArray<DurableEventEnvelope> = [];
+  for (const [index, turn] of turns.entries()) {
+    const layer = EDARuntime.Live({
+      modelSelection: { provider: "google", modelId: "gemini-4-hydrogen" },
+      ...options,
+    }).pipe(
+      Layer.provideMerge(
+        makeEdaTestLayer({
+          sessionId,
+          modelResolverLayer: resolverLayer(),
+          toolkit,
+          ...(index === 0
+            ? {}
+            : {
+                seedEvents: log.map(reloaded),
+                ids: Array.from({ length: 1_000 }, (_, i) => sequentialUuidV7(10_000 * index + i)),
+              }),
+        }),
+      ),
+    );
+    log = await Effect.scoped(
+      Effect.gen(function* () {
+        const runtime = yield* EDARuntime;
+        yield* runtime.submitAndBlock(
+          new SubmitMessageCommand({
+            commandId: CommandId.make(
+              `018f6bd5-2f2a-7b1e-8f1b-${String(index + 1).padStart(12, "0")}`,
+            ),
+            disposition: "queue",
+            content: typeof turn === "string" ? [Prompt.textPart({ text: turn })] : turn,
+          }),
+        );
+        const snapshot = yield* runtime.snapshot();
+        const replay = yield* runtime.eventsAfter(SequenceNumber.make(0));
+        const rows = yield* replay.pipe(Stream.take(snapshot.state.lastSeq), Stream.runCollect);
+        return Array.from(rows, (row) => row.event);
+      }),
+    ).pipe(Effect.provide(layer), Effect.runPromise);
+  }
+  return log;
+};
+
 /** Stream one prompt through the resolved Gemini model, as EDA's inference does. */
 const streamParts = (prompt: Prompt.RawInput) =>
   Effect.gen(function* () {
@@ -128,37 +189,9 @@ describe("Gemini session through the EDA runtime", () => {
       fixture("gemini-gateway-text.sse"),
     ]);
     const recorded = stubFetch([{ body: toolCalls }, { body: answer }, { body: gatewayText }]);
-    const layer = EDARuntime.Live({
-      modelSelection: { provider: "google", modelId: "gemini-4-hydrogen" },
+    const events = await geminiSession(["Plan a two-city picnic.", "Thanks."], {
       systemPrompt: "You are terse. Use tools for weather.",
-    }).pipe(
-      Layer.provideMerge(
-        makeEdaTestLayer({
-          sessionId: SessionId.make(crypto.randomUUID()),
-          modelResolverLayer: resolverLayer(),
-          toolkit,
-        }),
-      ),
-    );
-    const events = await Effect.scoped(
-      Effect.gen(function* () {
-        const runtime = yield* EDARuntime;
-        for (const [index, text] of ["Plan a two-city picnic.", "Thanks."].entries()) {
-          yield* runtime.submitAndBlock(
-            new SubmitMessageCommand({
-              commandId: CommandId.make(
-                `018f6bd5-2f2a-7b1e-8f1b-${String(index + 1).padStart(12, "0")}`,
-              ),
-              disposition: "queue",
-              content: [Prompt.textPart({ text })],
-            }),
-          );
-        }
-        const snapshot = yield* runtime.snapshot();
-        const replay = yield* runtime.eventsAfter(SequenceNumber.make(0));
-        return yield* replay.pipe(Stream.take(snapshot.state.lastSeq), Stream.runCollect);
-      }),
-    ).pipe(Effect.provide(layer), Effect.runPromise);
+    });
 
     const callSignature = fixtureParts(toolCalls).find(
       (part) => part.thoughtSignature !== undefined,
@@ -250,21 +283,22 @@ describe("Gemini session through the EDA runtime", () => {
     ];
     expect(recorded[1]?.body.contents).toEqual(firstTurn);
 
-    // The streamed answer replays as one text part carrying the signature that arrived on the
-    // empty text part ending the stream.
+    // After a restart from the stored log, the streamed answer replays as its text and then the
+    // empty text part that carried the signature, as Gemini sent them.
     expect(recorded[2]?.body.contents).toEqual([
       ...firstTurn,
       {
         role: "model",
         parts: [
           { text: firstThought(answer), thought: true },
-          { text: answerText, thoughtSignature: answerSignature },
+          { text: answerText },
+          { text: "", thoughtSignature: answerSignature },
         ],
       },
       { role: "user", parts: [{ text: "Thanks." }] },
     ]);
 
-    const completed = Array.from(events).flatMap(({ event }) =>
+    const completed = events.flatMap((event) =>
       event.type === "InferenceCompleted" ? [event.payload] : [],
     );
     expect(completed.map((payload) => payload.finishReason)).toEqual([
@@ -281,6 +315,63 @@ describe("Gemini session through the EDA runtime", () => {
       textTokens: 40,
       reasoningTokens: 269,
     });
+  });
+});
+
+describe("Gemini thought signatures", () => {
+  interface Case {
+    readonly name: string;
+    readonly sent: ReadonlyArray<FixturePart>;
+    /** The model turn of the next request; defaults to `sent`. */
+    readonly replayed?: ReadonlyArray<FixturePart>;
+  }
+  it.each<Case>([
+    {
+      name: "two adjacent signed answer parts",
+      sent: [
+        { text: "First", thoughtSignature: "U0lHMQ==" },
+        { text: "Second", thoughtSignature: "U0lHMg==" },
+      ],
+    },
+    {
+      name: "streamed answer pieces and the signed empty part that ends them",
+      sent: [{ text: "Hel" }, { text: "lo" }, { text: "", thoughtSignature: "U0lHMw==" }],
+      replayed: [{ text: "Hello" }, { text: "", thoughtSignature: "U0lHMw==" }],
+    },
+    {
+      name: "a signed thought, and a signed piece between unsigned ones",
+      sent: [
+        { text: "Plan.", thought: true, thoughtSignature: "VEhPVUdIVA==" },
+        { text: "A" },
+        { text: "B", thoughtSignature: "U0lHNA==" },
+        { text: "C" },
+      ],
+    },
+  ])("replays $name exactly on the next request, after a restart", async ({ sent, replayed }) => {
+    // One SSE chunk per part, as Gemini streams them.
+    const recorded = stubFetch([
+      {
+        body: sse(
+          ...sent.map((part, index) => ({
+            candidates: [
+              {
+                content: { role: "model", parts: [part] },
+                ...(index === sent.length - 1 ? { finishReason: "STOP" } : {}),
+              },
+            ],
+          })),
+        ),
+      },
+      {
+        body: sse({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] }),
+      },
+    ]);
+    await geminiSession(["hi", "again"]);
+    expect(recorded[1]?.body.contents).toEqual([
+      { role: "user", parts: [{ text: "hi" }] },
+      { role: "model", parts: replayed ?? sent },
+      { role: "user", parts: [{ text: "again" }] },
+    ]);
   });
 });
 

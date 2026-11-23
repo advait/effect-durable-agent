@@ -42,9 +42,13 @@ provider and sends the key in `x-goog-api-key`. Gemini differs from the other tw
   with `thinkingLevel`, so EDA sends only `thinkingLevel`. Gemini's `xhigh` is not an effort.
 - A thought signature stays on the part Gemini sent it on. EDA stores it as
   `options.google.thoughtSignature` on the committed prompt part and sends it back on the same
-  part. Gemini rejects a function call replayed without its signature. In a parallel call only
-  the first call carries one. A streamed answer's signature arrives on an empty text part at the
-  end, and EDA keeps it on the answer's text part.
+  part. A signed part is never merged with its neighbours; only unsigned streamed pieces of one
+  part are joined. Gemini rejects a function call replayed without its signature. In a parallel
+  call only the first call carries one. A streamed answer's signature arrives on an empty text
+  part at the end. EDA keeps an empty part only as reasoning, so it commits that part as an empty
+  reasoning part marked `options.google.thought: false` and sends it back as the empty text part
+  Gemini sent. Transcript clients see an empty reasoning part, and the Anthropic and OpenAI
+  adapters drop reasoning that lacks their own metadata, so a provider switch never sends it.
 - Caching is implicit, for prompts of 4,096 tokens or more, with no write charge. EDA keeps every
   request's `contents` an unchanged prefix of the next request's. Only the results of one step's
   calls share a turn. Usage reports `cachedContentTokenCount` as cached input and no cache writes.

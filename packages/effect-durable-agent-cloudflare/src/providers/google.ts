@@ -4,8 +4,14 @@
  *
  * Thought signatures are kept per part. Response text, reasoning and tool-call parts carry
  * `metadata.google.thoughtSignature`, which EDA persists on the committed prompt part and replays
- * as `options.google.thoughtSignature`; the request puts it back on the same part. Gemini rejects
- * a function call replayed without its signature.
+ * as `options.google.thoughtSignature`; the request puts it back on the same part. Gemini asks for
+ * every signature back on exactly the part that carried it, and rejects a function call replayed
+ * without its signature.
+ *
+ * A signed part whose answer text is empty (the usual end of a streamed answer) is an empty
+ * reasoning part marked `metadata.google.thought: false`: EDA keeps an empty part only as
+ * reasoning, the part holds nothing but opaque thought state, and the mark replays it as the empty
+ * text part Gemini sent. Other providers drop reasoning that lacks their own metadata.
  */
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -491,7 +497,7 @@ const filePart = (part: Prompt.FilePart): GoogleRequestPart => {
 
 /** An assistant part as the `model` part it came from, with its signature back on it. */
 const modelParts = (part: Prompt.AssistantMessagePart): ReadonlyArray<GoogleRequestPart> => {
-  const thoughtSignature = signatureOf(part.options);
+  const { thoughtSignature, thought } = googleOptions(part.options);
   const signed = thoughtSignature === undefined ? {} : { thoughtSignature };
   switch (part.type) {
     case "text":
@@ -501,7 +507,7 @@ const modelParts = (part: Prompt.AssistantMessagePart): ReadonlyArray<GoogleRequ
     case "reasoning":
       return part.text.length === 0 && thoughtSignature === undefined
         ? []
-        : [{ text: part.text, thought: true, ...signed }];
+        : [{ text: part.text, ...(thought === false ? {} : { thought: true }), ...signed }];
     case "tool-call":
       return [{ functionCall: { name: part.name, args: part.params, id: part.id }, ...signed }];
     case "file":
@@ -529,11 +535,18 @@ const toolResultParts = (part: Prompt.ToolMessagePart): ReadonlyArray<GoogleRequ
   ];
 };
 
-const signatureOf = (options: Prompt.ProviderOptions): string | undefined => {
+/** The part's Gemini signature, and `thought: false` on reasoning that was an empty text part. */
+const googleOptions = (
+  options: Prompt.ProviderOptions,
+): { readonly thoughtSignature?: string; readonly thought?: false } => {
   const google = options.google;
-  return isRecord(google) && typeof google.thoughtSignature === "string"
-    ? google.thoughtSignature
-    : undefined;
+  if (!isRecord(google)) return {};
+  return {
+    ...(typeof google.thoughtSignature === "string"
+      ? { thoughtSignature: google.thoughtSignature }
+      : {}),
+    ...(google.thought === false ? { thought: false } : {}),
+  };
 };
 
 const prepareTools = (
@@ -613,17 +626,36 @@ type StreamPart = Extract<
   }
 >;
 
+type BlockKind = "text" | "reasoning";
+
+const blockStart = (
+  kind: BlockKind,
+  id: string,
+  metadata: Response.ProviderMetadata = {},
+): StreamPart =>
+  kind === "text"
+    ? { type: "text-start", id, metadata }
+    : { type: "reasoning-start", id, metadata };
+
+const blockDelta = (kind: BlockKind, id: string, delta: string): StreamPart =>
+  kind === "text" ? { type: "text-delta", id, delta } : { type: "reasoning-delta", id, delta };
+
+const blockEnd = (kind: BlockKind, id: string): StreamPart =>
+  kind === "text" ? { type: "text-end", id } : { type: "reasoning-end", id };
+
 /**
- * Converts the chunks of one response into stream parts. Consecutive text parts of one kind
- * (thought or answer) form one block, so a signature that arrives on any of them, including the
- * empty text part that ends a streamed answer, lands on that block. A function call closes the
- * open block, which keeps replayed parts in the order Gemini sent them. `finish` is emitted when
- * the response ends, with the last (cumulative) usage, and only if Gemini sent a finish reason.
+ * Converts the chunks of one response into stream parts that replay as the parts Gemini sent.
+ * Unsigned text parts of one kind (thought or answer) in a row are streamed pieces of one part and
+ * form one block. A signed part is a block of its own whose start carries the signature, so the
+ * signature replays on exactly that part; a signed empty answer part is an empty reasoning block
+ * marked `thought: false` (see the module comment). A function call closes the open block, which
+ * keeps replayed parts in the order Gemini sent them. `finish` is emitted when the response ends,
+ * with the last (cumulative) usage, and only if Gemini sent a finish reason.
  */
 const makeConverter = Effect.gen(function* () {
   const ids = yield* IdGenerator.IdGenerator;
   let started = false;
-  let open: { readonly kind: "text" | "reasoning"; readonly id: string } | undefined;
+  let open: { readonly kind: BlockKind; readonly id: string } | undefined;
   let blocks = 0;
   let toolCalls = false;
   let finishReason: string | undefined;
@@ -631,11 +663,7 @@ const makeConverter = Effect.gen(function* () {
 
   const close = (out: Array<StreamPart>) => {
     if (open === undefined) return;
-    out.push(
-      open.kind === "text"
-        ? { type: "text-end", id: open.id }
-        : { type: "reasoning-end", id: open.id },
-    );
+    out.push(blockEnd(open.kind, open.id));
     open = undefined;
   };
 
@@ -691,20 +719,26 @@ const makeConverter = Effect.gen(function* () {
           continue;
         }
         const kind = part.thought === true ? "reasoning" : "text";
-        if (open?.kind !== kind) {
-          close(out);
-          open = { kind, id: String(blocks++) };
-          out.push(
-            kind === "text"
-              ? { type: "text-start", id: open.id }
-              : { type: "reasoning-start", id: open.id },
-          );
+        if (part.thoughtSignature === undefined) {
+          if (open?.kind !== kind) {
+            close(out);
+            open = { kind, id: String(blocks++) };
+            out.push(blockStart(kind, open.id));
+          }
+          out.push(blockDelta(kind, open.id, part.text));
+          continue;
         }
-        out.push(
-          kind === "text"
-            ? { type: "text-delta", id: open.id, delta: part.text, ...metadata }
-            : { type: "reasoning-delta", id: open.id, delta: part.text, ...metadata },
-        );
+        close(out);
+        const id = String(blocks++);
+        const emptyAnswer = kind === "text" && part.text.length === 0;
+        const block = emptyAnswer ? "reasoning" : kind;
+        const google = {
+          thoughtSignature: part.thoughtSignature,
+          ...(emptyAnswer ? { thought: false } : {}),
+        };
+        out.push(blockStart(block, id, { google }));
+        if (part.text.length > 0) out.push(blockDelta(block, id, part.text));
+        out.push(blockEnd(block, id));
       }
       finishReason = candidate?.finishReason ?? finishReason;
       return out;
@@ -794,20 +828,25 @@ const collapseStreamParts = (parts: ReadonlyArray<StreamPart>): Array<Response.P
     switch (part.type) {
       case "text-start":
       case "reasoning-start":
-        blocks.set(part.id, { text: "", metadata: {} });
+        blocks.set(part.id, { text: "", metadata: part.metadata ?? {} });
         break;
       case "text-delta":
       case "reasoning-delta": {
         const block = blocks.get(part.id);
         if (block === undefined) break;
         block.text += part.delta;
-        block.metadata = { ...block.metadata, ...part.metadata };
         break;
       }
       case "text-end":
       case "reasoning-end": {
         const block = blocks.get(part.id);
-        if (block === undefined || block.text.length === 0) break;
+        // A signed block is kept even when empty: its signature must be replayed.
+        if (
+          block === undefined ||
+          (block.text.length === 0 && block.metadata.google === undefined)
+        ) {
+          break;
+        }
         out.push({
           type: part.type === "text-end" ? "text" : "reasoning",
           text: block.text,

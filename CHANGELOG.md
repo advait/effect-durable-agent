@@ -17,10 +17,12 @@ protocol change.
   the `google-ai-studio` provider with the key in `x-goog-api-key`.
 - Thought signatures: response text, reasoning and tool-call parts carry
   `metadata.google.thoughtSignature`. EDA persists it on the committed prompt part, as it does
-  Anthropic signatures, and the next request sends it back on the same part. A streamed answer's
-  signature arrives on an empty text part after the text and stays on the answer's text part. The
-  results of one step's parallel calls go back in one user turn; every other message keeps its own
-  turn, so each request's contents start with the previous request's.
+  Anthropic signatures, and the next request sends it back on exactly the part that carried it: a
+  signed part is never merged with its neighbours. A streamed answer's signature arrives on an
+  empty text part after the text; EDA commits that part as an empty reasoning part marked
+  `metadata.google.thought: false` and replays it as the empty text part it was. The results of one
+  step's parallel calls go back in one user turn; every other message keeps its own turn, so each
+  request's contents start with the previous request's.
 - Usage: input is `promptTokenCount` plus `toolUsePromptTokenCount`, cached input is
   `cachedContentTokenCount` (Gemini's implicit cache), cache-write input is 0, and output is
   `candidatesTokenCount` (text) plus `thoughtsTokenCount` (reasoning). Finish metadata keeps the raw
