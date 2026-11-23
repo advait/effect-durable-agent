@@ -318,6 +318,53 @@ describe("Gemini session through the EDA runtime", () => {
   });
 });
 
+describe("Gemini provider failures in a session", () => {
+  it.each([
+    "MALFORMED_FUNCTION_CALL",
+    "UNEXPECTED_TOOL_CALL",
+    "TOO_MANY_TOOL_CALLS",
+    "MALFORMED_RESPONSE",
+    "MISSING_THOUGHT_SIGNATURE",
+    "PUP_LIMITED_DISABLED",
+  ])("records %s as a failed inference and runs no streamed tool call", async (finishReason) => {
+    const recorded = stubFetch([
+      {
+        body: sse(
+          {
+            candidates: [
+              {
+                content: {
+                  role: "model",
+                  parts: [
+                    {
+                      functionCall: { name: "get_weather", args: { city: "Paris" }, id: "c1" },
+                      thoughtSignature: "U0lH",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+          { candidates: [{ finishReason, finishMessage: "Bad call arguments." }] },
+        ),
+      },
+    ]);
+    const events = await geminiSession(["Weather in Paris?"]);
+    const types = events.map((event) => event.type);
+    expect(types).toContain("InferenceFailed");
+    expect(types).toContain("RunFailed");
+    expect(types).not.toContain("InferenceCompleted");
+    expect(types).not.toContain("RunCompleted");
+    expect(types).not.toContain("ToolCallCreated");
+    // No tool ran, so nothing sent its result back.
+    expect(recorded).toHaveLength(1);
+    const failed = events.find((event) => event.type === "InferenceFailed");
+    expect(failed?.type === "InferenceFailed" ? failed.payload.error.message : "").toContain(
+      `Gemini finished with ${finishReason}: Bad call arguments.`,
+    );
+  });
+});
+
 describe("Gemini thought signatures", () => {
   interface Case {
     readonly name: string;
@@ -418,7 +465,7 @@ describe("Gemini responses", () => {
     ["MAX_TOKENS", [{ text: "cut" }], "length"],
     ["SAFETY", [], "content-filter"],
     ["RECITATION", [], "content-filter"],
-    ["MALFORMED_FUNCTION_CALL", [], "error"],
+    ["OTHER", [], "other"],
     ["SOME_NEW_REASON", [], "unknown"],
   ] as const)("maps finish reason %s (%j) to %s", async (finishReason, parts, expected) => {
     stubFetch([{ body: finish(finishReason, parts) }]);
@@ -431,6 +478,31 @@ describe("Gemini responses", () => {
       outputTokens: { total: 37, text: 7, reasoning: 30 },
     });
   });
+
+  it.each([
+    ["MALFORMED_FUNCTION_CALL", "InvalidOutputError"],
+    ["UNEXPECTED_TOOL_CALL", "InvalidOutputError"],
+    ["TOO_MANY_TOOL_CALLS", "InvalidOutputError"],
+    ["MALFORMED_RESPONSE", "InvalidOutputError"],
+    ["MISSING_THOUGHT_SIGNATURE", "InvalidRequestError"],
+    ["PUP_LIMITED_DISABLED", "ContentPolicyError"],
+  ] as const)(
+    "fails finish reason %s with %s and keeps its finishMessage",
+    async (finishReason, tag) => {
+      stubFetch([
+        {
+          body: sse({
+            candidates: [{ finishReason, finishMessage: "Gemini's account of the failure." }],
+          }),
+        },
+      ]);
+      const reason = failureReason(await streamParts("hi"));
+      expect(reason._tag).toBe(tag);
+      expect(reason.metadata).toEqual({
+        google: { finishReason, finishMessage: "Gemini's account of the failure." },
+      });
+    },
+  );
 
   it("ends without a finish part when Gemini sent no finish reason", async () => {
     stubFetch([{ body: finish(undefined, [{ text: "partial" }]) }]);

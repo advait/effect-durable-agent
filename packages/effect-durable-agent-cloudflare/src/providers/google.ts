@@ -693,6 +693,8 @@ const makeConverter = Effect.gen(function* () {
       }
       usage = response.usageMetadata ?? usage;
       const candidate = response.candidates?.[0];
+      const failure = finishFailure(candidate);
+      if (failure !== undefined) return yield* failure;
       for (const part of candidate?.content?.parts ?? []) {
         const metadata =
           part.thoughtSignature === undefined
@@ -788,7 +790,12 @@ const makeUsage = (usage: GoogleUsageMetadata | undefined): Response.FinishPartE
   };
 };
 
-const FINISH_REASONS: Readonly<Record<string, Response.FinishReason>> = {
+/**
+ * Gemini finish reasons that end a usable response, as the Anthropic and OpenAI adapters end
+ * theirs: output limits are `length`, and safety and recitation filters are `content-filter`, as
+ * Anthropic's `refusal` and OpenAI's `content_filter` are. A reason in neither table is `unknown`.
+ */
+const STOP_REASONS: Readonly<Record<string, Response.FinishReason>> = {
   STOP: "stop",
   MAX_TOKENS: "length",
   CONTINUATION: "length",
@@ -802,22 +809,61 @@ const FINISH_REASONS: Readonly<Record<string, Response.FinishReason>> = {
   IMAGE_PROHIBITED_CONTENT: "content-filter",
   IMAGE_RECITATION: "content-filter",
   ESCALATION: "content-filter",
-  PUP_LIMITED_DISABLED: "content-filter",
-  MALFORMED_FUNCTION_CALL: "error",
-  UNEXPECTED_TOOL_CALL: "error",
-  TOO_MANY_TOOL_CALLS: "error",
-  MISSING_THOUGHT_SIGNATURE: "error",
-  MALFORMED_RESPONSE: "error",
   OTHER: "other",
   IMAGE_OTHER: "other",
   NO_IMAGE: "other",
   FINISH_REASON_UNSPECIFIED: "other",
 };
 
+type FailureContext = {
+  readonly description: string;
+  readonly metadata: { readonly google: Readonly<Record<string, string>> };
+};
+
+/**
+ * Gemini finish reasons that say the response or the request is broken. Each fails the inference
+ * with an `AiError`, as OpenAI's `response.failed` does, so EDA commits no tool call from it.
+ */
+const FAILURE_REASONS: Readonly<
+  Record<string, (context: FailureContext) => AiError.AiErrorReason>
+> = {
+  MALFORMED_FUNCTION_CALL: (context) => new AiError.InvalidOutputError(context),
+  UNEXPECTED_TOOL_CALL: (context) => new AiError.InvalidOutputError(context),
+  TOO_MANY_TOOL_CALLS: (context) => new AiError.InvalidOutputError(context),
+  MALFORMED_RESPONSE: (context) => new AiError.InvalidOutputError(context),
+  // The request left out a signature, which Gemini otherwise rejects with a 400.
+  MISSING_THOUGHT_SIGNATURE: (context) => new AiError.InvalidRequestError(context),
+  // The account is limited for Prohibited Use Policy violations; every request will stop.
+  PUP_LIMITED_DISABLED: (context) => new AiError.ContentPolicyError(context),
+};
+
+/** The failure a candidate's finish reason is, keeping Gemini's `finishMessage`, if any. */
+const finishFailure = (
+  candidate: NonNullable<GoogleGenerateContentResponse["candidates"]>[number] | undefined,
+): AiError.AiError | undefined => {
+  const finishReason = candidate?.finishReason;
+  const failure =
+    finishReason !== undefined && Object.hasOwn(FAILURE_REASONS, finishReason)
+      ? FAILURE_REASONS[finishReason]
+      : undefined;
+  if (finishReason === undefined || failure === undefined) return undefined;
+  const finishMessage = candidate?.finishMessage;
+  return AiError.make({
+    module: "EDAGoogleLanguageModel",
+    method: "convertResponse",
+    reason: failure({
+      description: `Gemini finished with ${finishReason}${finishMessage === undefined ? "" : `: ${finishMessage}`}`,
+      metadata: {
+        google: { finishReason, ...(finishMessage === undefined ? {} : { finishMessage }) },
+      },
+    }),
+  });
+};
+
 /** Gemini finishes a function-call response with `STOP`; that is a `tool-calls` finish. */
 const resolveFinishReason = (reason: string, toolCalls: boolean): Response.FinishReason => {
   if (reason === "STOP" && toolCalls) return "tool-calls";
-  return (Object.hasOwn(FINISH_REASONS, reason) ? FINISH_REASONS[reason] : undefined) ?? "unknown";
+  return (Object.hasOwn(STOP_REASONS, reason) ? STOP_REASONS[reason] : undefined) ?? "unknown";
 };
 
 /** Folds stream parts into the whole parts `generateText` returns. */

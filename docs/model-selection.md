@@ -49,6 +49,10 @@ provider and sends the key in `x-goog-api-key`. Gemini differs from the other tw
   reasoning part marked `options.google.thought: false` and sends it back as the empty text part
   Gemini sent. Transcript clients see an empty reasoning part, and the Anthropic and OpenAI
   adapters drop reasoning that lacks their own metadata, so a provider switch never sends it.
+- Gemini reports some provider failures as finish reasons, such as `MALFORMED_FUNCTION_CALL`,
+  `TOO_MANY_TOOL_CALLS` and `MISSING_THOUGHT_SIGNATURE`. EDA fails the inference with an
+  `AiError` that keeps Gemini's `finishMessage`, and commits no tool call from that response.
+  Length, safety and recitation stops end the response as they do on the other providers.
 - Caching is implicit, for prompts of 4,096 tokens or more, with no write charge. EDA keeps every
   request's `contents` an unchanged prefix of the next request's. Only the results of one step's
   calls share a turn. Usage reports `cachedContentTokenCount` as cached input and no cache writes.

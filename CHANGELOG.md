@@ -32,6 +32,14 @@ protocol change.
   event inside the stream, and `InvalidResponseError` for a response that does not decode. A
   blocked prompt fails with `ContentPolicyError`. A stream that ends without a finish reason emits
   no finish part, so EDA records the inference as failed.
+- Finish reasons follow the other adapters. `MAX_TOKENS` and `CONTINUATION` are `length`, and
+  safety, recitation and other content filters are `content-filter`, as Anthropic's `refusal` is.
+  A reason that says the response or the request is broken fails the inference, as OpenAI's
+  `response.failed` does, with Gemini's `finishMessage` in the error and its metadata:
+  `MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL`, `TOO_MANY_TOOL_CALLS` and
+  `MALFORMED_RESPONSE` with `InvalidOutputError`, `MISSING_THOUGHT_SIGNATURE` with
+  `InvalidRequestError`, and `PUP_LIMITED_DISABLED` with `ContentPolicyError`. EDA then commits no
+  tool call that the response streamed.
 - `./providers`: `EDAResolvedModel` gains `{ provider: "google"; modelId; config:
   EDAGoogleModelConfig }` and `EDAMultiProviderModelResolverOptions` gains `google`. Resolution,
   prompt preparation and compaction routing read one table with an entry per provider.
