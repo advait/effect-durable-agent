@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
-Gemini sessions: `effect-durable-agent-cloudflare/google` is a native Gemini API provider, and
+Minor release. Gemini sessions: `effect-durable-agent-cloudflare/google` is a native Gemini API provider, and
 the multi-provider resolver serves it beside OpenAI and Anthropic. Core now commits an empty text
 part that carries provider metadata, so new events can hold one. No schema, checkpoint or protocol
 change.
