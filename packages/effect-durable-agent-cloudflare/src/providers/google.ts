@@ -6,12 +6,8 @@
  * `metadata.google.thoughtSignature`, which EDA persists on the committed prompt part and replays
  * as `options.google.thoughtSignature`; the request puts it back on the same part. Gemini asks for
  * every signature back on exactly the part that carried it, and rejects a function call replayed
- * without its signature.
- *
- * A signed part whose answer text is empty (the usual end of a streamed answer) is an empty
- * reasoning part marked `metadata.google.thought: false`: EDA keeps an empty part only as
- * reasoning, the part holds nothing but opaque thought state, and the mark replays it as the empty
- * text part Gemini sent. Other providers drop reasoning that lacks their own metadata.
+ * without its signature. A streamed answer usually ends with a signed empty text part, which EDA
+ * keeps as an empty text part and replays as it came.
  */
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -509,7 +505,7 @@ const URL_SCHEME = /^[a-z][a-z\d+.-]*:/i;
 
 /** An assistant part as the `model` part it came from, with its signature back on it. */
 const modelParts = (part: Prompt.AssistantMessagePart): ReadonlyArray<GoogleRequestPart> => {
-  const { thoughtSignature, thought } = googleOptions(part.options);
+  const thoughtSignature = googleThoughtSignature(part.options);
   const signed = thoughtSignature === undefined ? {} : { thoughtSignature };
   switch (part.type) {
     case "text":
@@ -519,7 +515,7 @@ const modelParts = (part: Prompt.AssistantMessagePart): ReadonlyArray<GoogleRequ
     case "reasoning":
       return part.text.length === 0 && thoughtSignature === undefined
         ? []
-        : [{ text: part.text, ...(thought === false ? {} : { thought: true }), ...signed }];
+        : [{ text: part.text, thought: true, ...signed }];
     case "tool-call":
       return [{ functionCall: { name: part.name, args: part.params, id: part.id }, ...signed }];
     case "file":
@@ -547,18 +543,12 @@ const toolResultParts = (part: Prompt.ToolMessagePart): ReadonlyArray<GoogleRequ
   ];
 };
 
-/** The part's Gemini signature, and `thought: false` on reasoning that was an empty text part. */
-const googleOptions = (
-  options: Prompt.ProviderOptions,
-): { readonly thoughtSignature?: string; readonly thought?: false } => {
+/** The part's Gemini thought signature, if Gemini sent one. */
+const googleThoughtSignature = (options: Prompt.ProviderOptions): string | undefined => {
   const google = options.google;
-  if (!isRecord(google)) return {};
-  return {
-    ...(typeof google.thoughtSignature === "string"
-      ? { thoughtSignature: google.thoughtSignature }
-      : {}),
-    ...(google.thought === false ? { thought: false } : {}),
-  };
+  return isRecord(google) && typeof google.thoughtSignature === "string"
+    ? google.thoughtSignature
+    : undefined;
 };
 
 const prepareTools = (
@@ -659,10 +649,9 @@ const blockEnd = (kind: BlockKind, id: string): StreamPart =>
  * Converts the chunks of one response into stream parts that replay as the parts Gemini sent.
  * Unsigned text parts of one kind (thought or answer) in a row are streamed pieces of one part and
  * form one block. A signed part is a block of its own whose start carries the signature, so the
- * signature replays on exactly that part; a signed empty answer part is an empty reasoning block
- * marked `thought: false` (see the module comment). A function call closes the open block, which
- * keeps replayed parts in the order Gemini sent them. `finish` is emitted when the response ends,
- * with the last (cumulative) usage, and only if Gemini sent a finish reason.
+ * signature replays on exactly that part, even an empty one. A function call closes the open
+ * block, which keeps replayed parts in the order Gemini sent them. `finish` is emitted when the
+ * response ends, with the last (cumulative) usage, and only if Gemini sent a finish reason.
  */
 const makeConverter = Effect.gen(function* () {
   const ids = yield* IdGenerator.IdGenerator;
@@ -744,15 +733,9 @@ const makeConverter = Effect.gen(function* () {
         }
         close(out);
         const id = String(blocks++);
-        const emptyAnswer = kind === "text" && part.text.length === 0;
-        const block = emptyAnswer ? "reasoning" : kind;
-        const google = {
-          thoughtSignature: part.thoughtSignature,
-          ...(emptyAnswer ? { thought: false } : {}),
-        };
-        out.push(blockStart(block, id, { google }));
-        if (part.text.length > 0) out.push(blockDelta(block, id, part.text));
-        out.push(blockEnd(block, id));
+        out.push(blockStart(kind, id, { google: { thoughtSignature: part.thoughtSignature } }));
+        if (part.text.length > 0) out.push(blockDelta(kind, id, part.text));
+        out.push(blockEnd(kind, id));
       }
       finishReason = candidate?.finishReason ?? finishReason;
       return out;

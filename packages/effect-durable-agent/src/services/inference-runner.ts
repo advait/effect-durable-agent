@@ -709,7 +709,8 @@ const responseContextToParts = (
   entries.flatMap((entry): ReadonlyArray<Response.AnyPart> => {
     switch (entry._tag) {
       case "Text":
-        return entry.text.length === 0
+        // A Gemini answer ends with an empty text part that carries its thought signature.
+        return entry.text.length === 0 && !hasProviderMetadata(entry.metadata)
           ? []
           : [Response.makePart("text", { text: entry.text, metadata: entry.metadata })];
       case "Reasoning":

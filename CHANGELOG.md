@@ -3,9 +3,25 @@
 ## Unreleased
 
 Gemini sessions: `effect-durable-agent-cloudflare/google` is a native Gemini API provider, and
-the multi-provider resolver serves it beside OpenAI and Anthropic. No storage, checkpoint or
-protocol change.
+the multi-provider resolver serves it beside OpenAI and Anthropic. Core now commits an empty text
+part that carries provider metadata, so new events can hold one. No schema, checkpoint or protocol
+change.
 
+- **Change (core):** the inference runner commits a streamed text part that has no text but
+  carries provider metadata, as it already did for reasoning. It used to drop the part. Gemini
+  ends a streamed answer with such a part, which holds the answer's thought signature, and asks
+  for it back. A turn whose only output is that part now commits an assistant message holding only
+  it. The OpenAI adapter tags every message item with its item id, so an OpenAI message item that
+  streamed no text, such as a refusal, is now committed and replayed too. OpenAI accepts it (live,
+  `gpt-6.1-sol`). Anthropic text parts carry no metadata, so nothing changes for them.
+- **Fix (core):** the `LanguageModelSummary` executor's conversation leaves out text and
+  reasoning parts with no text. Anthropic's omitted-display thinking and OpenAI's encrypted
+  reasoning used to add an empty `[Assistant reasoning]:` line.
+- **Change:** the multi-provider resolver's `preparePrompt` removes the assistant parts that hold
+  only another provider's state, and an assistant message they leave empty. Such a part has no
+  text, and its metadata names only other providers. This is the rule the Anthropic and OpenAI
+  adapters already apply to reasoning. Anthropic rejects an empty text block and an empty
+  assistant message with a 400, so a Gemini history sent to Anthropic used to fail.
 - **Feature:** `effect-durable-agent-cloudflare/google` exports `EDAGoogleClient` and
   `makeEDAGoogleClientLayer(options)` over EDA's provider transport, and
   `makeEDAGoogleLanguageModel({ modelId, config })`, an Effect AI `LanguageModel` for
@@ -19,10 +35,10 @@ protocol change.
   `metadata.google.thoughtSignature`. EDA persists it on the committed prompt part, as it does
   Anthropic signatures, and the next request sends it back on exactly the part that carried it: a
   signed part is never merged with its neighbours. A streamed answer's signature arrives on an
-  empty text part after the text; EDA commits that part as an empty reasoning part marked
-  `metadata.google.thought: false` and replays it as the empty text part it was. The results of one
-  step's parallel calls go back in one user turn; every other message keeps its own turn, so each
-  request's contents start with the previous request's.
+  empty text part after the text; EDA commits that part as an empty text part and replays it as it
+  came. `generateText` returns it as a text part, so its `reasoning` holds only thoughts. The
+  results of one step's parallel calls go back in one user turn; every other message keeps its own
+  turn, so each request's contents start with the previous request's.
 - Usage: input is `promptTokenCount` plus `toolUsePromptTokenCount`, cached input is
   `cachedContentTokenCount` (Gemini's implicit cache), cache-write input is 0, and output is
   `candidatesTokenCount` (text) plus `thoughtsTokenCount` (reasoning). Finish metadata keeps the raw
@@ -55,9 +71,17 @@ protocol change.
   (`EDA_LIVE_PROVIDERS=true GEMINI_API_KEY=...`) covers `gemini-4-neon` and `gemini-4-hydrogen`,
   including cached input before and after compaction and the cached prefix.
 
-Storage: none. Google signatures and usage are stored in the existing prompt-part options and
-finish metadata. Protocol: none. API: additive. A new `./google` subpath, `"google"` in
-`EDAProvider` and `EDAResolvedModel["provider"]`, and `google` in
+Storage: no schema change. Google signatures and usage are stored in the existing prompt-part
+options and finish metadata. New `AssistantMessageCommitted` and `AssistantPartialCommitted` events
+may hold an empty text part with provider metadata,
+`{ type: "text", text: "", options: { google: { thoughtSignature } } }`, possibly as the message's
+only part. The durable schema already admits it: `Prompt.TextPart.text` is any string and
+`promptParts` only has to be non-empty. Stored histories replay unchanged, because no earlier
+version committed such a part. The reducer, checkpoints, prompt projection and transcript treat it
+as any other text part, with no reducer or projection requiring non-empty text. The transcript
+shows it as an empty `Text` part, which Gia's transcript view skips as it skips blank text, so
+`transcriptSemanticRevision` stays as it is. Protocol: none. API: additive. A new `./google`
+subpath, `"google"` in `EDAProvider` and `EDAResolvedModel["provider"]`, and `google` in
 `EDAMultiProviderModelResolverOptions`. A host that switches exhaustively over either union gets a
 new case.
 

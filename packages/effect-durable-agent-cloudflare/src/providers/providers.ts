@@ -39,6 +39,7 @@ import {
   EDAProviderRequestOverride,
   prepareNativeCompaction,
   withBeta,
+  withoutOtherProvidersState,
   type EDAProviderRequest,
 } from "./transport";
 
@@ -172,7 +173,8 @@ const makeModel = <P extends Provider>(
 
 /**
  * Resolves each durable selection to the provider it names, sharing one client per provider for
- * the runtime lifetime, and prepares prompts in that provider's cache and compaction shape.
+ * the runtime lifetime, and prepares prompts in that provider's cache and compaction shape,
+ * without the parts that hold only another provider's state.
  */
 export const makeEDAMultiProviderModelResolverLayer = (
   options: EDAMultiProviderModelResolverOptions,
@@ -193,7 +195,9 @@ export const makeEDAMultiProviderModelResolverLayer = (
         }),
         preparePrompt: (selection, prompt) =>
           isProvider(selection?.provider)
-            ? PROVIDERS[selection.provider].preparePrompt(prompt)
+            ? PROVIDERS[selection.provider].preparePrompt(
+                withoutOtherProvidersState(selection.provider, prompt),
+              )
             : prompt,
       };
     }),

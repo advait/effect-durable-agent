@@ -596,6 +596,15 @@ describe("InferenceRunner", () => {
       Response.makePart("text-start", { id: "2", metadata: { openai: { itemId: "msg_1" } } }),
       Response.makePart("text-delta", { id: "2", delta: "done" }),
       Response.makePart("text-end", { id: "2" }),
+      // A Gemini answer ends with an empty text part that carries only its thought signature.
+      Response.makePart("text-start", {
+        id: "3",
+        metadata: { google: { thoughtSignature: "c2ln" } },
+      }),
+      Response.makePart("text-end", { id: "3" }),
+      // An empty part with nothing to replay is not committed.
+      Response.makePart("text-start", { id: "4" }),
+      Response.makePart("text-end", { id: "4" }),
       Response.makePart("finish", { reason: "stop", usage: usage(), response: undefined }),
     );
     const program = Effect.scoped(
@@ -623,6 +632,7 @@ describe("InferenceRunner", () => {
           options: { anthropic: { info: { type: "thinking", signature: "sig-empty" } } },
         },
         { type: "text", text: "done", options: { openai: { itemId: "msg_1" } } },
+        { type: "text", text: "", options: { google: { thoughtSignature: "c2ln" } } },
       ],
     });
   });

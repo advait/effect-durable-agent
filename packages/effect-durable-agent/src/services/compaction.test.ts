@@ -185,6 +185,71 @@ describe("EDA compaction", () => {
     expect(promptMessages[1]).toEqual(["Summary:\n\nFirst turn summary", "second"]);
   });
 
+  it("leaves parts that hold only provider state out of the summary source", async () => {
+    const summaryPrompts: Array<Prompt.RawInput> = [];
+    const signedEmptyAnswer = (id: string) => [
+      Response.makePart("text-start", { id, metadata: { google: { thoughtSignature: "c2ln" } } }),
+      Response.makePart("text-end", { id }),
+    ];
+    const finish = Response.makePart("finish", {
+      reason: "stop",
+      usage: usage(),
+      response: undefined,
+    });
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const runtime = yield* EDARuntime;
+        yield* runtime.submitAndBlock(command);
+        yield* runtime.submitAndBlock(secondCommand);
+      }),
+    ).pipe(
+      Effect.provide(
+        makeRuntimeLayer(
+          [
+            Stream.make(
+              // Omitted-display thinking: a signature and no text.
+              Response.makePart("reasoning-start", {
+                id: "r",
+                metadata: { anthropic: { info: { type: "thinking", signature: "sig" } } },
+              }),
+              Response.makePart("reasoning-end", { id: "r" }),
+              Response.makePart("text-delta", { id: "t", delta: "first response" }),
+              ...signedEmptyAnswer("s1"),
+              finish,
+            ),
+            // A turn whose only output is a signed empty answer part.
+            Stream.make(...signedEmptyAnswer("s2"), finish),
+          ],
+          {
+            compactionPolicyLayer: CompactionPolicy.ApproximateTokenThreshold({
+              thresholdTokens: 1,
+              retainTailTokens: 0,
+              minSummarizableTokens: 1,
+              charsPerToken: 1,
+            }),
+            compactionExecutorLayer: CompactionExecutor.LanguageModelSummary(),
+            generateText: "summary",
+            onGenerateText: ({ prompt }) => summaryPrompts.push(prompt),
+          },
+        ),
+      ),
+    );
+
+    await Effect.runPromise(program);
+
+    const conversations = summaryPrompts.map((prompt) => {
+      const text = Prompt.make(prompt).content.map(promptMessageText).join("\n");
+      return text.slice(
+        text.indexOf("<conversation>\n") + "<conversation>\n".length,
+        text.indexOf("\n</conversation>"),
+      );
+    });
+    expect(conversations).toEqual([
+      "[User]: first\n\n[Assistant]: first response",
+      "[User]: second",
+    ]);
+  });
+
   it("hands last-response executors the exact earlier request prompt and keeps that response", async () => {
     const prompts: Array<Prompt.RawInput> = [];
     const executorPrompts: Array<Prompt.Prompt> = [];

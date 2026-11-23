@@ -66,6 +66,33 @@ export const prepareNativeCompaction = (
     }),
   );
 
+/**
+ * Remove the assistant parts that hold only another provider's state, and any assistant message
+ * left with no parts. Such a part has no text and carries provider metadata (a Gemini thought
+ * signature on an empty answer part, an OpenAI item id, an Anthropic signature on omitted
+ * thinking) but none of `provider`'s, so `provider` has no use for it. Anthropic rejects an empty
+ * text block and an assistant message with no content. This is the rule the Anthropic and OpenAI
+ * adapters already apply to reasoning that lacks their own metadata.
+ */
+export const withoutOtherProvidersState = (
+  provider: EDAProvider,
+  prompt: Prompt.Prompt,
+): Prompt.Prompt =>
+  Prompt.fromMessages(
+    prompt.content.flatMap((message): ReadonlyArray<Prompt.Message> => {
+      if (message.role !== "assistant") return [message];
+      const content = message.content.filter((part) => !isOtherProvidersState(provider, part));
+      if (content.length === message.content.length) return [message];
+      return content.length === 0 ? [] : [{ ...message, content }];
+    }),
+  );
+
+const isOtherProvidersState = (provider: EDAProvider, part: Prompt.AssistantMessagePart): boolean =>
+  (part.type === "text" || part.type === "reasoning") &&
+  part.text.length === 0 &&
+  Object.keys(part.options).length > 0 &&
+  !Object.hasOwn(part.options, provider);
+
 const encodeSentinel = (items: ReadonlyArray<Schema.Json>): string =>
   `${NATIVE_COMPACTION_SENTINEL}${bytesToBase64(new TextEncoder().encode(JSON.stringify(items)))}`;
 

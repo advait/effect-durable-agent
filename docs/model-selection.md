@@ -26,6 +26,13 @@ requests go through EDA's provider transport: the Cloudflare AI Gateway binding 
 passes one, and `fetch` otherwise. The host's `resolve` turns each recorded selection into
 `{ provider, modelId, config }`, and the resolver builds that provider's model.
 
+A prompt for one provider can hold parts another provider wrote. A text or reasoning part with no
+text whose metadata names only other providers holds nothing the selected provider can use, such
+as Gemini's signed empty answer part. The resolver's `preparePrompt` removes those parts, and an
+assistant message they leave empty, before the provider's own preparation. The Anthropic and
+OpenAI adapters already drop reasoning that lacks their own metadata. Anthropic rejects an empty
+text block and an empty assistant message.
+
 | Provider | Subpath | Adapter | Config helper | Prompt preparation | Compaction |
 | --- | --- | --- | --- | --- | --- |
 | OpenAI | `/openai` | `@effect/ai-openai` (Responses API) | none | replays native compaction items | `/responses/compact` |
@@ -45,10 +52,8 @@ provider and sends the key in `x-goog-api-key`. Gemini differs from the other tw
   part. A signed part is never merged with its neighbours; only unsigned streamed pieces of one
   part are joined. Gemini rejects a function call replayed without its signature. In a parallel
   call only the first call carries one. A streamed answer's signature arrives on an empty text
-  part at the end. EDA keeps an empty part only as reasoning, so it commits that part as an empty
-  reasoning part marked `options.google.thought: false` and sends it back as the empty text part
-  Gemini sent. Transcript clients see an empty reasoning part, and the Anthropic and OpenAI
-  adapters drop reasoning that lacks their own metadata, so a provider switch never sends it.
+  part at the end. EDA commits it as an empty text part with the signature and sends it back as it
+  came.
 - Gemini reports some provider failures as finish reasons, such as `MALFORMED_FUNCTION_CALL`,
   `TOO_MANY_TOOL_CALLS` and `MISSING_THOUGHT_SIGNATURE`. EDA fails the inference with an
   `AiError` that keeps Gemini's `finishMessage`, and commits no tool call from that response.

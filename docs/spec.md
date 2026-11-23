@@ -814,6 +814,8 @@ Current prompt context is derived from durable state:
 
 Prompt hydration preserves model-facing prefix fidelity. Durable assistant/tool transcript events store exact typed prompt parts in stable model-facing order. Semantic UI/query views derive from those parts rather than rewriting the model-facing history.
 
+A streamed text or reasoning part with no text is committed only when it carries provider metadata, which the provider needs back: signed or encrypted reasoning, or the empty text part that carries a Gemini answer's thought signature. Such a part has nothing to show or summarize. The transcript keeps it as an empty `Text` or `Reasoning` part, and the built-in summary serializer leaves it out. The Cloudflare multi-provider resolver sends it only to the provider whose metadata it carries.
+
 ### Transcript history
 
 `effect-durable-agent/transcript` implements the user-visible transcript designed in

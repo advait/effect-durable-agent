@@ -395,31 +395,135 @@ describe("Gemini thought signatures", () => {
         { text: "C" },
       ],
     },
-  ])("replays $name exactly on the next request, after a restart", async ({ sent, replayed }) => {
-    // One SSE chunk per part, as Gemini streams them.
+  ])(
+    "commits $name as parts of their own kind and replays them exactly after a restart",
+    async ({ sent, replayed = sent }) => {
+      // One SSE chunk per part, as Gemini streams them.
+      const recorded = stubFetch([
+        {
+          body: sse(
+            ...sent.map((part, index) => ({
+              candidates: [
+                {
+                  content: { role: "model", parts: [part] },
+                  ...(index === sent.length - 1 ? { finishReason: "STOP" } : {}),
+                },
+              ],
+            })),
+          ),
+        },
+        {
+          body: sse({
+            candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+          }),
+        },
+      ]);
+      const events = await geminiSession(["hi", "again"]);
+      // A thought is reasoning and everything else is answer text, the signed empty part included.
+      const committed = events.find((event) => event.type === "AssistantMessageCommitted");
+      expect(
+        committed?.type === "AssistantMessageCommitted"
+          ? committed.payload.promptParts.map((part) => ({
+              type: part.type,
+              text: "text" in part ? part.text : undefined,
+              options: part.options,
+            }))
+          : [],
+      ).toEqual(
+        replayed.map((part) => ({
+          type: part.thought === true ? "reasoning" : "text",
+          text: part.text,
+          options:
+            part.thoughtSignature === undefined
+              ? {}
+              : { google: { thoughtSignature: part.thoughtSignature } },
+        })),
+      );
+      expect(recorded[1]?.body.contents).toEqual([
+        { role: "user", parts: [{ text: "hi" }] },
+        { role: "model", parts: replayed },
+        { role: "user", parts: [{ text: "again" }] },
+      ]);
+    },
+  );
+});
+
+describe("Gemini history on another provider", () => {
+  it("sends Anthropic and OpenAI no part or message that holds only a Gemini signature", async () => {
+    const stop = (parts: ReadonlyArray<FixturePart>) =>
+      sse({ candidates: [{ content: { role: "model", parts }, finishReason: "STOP" }] });
     const recorded = stubFetch([
-      {
-        body: sse(
-          ...sent.map((part, index) => ({
-            candidates: [
-              {
-                content: { role: "model", parts: [part] },
-                ...(index === sent.length - 1 ? { finishReason: "STOP" } : {}),
-              },
-            ],
-          })),
+      { body: stop([{ text: "Hello" }, { text: "", thoughtSignature: "U0lHMQ==" }]) },
+      // A turn whose only output is the signed empty part.
+      { body: stop([{ text: "", thoughtSignature: "U0lHMg==" }]) },
+      // The other providers' requests are recorded; their answers do not matter.
+      { status: 400, body: "{}" },
+      { status: 400, body: "{}" },
+    ]);
+    const events = await geminiSession(["first", "second"]);
+    const answers = events.flatMap((event) =>
+      event.type === "AssistantMessageCommitted" ? [event.payload.promptParts] : [],
+    );
+    const user = (text: string) =>
+      Prompt.makeMessage("user", { content: [Prompt.textPart({ text })] });
+    const history = Prompt.fromMessages([
+      user("first"),
+      ...answers.slice(0, 1).map((content) => Prompt.makeMessage("assistant", { content })),
+      user("second"),
+      ...answers.slice(1).map((content) => Prompt.makeMessage("assistant", { content })),
+      user("third"),
+    ]);
+    const send = (provider: "anthropic" | "openai") =>
+      Effect.gen(function* () {
+        const resolver = yield* ModelResolver;
+        const selection = { provider, modelId: `${provider}-model` };
+        const model = yield* resolver.resolve(selection);
+        return yield* model.generateText({
+          prompt: resolver.preparePrompt?.(selection, history) ?? history,
+        });
+      }).pipe(
+        Effect.provide(
+          makeEDAMultiProviderModelResolverLayer({
+            [provider]: { apiKey: "test-key" },
+            resolve: (selection) => ({
+              provider,
+              modelId: selection?.modelId ?? "",
+              config: {},
+            }),
+          }),
         ),
-      },
-      {
-        body: sse({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] }),
-      },
+        Effect.exit,
+        Effect.runPromise,
+      );
+    await send("anthropic");
+    await send("openai");
+
+    expect(answers).toHaveLength(2);
+    const [anthropic, openai] = recorded.slice(2).map((request) => request.body);
+    // Each message as its role and texts; Anthropic joins consecutive user messages.
+    const Messages = Schema.Array(
+      Schema.Struct({
+        role: Schema.String,
+        content: Schema.Array(Schema.Struct({ text: Schema.String })),
+      }),
+    );
+    const texts = (messages: unknown) =>
+      Schema.decodeUnknownSync(Messages)(messages).map((message) => [
+        message.role,
+        message.content.map((part) => part.text),
+      ]);
+    expect(texts(anthropic?.messages)).toEqual([
+      ["user", ["first"]],
+      ["assistant", ["Hello"]],
+      ["user", ["second", "third"]],
     ]);
-    await geminiSession(["hi", "again"]);
-    expect(recorded[1]?.body.contents).toEqual([
-      { role: "user", parts: [{ text: "hi" }] },
-      { role: "model", parts: replayed ?? sent },
-      { role: "user", parts: [{ text: "again" }] },
+    expect(texts(openai?.input)).toEqual([
+      ["user", ["first"]],
+      ["assistant", ["Hello"]],
+      ["user", ["second"]],
+      ["user", ["third"]],
     ]);
+    expect(JSON.stringify([anthropic, openai])).not.toContain("U0lH");
   });
 });
 
@@ -542,6 +646,37 @@ describe("Gemini responses", () => {
       });
     },
   );
+
+  it("returns an answer and its signed empty part as text, with no reasoning", async () => {
+    stubFetch([
+      {
+        body: JSON.stringify({
+          candidates: [
+            {
+              content: { parts: [{ text: "Hello" }, { text: "", thoughtSignature: "U0lH" }] },
+              finishReason: "STOP",
+            },
+          ],
+        }),
+      },
+    ]);
+    const response = await Effect.gen(function* () {
+      const resolver = yield* ModelResolver;
+      const model = yield* resolver.resolve({ provider: "google", modelId: "gemini-4-neon" });
+      return yield* model.generateText({ prompt: "hi" });
+    }).pipe(Effect.provide(resolverLayer()), Effect.runPromise);
+    expect(response.text).toBe("Hello");
+    expect(response.reasoning).toEqual([]);
+    // The signature stays on its own empty text part, which a replay sends back.
+    expect(
+      response.content.flatMap((part) =>
+        part.type === "text" ? [{ text: part.text, metadata: part.metadata }] : [],
+      ),
+    ).toEqual([
+      { text: "Hello", metadata: {} },
+      { text: "", metadata: { google: { thoughtSignature: "U0lH" } } },
+    ]);
+  });
 
   it("ends without a finish part when Gemini sent no finish reason", async () => {
     stubFetch([{ body: finish(undefined, [{ text: "partial" }]) }]);

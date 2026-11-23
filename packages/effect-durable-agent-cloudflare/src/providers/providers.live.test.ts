@@ -372,9 +372,10 @@ describe.skipIf(!live)("live provider caching and native compaction", () => {
             executors = [...executors, event.payload.summary.executorId ?? "unknown"];
           }
           if (event.type === "AssistantMessageCommitted") {
+            finalText = "";
             for (const part of event.payload.promptParts) {
               if (part.type === "reasoning") reasoningChars += part.text.length;
-              if (part.type === "text") finalText = part.text;
+              if (part.type === "text") finalText += part.text;
             }
           }
           const usage =
