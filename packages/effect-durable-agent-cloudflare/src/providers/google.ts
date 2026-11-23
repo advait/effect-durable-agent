@@ -482,18 +482,30 @@ const prepareContents = (
 const userPart = (part: Prompt.UserMessagePart): GoogleRequestPart =>
   part.type === "text" ? { text: part.text } : filePart(part);
 
+/**
+ * A file part as Gemini data. EDA stores file data as a string: bytes as a base64 `data:` URL and a
+ * URL as its href. Bytes, base64 and a base64 `data:` URL go inline, the last with its payload and
+ * its own media type. A URL, as a `URL` or a string with a scheme (an https or Gemini Files URI),
+ * goes as `fileData.fileUri`. Base64 has no `:`, so a scheme tells a URL from base64.
+ */
 const filePart = (part: Prompt.FilePart): GoogleRequestPart => {
   const mimeType = part.mediaType === "image/*" ? "image/jpeg" : part.mediaType;
-  if (part.data instanceof URL) {
-    return { fileData: { mimeType, fileUri: part.data.toString() } };
+  if (part.data instanceof Uint8Array) {
+    return { inlineData: { mimeType, data: Base64.encode(part.data) } };
   }
-  return {
-    inlineData: {
-      mimeType,
-      data: typeof part.data === "string" ? part.data : Base64.encode(part.data),
-    },
-  };
+  const value = part.data instanceof URL ? part.data.href : part.data;
+  const dataUrl = BASE64_DATA_URL.exec(value);
+  if (dataUrl !== null) {
+    const [, ownType = "", data = ""] = dataUrl;
+    return { inlineData: { mimeType: ownType === "" ? mimeType : ownType, data } };
+  }
+  return URL_SCHEME.test(value)
+    ? { fileData: { mimeType, fileUri: value } }
+    : { inlineData: { mimeType, data: value } };
 };
+
+const BASE64_DATA_URL = /^data:([^;,]*)(?:;[^;,]*)*;base64,(.*)$/is;
+const URL_SCHEME = /^[a-z][a-z\d+.-]*:/i;
 
 /** An assistant part as the `model` part it came from, with its signature back on it. */
 const modelParts = (part: Prompt.AssistantMessagePart): ReadonlyArray<GoogleRequestPart> => {

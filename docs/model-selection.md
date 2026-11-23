@@ -53,6 +53,9 @@ provider and sends the key in `x-goog-api-key`. Gemini differs from the other tw
   `TOO_MANY_TOOL_CALLS` and `MISSING_THOUGHT_SIGNATURE`. EDA fails the inference with an
   `AiError` that keeps Gemini's `finishMessage`, and commits no tool call from that response.
   Length, safety and recitation stops end the response as they do on the other providers.
+- A file part's data reaches the adapter as a string. A base64 `data:` URL goes inline with its
+  payload and media type. A string with a URL scheme, such as a Gemini Files URI, goes as
+  `fileData.fileUri`. Bare base64 goes inline.
 - Caching is implicit, for prompts of 4,096 tokens or more, with no write charge. EDA keeps every
   request's `contents` an unchanged prefix of the next request's. Only the results of one step's
   calls share a turn. Usage reports `cachedContentTokenCount` as cached input and no cache writes.

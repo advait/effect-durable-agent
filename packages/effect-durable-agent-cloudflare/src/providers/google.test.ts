@@ -6,6 +6,7 @@ import { EDARuntime } from "effect-durable-agent/services/runtime";
 import { makeEDAToolkit } from "effect-durable-agent/services/tool-registry";
 import { makeEdaTestLayer } from "effect-durable-agent/testkit/layers";
 import { SubmitMessageCommand } from "effect-durable-agent/types/commands";
+import { JsonPromptFilePart } from "effect-durable-agent/domain/reduced-state-schema";
 import { CommandId, SequenceNumber, SessionId } from "effect-durable-agent/types/core";
 import { DurableEventEnvelope } from "effect-durable-agent/types/events";
 import * as Effect from "effect/Effect";
@@ -418,6 +419,44 @@ describe("Gemini thought signatures", () => {
       { role: "user", parts: [{ text: "hi" }] },
       { role: "model", parts: replayed ?? sent },
       { role: "user", parts: [{ text: "again" }] },
+    ]);
+  });
+});
+
+describe("Gemini file parts", () => {
+  /** A file part as EDA holds it: commands arrive as JSON, so file data is a string. */
+  const asSent = (part: Prompt.FilePart) =>
+    Schema.decodeSync(JsonPromptFilePart)(Schema.encodeSync(JsonPromptFilePart)(part));
+
+  it("sends each form of file data as Gemini data, before and after a restart", async () => {
+    const recorded = stubFetch(
+      Array.from({ length: 2 }, () => ({
+        body: sse({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] }),
+      })),
+    );
+    const filesUri = "https://generativelanguage.googleapis.com/v1beta/files/abc";
+    await geminiSession([
+      [
+        Prompt.textPart({ text: "Read these." }),
+        // Bytes arrive as a base64 data URL and a URL as its href.
+        asSent(Prompt.filePart({ data: new Uint8Array([104, 105]), mediaType: "text/plain" })),
+        asSent(Prompt.filePart({ data: new URL(filesUri), mediaType: "application/pdf" })),
+        asSent(Prompt.filePart({ data: "iVBORw0KGgo=", mediaType: "image/png" })),
+        asSent(Prompt.filePart({ data: "data:image/webp;base64,UklGRg==", mediaType: "image/*" })),
+      ],
+      "again",
+    ]);
+    const parts = [
+      { text: "Read these." },
+      { inlineData: { mimeType: "text/plain", data: "aGk=" } },
+      { fileData: { mimeType: "application/pdf", fileUri: filesUri } },
+      { inlineData: { mimeType: "image/png", data: "iVBORw0KGgo=" } },
+      { inlineData: { mimeType: "image/webp", data: "UklGRg==" } },
+    ];
+    // The second request rebuilds the first message from the stored log.
+    expect(recorded.map((request) => request.body.contents[0])).toEqual([
+      { role: "user", parts },
+      { role: "user", parts },
     ]);
   });
 });

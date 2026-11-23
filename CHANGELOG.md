@@ -40,6 +40,10 @@ protocol change.
   `MALFORMED_RESPONSE` with `InvalidOutputError`, `MISSING_THOUGHT_SIGNATURE` with
   `InvalidRequestError`, and `PUP_LIMITED_DISABLED` with `ContentPolicyError`. EDA then commits no
   tool call that the response streamed.
+- File parts: EDA holds file data as a string, bytes as a base64 `data:` URL and a URL as its href.
+  A base64 `data:` URL goes to Gemini as `inlineData` with its payload and media type, a string
+  with a URL scheme (an https or Gemini Files URI) as `fileData.fileUri`, and bare base64 as
+  `inlineData`.
 - `./providers`: `EDAResolvedModel` gains `{ provider: "google"; modelId; config:
   EDAGoogleModelConfig }` and `EDAMultiProviderModelResolverOptions` gains `google`. Resolution,
   prompt preparation and compaction routing read one table with an entry per provider.
