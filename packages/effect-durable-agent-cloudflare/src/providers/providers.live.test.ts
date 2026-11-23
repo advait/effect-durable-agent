@@ -1,6 +1,8 @@
 /**
  * Paid end-to-end check of provider caching and native compaction through the real EDA runtime.
- * Run with EDA_LIVE_PROVIDERS=true plus OPENAI_API_KEY and/or ANTHROPIC_API_KEY.
+ * Run with EDA_LIVE_PROVIDERS=true plus OPENAI_API_KEY, ANTHROPIC_API_KEY and/or GEMINI_API_KEY.
+ * Gemini has no compaction endpoint, so its sessions compact with the prompt-prefix summary; for
+ * them the test also prints each request's raw cache counts and checks the cached prefix.
  */
 import { CompactionPolicy } from "effect-durable-agent/services/compaction";
 import { EDARuntime } from "effect-durable-agent/services/runtime";
@@ -17,6 +19,7 @@ import * as Tool from "effect/ai/Tool";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ANTHROPIC_THINKING_BINDING_BETA, anthropicAgentModelConfig } from "./anthropic";
+import { googleAgentModelConfig } from "./google";
 import {
   makeEDAMultiProviderModelResolverLayer,
   makeEDANativeCompactionExecutorLayer,
@@ -25,9 +28,45 @@ import {
 const live = process.env.EDA_LIVE_PROVIDERS === "true";
 
 const MODELS = [
-  { provider: "anthropic", modelId: "claude-opus-5-5", key: "ANTHROPIC_API_KEY" },
-  { provider: "anthropic", modelId: "claude-sonnet-5-5", key: "ANTHROPIC_API_KEY" },
-  { provider: "openai", modelId: "gpt-6.1-sol", key: "OPENAI_API_KEY" },
+  {
+    provider: "anthropic",
+    modelId: "claude-opus-5-5",
+    key: "ANTHROPIC_API_KEY",
+    executor: "anthropic-native",
+    postCacheRatio: 0.5,
+  },
+  {
+    provider: "anthropic",
+    modelId: "claude-sonnet-5-5",
+    key: "ANTHROPIC_API_KEY",
+    executor: "anthropic-native",
+    postCacheRatio: 0.5,
+  },
+  {
+    provider: "openai",
+    modelId: "gpt-6.1-sol",
+    key: "OPENAI_API_KEY",
+    executor: "openai-native",
+    postCacheRatio: 0.5,
+  },
+  {
+    provider: "google",
+    modelId: "gemini-4-neon",
+    key: "GEMINI_API_KEY",
+    executor: "prompt-prefix-summary",
+    // The first request after a summary is under Gemini's 4,096-token cache minimum, and implicit
+    // caching is best-effort; expectGeminiCachedPrefix checks the post-compaction hit instead.
+    postCacheRatio: 0,
+  },
+  {
+    provider: "google",
+    modelId: "gemini-4-hydrogen",
+    key: "GEMINI_API_KEY",
+    executor: "prompt-prefix-summary",
+    // The first request after a summary is under Gemini's 4,096-token cache minimum, and implicit
+    // caching is best-effort; expectGeminiCachedPrefix checks the post-compaction hit instead.
+    postCacheRatio: 0,
+  },
 ] as const;
 
 const WORDS =
@@ -133,6 +172,81 @@ const traceFetch = () => {
   };
 };
 
+interface GeminiCall {
+  readonly url: string;
+  readonly body: {
+    readonly tools?: unknown;
+    readonly systemInstruction?: unknown;
+    readonly contents: ReadonlyArray<unknown>;
+  };
+  usage?: {
+    readonly promptTokenCount?: number;
+    readonly cachedContentTokenCount?: number;
+    readonly thoughtsTokenCount?: number;
+  };
+  /** Characters of thought-summary text in the response. */
+  thoughtChars?: number;
+  /** The response parts that carried a thought signature, as Gemini sent them. */
+  signedParts?: ReadonlyArray<GeminiPart>;
+}
+
+interface GeminiPart {
+  readonly text?: string;
+  readonly thought?: boolean;
+  readonly thoughtSignature?: string;
+}
+
+interface GeminiChunk {
+  readonly usageMetadata?: GeminiCall["usage"];
+  readonly candidates?: ReadonlyArray<{
+    readonly content?: { readonly parts?: ReadonlyArray<GeminiPart> };
+  }>;
+}
+
+/** Record each Gemini request body and the final `usageMetadata` of its response. */
+const recordGeminiCalls = () => {
+  const calls: Array<GeminiCall> = [];
+  const reads: Array<Promise<void>> = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const response = await original(input, init);
+    const url = String(input);
+    if (!url.includes("generativelanguage.googleapis.com") || response.body === null) {
+      return response;
+    }
+    const call: GeminiCall = { url, body: JSON.parse(String(init?.body)) };
+    calls.push(call);
+    const [forCaller, forRecord] = response.body.tee();
+    reads.push(
+      new Response(forRecord).text().then((text) => {
+        const chunks = text.trimStart().startsWith("{")
+          ? [text]
+          : text
+              .split("\n")
+              .filter((line) => line.startsWith("data: "))
+              .map((line) => line.slice("data: ".length));
+        const parsed = chunks.map((chunk): GeminiChunk => JSON.parse(chunk));
+        const parts = parsed.flatMap((chunk) => chunk.candidates?.[0]?.content?.parts ?? []);
+        call.usage = parsed.at(-1)?.usageMetadata;
+        call.thoughtChars = parts
+          .filter((part) => part.thought === true)
+          .reduce((sum, part) => sum + (part.text?.length ?? 0), 0);
+        call.signedParts = parts.filter((part) => part.thoughtSignature !== undefined);
+      }),
+    );
+    return new Response(forCaller, response);
+  };
+  return {
+    calls,
+    settled: () => Promise.all(reads),
+    restore: () => {
+      globalThis.fetch = original;
+    },
+  };
+};
+
+const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+
 describe.skipIf(!live)("live provider caching and native compaction", () => {
   for (const model of MODELS) {
     it.skipIf(process.env[model.key] === undefined)(
@@ -161,9 +275,13 @@ describe.skipIf(!live)("live provider caching and native compaction", () => {
                   betas: [ANTHROPIC_THINKING_BINDING_BETA],
                 },
               }),
-          resolve: (selection) =>
-            selection?.provider === "anthropic"
-              ? {
+          ...(process.env.GEMINI_API_KEY === undefined
+            ? {}
+            : { google: { apiKey: process.env.GEMINI_API_KEY } }),
+          resolve: (selection) => {
+            switch (selection?.provider) {
+              case "anthropic":
+                return {
                   provider: "anthropic",
                   modelId: selection.modelId,
                   // "error": any thinking replayed out of its conversation fails the test.
@@ -171,12 +289,21 @@ describe.skipIf(!live)("live provider caching and native compaction", () => {
                     effort: "medium",
                     prefixMismatchBehavior: "error",
                   }),
-                }
-              : {
+                };
+              case "google":
+                return {
+                  provider: "google",
+                  modelId: selection.modelId,
+                  config: googleAgentModelConfig({ effort: "medium" }),
+                };
+              default:
+                return {
                   provider: "openai",
                   modelId: selection?.modelId ?? model.modelId,
                   config: { reasoning: { effort: "medium", summary: "auto" }, store: false },
-                },
+                };
+            }
+          },
         });
         const layer = EDARuntime.Live({
           modelSelection: {
@@ -226,7 +353,9 @@ describe.skipIf(!live)("live provider caching and native compaction", () => {
           }),
         ).pipe(Effect.provide(layer));
 
-        const { events } = await Effect.runPromise(program);
+        const gemini = recordGeminiCalls();
+        const { events } = await Effect.runPromise(program).finally(gemini.restore);
+        await gemini.settled();
 
         const calls: Array<CallRow> = [];
         let compactions = 0;
@@ -243,9 +372,10 @@ describe.skipIf(!live)("live provider caching and native compaction", () => {
             executors = [...executors, event.payload.summary.executorId ?? "unknown"];
           }
           if (event.type === "AssistantMessageCommitted") {
+            finalText = "";
             for (const part of event.payload.promptParts) {
               if (part.type === "reasoning") reasoningChars += part.text.length;
-              if (part.type === "text") finalText = part.text;
+              if (part.type === "text") finalText += part.text;
             }
           }
           const usage =
@@ -281,16 +411,140 @@ describe.skipIf(!live)("live provider caching and native compaction", () => {
           }),
         );
 
+        if (model.provider === "google") {
+          expect(gemini.calls).toHaveLength(calls.length);
+          expectGeminiCachedPrefix(gemini.calls, calls);
+          expectGeminiSignaturesReplayed(gemini.calls, calls);
+          // Every thought summary of an answer is committed as reasoning; summary calls are not.
+          expect(reasoningChars).toBe(
+            gemini.calls
+              .filter((_, index) => calls[index]?.kind !== "compaction")
+              .reduce((sum, call) => sum + (call.thoughtChars ?? 0), 0),
+          );
+        }
+
         const compactionCalls = calls.filter((call) => call.kind === "compaction");
         expect(compactionCalls.length).toBeGreaterThanOrEqual(1);
-        expect(executors[0]).toBe(`${model.provider}-native`);
+        expect(executors[0]).toBe(model.executor);
         // The compaction call re-sends an earlier request, so it reads the conversation from cache.
         expect(ratio(compactionCalls)).toBeGreaterThan(0.9);
         expect(ratio(calls.filter((call) => call.kind === "pre"))).toBeGreaterThan(0.5);
-        expect(ratio(calls.filter((call) => call.kind === "post"))).toBeGreaterThan(0.5);
+        expect(ratio(calls.filter((call) => call.kind === "post"))).toBeGreaterThanOrEqual(
+          model.postCacheRatio,
+        );
         expect(recall).toBeGreaterThanOrEqual(8);
       },
       1_500_000,
     );
   }
 });
+
+/**
+ * Print each Gemini request's raw and mapped cache counts, and check the prefix the implicit cache
+ * matches: every request sends the same tools and system instruction; within a context version
+ * each request's contents start with the previous request's; and the compaction call re-sends an
+ * earlier request's contents with only the summary request appended.
+ */
+const expectGeminiCachedPrefix = (
+  gemini: ReadonlyArray<GeminiCall>,
+  rows: ReadonlyArray<CallRow>,
+) => {
+  console.log(
+    [
+      "#",
+      "kind",
+      "contents",
+      "promptTokenCount",
+      "cachedContentTokenCount",
+      "cacheRead",
+      "uncached",
+      "thoughtsTokenCount",
+      "thoughtChars",
+    ].join(" | "),
+  );
+  gemini.forEach((call, index) => {
+    const row = rows[index];
+    console.log(
+      [
+        index + 1,
+        row?.kind,
+        call.body.contents.length,
+        call.usage?.promptTokenCount ?? 0,
+        call.usage?.cachedContentTokenCount ?? 0,
+        row?.cached,
+        (row?.input ?? 0) - (row?.cached ?? 0),
+        call.usage?.thoughtsTokenCount ?? 0,
+        call.thoughtChars ?? 0,
+      ].join(" | "),
+    );
+    // The mapped usage EDA recorded is the raw usage of the same request.
+    expect(row?.input).toBe(call.usage?.promptTokenCount ?? 0);
+    expect(row?.cached).toBe(call.usage?.cachedContentTokenCount ?? 0);
+  });
+  const [first] = gemini;
+  for (const call of gemini) {
+    expect(sameJson(call.body.tools, first?.body.tools)).toBe(true);
+    expect(sameJson(call.body.systemInstruction, first?.body.systemInstruction)).toBe(true);
+  }
+  for (const [index, call] of gemini.entries()) {
+    const previous = gemini[index - 1];
+    const kind = rows[index]?.kind;
+    if (previous === undefined) continue;
+    if (kind === "compaction") {
+      const earlier = call.body.contents.slice(0, -1);
+      expect(
+        gemini.slice(0, index).some((request) => sameJson(request.body.contents, earlier)),
+      ).toBe(true);
+    } else if (rows[index - 1]?.kind !== "compaction" && kind === rows[index - 1]?.kind) {
+      expect(
+        sameJson(
+          call.body.contents.slice(0, previous.body.contents.length),
+          previous.body.contents,
+        ),
+      ).toBe(true);
+    }
+  }
+  // Every request after the first reads a cached prefix, and so does the second request after the
+  // summary. The compaction call's hit is the caller's ratio check.
+  const pre = rows.flatMap((row, index) => (row.kind === "pre" ? [index] : []));
+  for (const index of pre.slice(1)) {
+    expect(gemini[index]?.usage?.cachedContentTokenCount ?? 0).toBeGreaterThan(0);
+  }
+  const post = rows.flatMap((row, index) => (row.kind === "post" ? [index] : []));
+  expect(gemini[post[1] ?? -1]?.usage?.cachedContentTokenCount ?? 0).toBeGreaterThan(0);
+};
+
+/**
+ * Check that every part Gemini signed comes back unchanged, as its own part, in the next request
+ * of the same context version (the request that replays the response), and print how many of them
+ * were empty text parts, the form a streamed answer's signature arrives in.
+ */
+const expectGeminiSignaturesReplayed = (
+  gemini: ReadonlyArray<GeminiCall>,
+  rows: ReadonlyArray<CallRow>,
+) => {
+  let replayed = 0;
+  let emptyText = 0;
+  for (const [index, call] of gemini.entries()) {
+    const next = gemini[index + 1];
+    const kind = rows[index]?.kind;
+    if (next === undefined || kind === "compaction" || rows[index + 1]?.kind !== kind) continue;
+    const sent = next.body.contents.flatMap((content) =>
+      isRecord(content) && Array.isArray(content.parts) ? (content.parts as Array<unknown>) : [],
+    );
+    for (const part of call.signedParts ?? []) {
+      expect(sent).toContainEqual(part);
+      const carriers = sent.filter(
+        (candidate) => isRecord(candidate) && candidate.thoughtSignature === part.thoughtSignature,
+      );
+      expect(carriers).toHaveLength(1);
+      replayed++;
+      if (part.text === "" && part.thought !== true) emptyText++;
+    }
+  }
+  console.log(JSON.stringify({ signedPartsReplayed: replayed, emptySignedTextParts: emptyText }));
+  expect(emptyText).toBeGreaterThan(0);
+};
+
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);

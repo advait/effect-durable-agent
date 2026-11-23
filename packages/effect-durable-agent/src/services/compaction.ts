@@ -772,11 +772,12 @@ const serializeAssistantMessage = (
   const sideband: Array<string> = [];
   for (const part of parts) {
     switch (part.type) {
+      // A text or reasoning part with no text holds only provider state, such as a signature.
       case "text":
-        text.push(part.text);
+        if (part.text.length > 0) text.push(part.text);
         break;
       case "reasoning":
-        reasoning.push(part.text);
+        if (part.text.length > 0) reasoning.push(part.text);
         break;
       case "tool-call":
         toolCalls.push(`${part.name}(${safeJsonStringify(part.params)})`);

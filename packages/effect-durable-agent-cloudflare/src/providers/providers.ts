@@ -17,6 +17,8 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import type * as Schema from "effect/Schema";
+import type * as LanguageModel from "effect/ai/LanguageModel";
+import type * as Prompt from "effect/ai/Prompt";
 
 import {
   makeEDAAnthropicClientLayer,
@@ -24,12 +26,20 @@ import {
   type EDAAnthropicClientOptions,
   type EDAAnthropicModelConfig,
 } from "./anthropic";
+import {
+  EDAGoogleClient,
+  makeEDAGoogleClientLayer,
+  makeEDAGoogleLanguageModel,
+  type EDAGoogleClientOptions,
+  type EDAGoogleModelConfig,
+} from "./google";
 import { makeEDAOpenAiClientLayer, type EDAOpenAiModelConfig } from "./openai";
 import {
   ANTHROPIC_COMPACTION_BETA,
   EDAProviderRequestOverride,
   prepareNativeCompaction,
   withBeta,
+  withoutOtherProvidersState,
   type EDAProviderRequest,
 } from "./transport";
 
@@ -44,6 +54,11 @@ export type EDAResolvedModel =
       readonly provider: "anthropic";
       readonly modelId: string;
       readonly config: EDAAnthropicModelConfig;
+    }
+  | {
+      readonly provider: "google";
+      readonly modelId: string;
+      readonly config: EDAGoogleModelConfig;
     };
 
 /** Clients for every provider a host serves; a session runs on the one its selection names. */
@@ -54,58 +69,144 @@ export interface EDAMultiProviderModelResolverOptions {
     readonly apiUrl?: string | undefined;
   };
   readonly anthropic?: EDAAnthropicClientOptions;
+  readonly google?: EDAGoogleClientOptions;
   /** Host policy: validate the recorded selection and choose request settings. Throw to reject. */
   readonly resolve: (selection: ModelSelectionPayload | undefined) => EDAResolvedModel;
 }
 
+type Provider = EDAResolvedModel["provider"];
+type ResolvedFor<P extends Provider> = Extract<EDAResolvedModel, { readonly provider: P }>;
+type ModelMaker<P extends Provider> = (
+  resolved: ResolvedFor<P>,
+) => Effect.Effect<LanguageModel.LanguageModel>;
+
+/** Everything one provider contributes to resolution, prompt preparation and compaction. */
+interface ProviderAdapter<P extends Provider> {
+  readonly name: string;
+  /**
+   * Builds the provider's client layer now (throwing when the options cannot authenticate) and
+   * returns the effect that starts the client and makes a model per resolved selection.
+   */
+  readonly connect: (
+    options: NonNullable<EDAMultiProviderModelResolverOptions[P]>,
+  ) => Effect.Effect<ModelMaker<P>>;
+  /** Rewrites an EDA prompt into the provider's cache and compaction shape. */
+  readonly preparePrompt: (prompt: Prompt.Prompt) => Prompt.Prompt;
+  /** Provider-native compaction; without one, sessions compact with the prompt-prefix summary. */
+  readonly compact:
+    | ((
+        input: CompactionExecutorInput,
+        options: EDANativeCompactionOptions,
+      ) => Effect.Effect<CompactionOutput, CompactionError>)
+    | undefined;
+}
+
+const PROVIDERS: { readonly [P in Provider]: ProviderAdapter<P> } = {
+  openai: {
+    name: "OpenAI",
+    connect: (options) => {
+      const layer = makeEDAOpenAiClientLayer(options);
+      return Effect.map(
+        OpenAiClient.OpenAiClient.pipe(Effect.provide(layer)),
+        (client) => (resolved) =>
+          OpenAiLanguageModel.make({ model: resolved.modelId, config: resolved.config }).pipe(
+            Effect.provideService(OpenAiClient.OpenAiClient, client),
+          ),
+      );
+    },
+    preparePrompt: (prompt) => prepareNativeCompaction("openai", prompt),
+    compact: (input) => openAiCompaction(input),
+  },
+  anthropic: {
+    name: "Anthropic",
+    connect: (options) => {
+      const layer = makeEDAAnthropicClientLayer(options);
+      return Effect.map(
+        AnthropicClient.AnthropicClient.pipe(Effect.provide(layer)),
+        (client) => (resolved) =>
+          AnthropicLanguageModel.make({ model: resolved.modelId, config: resolved.config }).pipe(
+            Effect.provideService(AnthropicClient.AnthropicClient, client),
+          ),
+      );
+    },
+    preparePrompt: prepareEDAAnthropicPrompt,
+    compact: (input, options) => anthropicCompaction(input, options),
+  },
+  google: {
+    name: "Google",
+    connect: (options) => {
+      const layer = makeEDAGoogleClientLayer(options);
+      return Effect.map(
+        EDAGoogleClient.pipe(Effect.provide(layer)),
+        (client) => (resolved) =>
+          makeEDAGoogleLanguageModel({ modelId: resolved.modelId, config: resolved.config }).pipe(
+            Effect.provideService(EDAGoogleClient, client),
+          ),
+      );
+    },
+    // Gemini caches prompt prefixes implicitly and stores no native compaction items.
+    preparePrompt: (prompt) => prompt,
+    // Gemini has no compaction endpoint.
+    compact: undefined,
+  },
+};
+
+const isProvider = (provider: string | undefined): provider is Provider =>
+  provider !== undefined && Object.hasOwn(PROVIDERS, provider);
+
+const connect = <P extends Provider>(
+  provider: P,
+  options: EDAMultiProviderModelResolverOptions[P] | undefined,
+): Effect.Effect<ModelMaker<P> | undefined> =>
+  options === undefined ? Effect.succeed(undefined) : PROVIDERS[provider].connect(options);
+
+const makeModel = <P extends Provider>(
+  makers: { readonly [Q in Provider]: ModelMaker<Q> | undefined },
+  provider: P,
+  resolved: ResolvedFor<P>,
+): Effect.Effect<LanguageModel.LanguageModel> => {
+  const make = makers[provider];
+  return make === undefined
+    ? Effect.die(new Error(`No ${PROVIDERS[provider].name} client is configured.`))
+    : make(resolved);
+};
+
 /**
  * Resolves each durable selection to the provider it names, sharing one client per provider for
- * the runtime lifetime, and prepares prompts in that provider's cache and compaction shape.
+ * the runtime lifetime, and prepares prompts in that provider's cache and compaction shape,
+ * without the parts that hold only another provider's state.
  */
 export const makeEDAMultiProviderModelResolverLayer = (
   options: EDAMultiProviderModelResolverOptions,
 ): Layer.Layer<ModelResolver> => {
-  const openAiClient =
-    options.openai === undefined ? undefined : makeEDAOpenAiClientLayer(options.openai);
-  const anthropicClient =
-    options.anthropic === undefined ? undefined : makeEDAAnthropicClientLayer(options.anthropic);
+  const clients = {
+    openai: connect("openai", options.openai),
+    anthropic: connect("anthropic", options.anthropic),
+    google: connect("google", options.google),
+  } satisfies { readonly [P in Provider]: Effect.Effect<ModelMaker<P> | undefined> };
   return Layer.effect(
     ModelResolver,
     Effect.gen(function* () {
-      const openAi =
-        openAiClient === undefined
-          ? undefined
-          : yield* OpenAiClient.OpenAiClient.pipe(Effect.provide(openAiClient));
-      const anthropic =
-        anthropicClient === undefined
-          ? undefined
-          : yield* AnthropicClient.AnthropicClient.pipe(Effect.provide(anthropicClient));
+      const makers = yield* Effect.all(clients);
       return {
         resolve: Effect.fn("MultiProviderModelResolver.resolve")(function* (selection) {
           const resolved = options.resolve(selection);
-          if (resolved.provider === "anthropic") {
-            if (anthropic === undefined) {
-              return yield* Effect.die(new Error("No Anthropic client is configured."));
-            }
-            return yield* AnthropicLanguageModel.make({
-              model: resolved.modelId,
-              config: resolved.config,
-            }).pipe(Effect.provideService(AnthropicClient.AnthropicClient, anthropic));
+          // Prompts are prepared for the provider a selection names, so a selection must run there.
+          if (selection !== undefined && resolved.provider !== selection.provider) {
+            return yield* Effect.die(
+              new Error(
+                `A ${selection.provider} selection resolved to ${resolved.provider}; a selection must resolve to the provider it names.`,
+              ),
+            );
           }
-          if (openAi === undefined) {
-            return yield* Effect.die(new Error("No OpenAI client is configured."));
-          }
-          return yield* OpenAiLanguageModel.make({
-            model: resolved.modelId,
-            config: resolved.config,
-          }).pipe(Effect.provideService(OpenAiClient.OpenAiClient, openAi));
+          return yield* makeModel(makers, resolved.provider, resolved);
         }),
         preparePrompt: (selection, prompt) =>
-          selection?.provider === "anthropic"
-            ? prepareEDAAnthropicPrompt(prompt)
-            : selection?.provider === "openai"
-              ? prepareNativeCompaction("openai", prompt)
-              : prompt,
+          isProvider(selection?.provider)
+            ? PROVIDERS[selection.provider].preparePrompt(
+                withoutOtherProvidersState(selection.provider, prompt),
+              )
+            : prompt,
       };
     }),
   );
@@ -126,7 +227,9 @@ export interface EDANativeCompactionOptions {
  * Compacts with the session provider's own endpoint: OpenAI `/responses/compact`, Anthropic
  * on-demand compaction (`compact-2026-09-04`). Each call carries the exact earlier request prompt,
  * so it reads the conversation from the provider cache, and the returned native items replace the
- * summarized history on later requests. Other providers fall back to a prompt-prefix summary.
+ * summarized history on later requests. Providers without one (Google, and any selection EDA does
+ * not know) summarize with `promptPrefixSummaryCompactionExecutor`, which re-sends the same
+ * earlier prompt with the summary request appended.
  */
 export const makeEDANativeCompactionExecutorLayer = (
   options: EDANativeCompactionOptions = {},
@@ -140,14 +243,9 @@ export const makeEDANativeCompactionExecutorLayer = (
       return {
         id: CompactionExecutorId.make("provider-native"),
         execute: (input) => {
-          switch (input.state.modelSelection?.provider) {
-            case "anthropic":
-              return anthropicCompaction(input, options);
-            case "openai":
-              return openAiCompaction(input);
-            default:
-              return fallback.execute(input);
-          }
+          const provider = input.state.modelSelection?.provider;
+          const compact = isProvider(provider) ? PROVIDERS[provider].compact : undefined;
+          return compact === undefined ? fallback.execute(input) : compact(input, options);
         },
       } satisfies CompactionExecutorShape;
     }),
@@ -372,4 +470,5 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 export { prepareEDAAnthropicPrompt } from "./anthropic";
 export type { EDAAnthropicModelConfig } from "./anthropic";
+export type { EDAGoogleModelConfig } from "./google";
 export type { EDAOpenAiModelConfig } from "./openai";

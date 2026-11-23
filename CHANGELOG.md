@@ -1,5 +1,96 @@
 # Changelog
 
+## Unreleased
+
+Gemini sessions: `effect-durable-agent-cloudflare/google` is a native Gemini API provider, and
+the multi-provider resolver serves it beside OpenAI and Anthropic. Core now commits an empty text
+part that carries provider metadata, so new events can hold one. No schema, checkpoint or protocol
+change.
+
+- **Change (core):** the inference runner commits a streamed text part that has no text but
+  carries provider metadata, as it already did for reasoning. It used to drop the part. Gemini
+  ends a streamed answer with such a part, which holds the answer's thought signature, and asks
+  for it back. A turn whose only output is that part now commits an assistant message holding only
+  it. The OpenAI adapter tags every message item with its item id, so an OpenAI message item that
+  streamed no text, such as a refusal, is now committed and replayed too. OpenAI accepts it (live,
+  `gpt-6.1-sol`). Anthropic text parts carry no metadata, so nothing changes for them.
+- **Fix (core):** the `LanguageModelSummary` executor's conversation leaves out text and
+  reasoning parts with no text. Anthropic's omitted-display thinking and OpenAI's encrypted
+  reasoning used to add an empty `[Assistant reasoning]:` line.
+- **Change:** the multi-provider resolver's `resolve` dies when the host resolves a selection to a
+  provider other than the one it names. `preparePrompt` prepares for the named provider, so this
+  keeps the request and its prompt on one provider; both hosts in use already resolve that way.
+- **Change:** the multi-provider resolver's `preparePrompt` removes the assistant parts that hold
+  only another provider's state, and an assistant message they leave empty. Such a part has no
+  text, and its metadata names only other providers. This is the rule the Anthropic and OpenAI
+  adapters already apply to reasoning. Anthropic rejects an empty text block and an empty
+  assistant message with a 400, so a Gemini history sent to Anthropic used to fail.
+- **Feature:** `effect-durable-agent-cloudflare/google` exports `EDAGoogleClient` and
+  `makeEDAGoogleClientLayer(options)` over EDA's provider transport, and
+  `makeEDAGoogleLanguageModel({ modelId, config })`, an Effect AI `LanguageModel` for
+  `streamGenerateContent` (inference) and `generateContent` (compaction). It also exports
+  `EDAGoogleModelConfig`, `EDAGoogleClientOptions` and `googleAgentModelConfig({ effort,
+  maxOutputTokens?, includeThoughts? })`. Effort maps to `thinkingLevel` one to one (`low`,
+  `medium`, `high`). `xhigh` is not exposed and `thinkingBudget` is never sent. Output defaults to
+  65,536 tokens and thought summaries are on. Through a Cloudflare AI Gateway binding, requests use
+  the `google-ai-studio` provider with the key in `x-goog-api-key`.
+- Thought signatures: response text, reasoning and tool-call parts carry
+  `metadata.google.thoughtSignature`. EDA persists it on the committed prompt part, as it does
+  Anthropic signatures, and the next request sends it back on exactly the part that carried it: a
+  signed part is never merged with its neighbours. A streamed answer's signature arrives on an
+  empty text part after the text; EDA commits that part as an empty text part and replays it as it
+  came. `generateText` returns it as a text part, so its `reasoning` holds only thoughts. The
+  results of one step's parallel calls go back in one user turn; every other message keeps its own
+  turn, so each request's contents start with the previous request's.
+- Usage: input is `promptTokenCount` plus `toolUsePromptTokenCount`, cached input is
+  `cachedContentTokenCount` (Gemini's implicit cache), cache-write input is 0, and output is
+  `candidatesTokenCount` (text) plus `thoughtsTokenCount` (reasoning). Finish metadata keeps the raw
+  `usageMetadata` and finish reason. Gemini finishes a function-call response with `STOP`; EDA
+  records it as `tool-calls`.
+- Errors map to the `AiError` reasons the Anthropic adapter uses: by HTTP status, also for an error
+  event inside the stream, and `InvalidResponseError` for a response that does not decode. A
+  blocked prompt fails with `ContentPolicyError`. A stream that ends without a finish reason emits
+  no finish part, so EDA records the inference as failed.
+- Finish reasons follow the other adapters. `MAX_TOKENS` and `CONTINUATION` are `length`, and
+  safety, recitation and other content filters are `content-filter`, as Anthropic's `refusal` is.
+  A reason that says the response or the request is broken fails the inference, as OpenAI's
+  `response.failed` does, with Gemini's `finishMessage` in the error and its metadata:
+  `MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL`, `TOO_MANY_TOOL_CALLS` and
+  `MALFORMED_RESPONSE` with `InvalidOutputError`, `MISSING_THOUGHT_SIGNATURE` with
+  `InvalidRequestError`, and `PUP_LIMITED_DISABLED` with `ContentPolicyError`. EDA then commits no
+  tool call that the response streamed.
+- File parts: EDA holds file data as a string, bytes as a base64 `data:` URL and a URL as its href.
+  Every `data:` URL goes to Gemini as `inlineData` with its own media type, decoded as the Fetch
+  standard decodes it. A fragment (`#...`) is not data; the payload is percent-decoded, so `data:text/plain;base64,aGk%3D` sends
+  `aGk=`. A payload without `;base64` is the bytes themselves, which EDA base64-encodes. A string
+  with another URL scheme (an https or Gemini Files URI) goes as `fileData.fileUri`, and bare
+  base64 as `inlineData`. `image/*` goes as `image/jpeg`, as the Anthropic and OpenAI adapters
+  send it, also when a `data:` URL names it.
+- `./providers`: `EDAResolvedModel` gains `{ provider: "google"; modelId; config:
+  EDAGoogleModelConfig }` and `EDAMultiProviderModelResolverOptions` gains `google`. Resolution,
+  prompt preparation and compaction routing read one table with an entry per provider.
+  `makeEDANativeCompactionExecutorLayer` compacts Google sessions with
+  `promptPrefixSummaryCompactionExecutor`, because Gemini has no compaction endpoint.
+- Transport: `EDAProvider` gains `"google"`. Gateway requests keep the `v1beta/...` path and query.
+- **Test:** a canned journey runs recorded Gemini streams through the EDA runtime and checks the
+  request bodies, including signature replay and parallel results. The live provider test
+  (`EDA_LIVE_PROVIDERS=true GEMINI_API_KEY=...`) covers `gemini-4-neon` and `gemini-4-hydrogen`,
+  including cached input before and after compaction and the cached prefix.
+
+Storage: no schema change. Google signatures and usage are stored in the existing prompt-part
+options and finish metadata. New `AssistantMessageCommitted` events may hold an empty text part with
+provider metadata, `{ type: "text", text: "", options: { google: { thoughtSignature } } }`,
+possibly as the message's only part. An `AssistantPartialCommitted` event may hold one beside
+visible text or reasoning, never alone: a partial commit still needs visible output. The durable schema already admits it: `Prompt.TextPart.text` is any string and
+`promptParts` only has to be non-empty. Histories stored by released versions replay unchanged, because
+no released version committed such a part or any Google state. The reducer, checkpoints, prompt projection and transcript treat it
+as any other text part, with no reducer or projection requiring non-empty text. The transcript
+shows it as an empty `Text` part, which Gia's transcript view skips as it skips blank text, so
+`transcriptSemanticRevision` stays as it is. Protocol: none. API: additive. A new `./google`
+subpath, `"google"` in `EDAProvider` and `EDAResolvedModel["provider"]`, and `google` in
+`EDAMultiProviderModelResolverOptions`. A host that switches exhaustively over either union gets a
+new case.
+
 ## 0.4.1
 
 Patch release: a session killed after its run committed the answer no longer answers the same

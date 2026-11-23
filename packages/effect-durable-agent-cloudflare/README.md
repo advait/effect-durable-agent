@@ -46,6 +46,7 @@ passing commands or batches across the Worker-to-object boundary with
 The core and host packages are published in lockstep and must use the same
 version.
 
-Public subpaths are `/durable-object`, `/session-controller`, `/openai`,
-`/rpc`, and `/storage`. The WebSocket protocol and pure delivery machine
-are exported from `effect-durable-agent/websocket`.
+Public subpaths are `/durable-object`, `/session-controller`, `/rpc`, `/storage`, and the
+provider adapters `/openai`, `/anthropic`, `/google` and `/providers` (the multi-provider model
+resolver and compaction executor, described in [model selection](../../docs/model-selection.md)).
+The WebSocket protocol and pure delivery machine are exported from `effect-durable-agent/websocket`.

@@ -10,7 +10,14 @@ import * as Prompt from "effect/ai/Prompt";
 import { getNativeCompaction } from "effect-durable-agent/services/prompt-projector";
 
 /** Providers whose HTTP traffic EDA's transport understands. */
-export type EDAProvider = "openai" | "anthropic";
+export type EDAProvider = "openai" | "anthropic" | "google";
+
+/** Cloudflare AI Gateway provider name for each provider. */
+const GATEWAY_PROVIDER: { readonly [P in EDAProvider]: string } = {
+  openai: "openai",
+  anthropic: "anthropic",
+  google: "google-ai-studio",
+};
 
 /** Request about to leave EDA's transport, as decoded JSON. */
 export interface EDAProviderRequest {
@@ -59,6 +66,33 @@ export const prepareNativeCompaction = (
     }),
   );
 
+/**
+ * Remove the assistant parts that hold only another provider's state, and any assistant message
+ * left with no parts. Such a part has no text and carries provider metadata (a Gemini thought
+ * signature on an empty answer part, an OpenAI item id, an Anthropic signature on omitted
+ * thinking) but none of `provider`'s, so `provider` has no use for it. Anthropic rejects an empty
+ * text block and an assistant message with no content. This is the rule the Anthropic and OpenAI
+ * adapters already apply to reasoning that lacks their own metadata.
+ */
+export const withoutOtherProvidersState = (
+  provider: EDAProvider,
+  prompt: Prompt.Prompt,
+): Prompt.Prompt =>
+  Prompt.fromMessages(
+    prompt.content.flatMap((message): ReadonlyArray<Prompt.Message> => {
+      if (message.role !== "assistant") return [message];
+      const content = message.content.filter((part) => !isOtherProvidersState(provider, part));
+      if (content.length === message.content.length) return [message];
+      return content.length === 0 ? [] : [{ ...message, content }];
+    }),
+  );
+
+const isOtherProvidersState = (provider: EDAProvider, part: Prompt.AssistantMessagePart): boolean =>
+  (part.type === "text" || part.type === "reasoning") &&
+  part.text.length === 0 &&
+  Object.keys(part.options).length > 0 &&
+  !Object.hasOwn(part.options, provider);
+
 const encodeSentinel = (items: ReadonlyArray<Schema.Json>): string =>
   `${NATIVE_COMPACTION_SENTINEL}${bytesToBase64(new TextEncoder().encode(JSON.stringify(items)))}`;
 
@@ -88,44 +122,62 @@ export const rehydrateNativeCompaction = (
   request: EDAProviderRequest,
 ): EDAProviderRequest => {
   if (!isRecord(request.body)) return request;
-  if (provider === "anthropic") {
-    const messages = request.body.messages;
-    if (!Array.isArray(messages)) return request;
-    let found = false;
-    const rewritten = messages.map((message: unknown) => {
-      if (!isRecord(message) || !Array.isArray(message.content)) return message;
-      const content = message.content.flatMap((block: unknown) => {
-        if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") {
-          return [block];
-        }
-        const items = decodeSentinel(block.text);
-        if (items === undefined) return [block];
-        found = true;
-        // A breakpoint on the summary moves onto the block ("a breakpoint after the summary").
-        return block.cache_control === undefined
-          ? items
-          : items.map((item, index) =>
-              index === items.length - 1 && isRecord(item)
-                ? { ...item, cache_control: block.cache_control }
-                : item,
-            );
-      });
-      // The block stands as an assistant message of its own when nothing else shares the message.
-      const role =
-        content.length > 0 &&
-        content.every((block) => isRecord(block) && block.type === "compaction")
-          ? "assistant"
-          : message.role;
-      return { ...message, role, content };
-    });
-    if (!found) return request;
-    return {
-      ...request,
-      headers: withBeta(request.headers, ANTHROPIC_COMPACTION_BETA),
-      body: { ...request.body, messages: rewritten },
-    };
+  switch (provider) {
+    case "anthropic":
+      return rehydrateAnthropicCompaction(request, request.body);
+    case "openai":
+      return rehydrateOpenAiCompaction(request, request.body);
+    case "google":
+      // Gemini has no compaction endpoint, so no Google request carries native items.
+      return request;
   }
-  const input = request.body.input;
+};
+
+const rehydrateAnthropicCompaction = (
+  request: EDAProviderRequest,
+  body: Readonly<Record<string, unknown>>,
+): EDAProviderRequest => {
+  const messages = body.messages;
+  if (!Array.isArray(messages)) return request;
+  let found = false;
+  const rewritten = messages.map((message: unknown) => {
+    if (!isRecord(message) || !Array.isArray(message.content)) return message;
+    const content = message.content.flatMap((block: unknown) => {
+      if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") {
+        return [block];
+      }
+      const items = decodeSentinel(block.text);
+      if (items === undefined) return [block];
+      found = true;
+      // A breakpoint on the summary moves onto the block ("a breakpoint after the summary").
+      return block.cache_control === undefined
+        ? items
+        : items.map((item, index) =>
+            index === items.length - 1 && isRecord(item)
+              ? { ...item, cache_control: block.cache_control }
+              : item,
+          );
+    });
+    // The block stands as an assistant message of its own when nothing else shares the message.
+    const role =
+      content.length > 0 && content.every((block) => isRecord(block) && block.type === "compaction")
+        ? "assistant"
+        : message.role;
+    return { ...message, role, content };
+  });
+  if (!found) return request;
+  return {
+    ...request,
+    headers: withBeta(request.headers, ANTHROPIC_COMPACTION_BETA),
+    body: { ...body, messages: rewritten },
+  };
+};
+
+const rehydrateOpenAiCompaction = (
+  request: EDAProviderRequest,
+  body: Readonly<Record<string, unknown>>,
+): EDAProviderRequest => {
+  const input = body.input;
   if (!Array.isArray(input)) return request;
   let found = false;
   const rewritten = input.flatMap((item: unknown) => {
@@ -134,7 +186,7 @@ export const rehydrateNativeCompaction = (
     found = true;
     return items;
   });
-  return found ? { ...request, body: { ...request.body, input: rewritten } } : request;
+  return found ? { ...request, body: { ...body, input: rewritten } } : request;
 };
 
 const sentinelItems = (item: unknown): ReadonlyArray<unknown> | undefined => {
@@ -264,14 +316,17 @@ const sendOnce = async (
     {
       endpoint: gatewayEndpoint(options.provider, prepared.url),
       headers: prepared.headers,
-      provider: options.provider,
+      provider: GATEWAY_PROVIDER[options.provider],
       query: prepared.body,
     },
     { signal },
   );
 };
 
-/** AI Gateway endpoint for a provider URL: OpenAI paths drop `/v1/`, Anthropic keeps it. */
+/**
+ * AI Gateway endpoint for a provider URL: OpenAI paths drop `/v1/`; Anthropic and Google keep
+ * their version segment (`v1/messages`, `v1beta/models/...`) and query.
+ */
 export const gatewayEndpoint = (provider: EDAProvider, url: URL): string => {
   const path =
     provider === "openai" && url.pathname.startsWith("/v1/")

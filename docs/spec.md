@@ -45,6 +45,10 @@ package manifests plus local `node_modules` before changing API-shaped docs.
 | --- | --- | --- |
 | `effect` | `~4.1.2` | Core Effect modules and `effect/ai`. |
 | `@effect/ai-openai` | `~4.1.2` | OpenAI provider adapter. |
+| `@effect/ai-anthropic` | `~4.1.2` | Anthropic provider adapter (optional peer). |
+
+The Google Gemini adapter (`effect-durable-agent-cloudflare/google`) is EDA's own, built on
+`effect/ai/LanguageModel.make`, because Effect has no v4 Google provider package.
 
 Important version facts:
 
@@ -809,6 +813,8 @@ Current prompt context is derived from durable state:
 - retained durable prompt/context-visible messages after the summary cursor.
 
 Prompt hydration preserves model-facing prefix fidelity. Durable assistant/tool transcript events store exact typed prompt parts in stable model-facing order. Semantic UI/query views derive from those parts rather than rewriting the model-facing history.
+
+A streamed text or reasoning part with no text is committed only when it carries provider metadata, which the provider needs back: signed or encrypted reasoning, or the empty text part that carries a Gemini answer's thought signature. Such a part has nothing to show or summarize. The transcript keeps it as an empty `Text` or `Reasoning` part, and the built-in summary serializer leaves it out. The Cloudflare multi-provider resolver sends it only to the provider whose metadata it carries.
 
 ### Transcript history
 

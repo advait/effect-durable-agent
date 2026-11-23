@@ -14,7 +14,9 @@ import {
 } from "effect-durable-agent/domain/context-projection";
 import { initialReducedState } from "effect-durable-agent/domain/reduced-state";
 import { SequenceNumber } from "effect-durable-agent/types/core";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Prompt from "effect/ai/Prompt";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -139,6 +141,56 @@ describe("native compaction transport", () => {
     expect(gatewayEndpoint("anthropic", new URL("https://api.anthropic.com/v1/messages"))).toBe(
       "v1/messages",
     );
+    expect(
+      gatewayEndpoint(
+        "google",
+        new URL(
+          "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+        ),
+      ),
+    ).toBe("v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse");
+  });
+
+  it("sends Google traffic to the gateway's google-ai-studio provider with the key header", async () => {
+    const runs: Array<AIGatewayUniversalRequest | AIGatewayUniversalRequest[]> = [];
+    const aiGateway = {
+      getLog: async () => ({}),
+      getUrl: async () => "https://gateway.example.com/google-ai-studio",
+      patchLog: async () => undefined,
+      run: async (request: AIGatewayUniversalRequest | AIGatewayUniversalRequest[]) => {
+        runs.push(request);
+        return new Response(
+          JSON.stringify({
+            candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    };
+    await Effect.gen(function* () {
+      const resolver = yield* ModelResolver;
+      const model = yield* resolver.resolve({ provider: "google", modelId: "gemini-4-neon" });
+      return yield* model.generateText({ prompt: "hi" });
+    }).pipe(
+      Effect.provide(
+        makeEDAMultiProviderModelResolverLayer({
+          google: { aiGateway, apiKey: "test-key" },
+          resolve: (selection) => ({
+            provider: "google",
+            modelId: selection?.modelId ?? "gemini-4-neon",
+            config: {},
+          }),
+        }),
+      ),
+      Effect.runPromise,
+    );
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      provider: "google-ai-studio",
+      endpoint: "v1beta/models/gemini-4-neon:generateContent",
+      headers: { "x-goog-api-key": "test-key" },
+      query: { contents: [{ role: "user", parts: [{ text: "hi" }] }] },
+    });
   });
 });
 
@@ -253,9 +305,10 @@ const runCompaction = (provider: string, modelId: string) =>
       makeEDAMultiProviderModelResolverLayer({
         openai: { apiKey: "sk-test" },
         anthropic: { apiKey: "sk-ant-test" },
+        google: { apiKey: "gemini-test" },
         resolve: (selection) =>
-          selection?.provider === "anthropic"
-            ? { provider: "anthropic", modelId: selection.modelId, config: {} }
+          selection?.provider === "anthropic" || selection?.provider === "google"
+            ? { provider: selection.provider, modelId: selection.modelId, config: {} }
             : { provider: "openai", modelId: selection?.modelId ?? "gpt", config: {} },
       }),
     ),
@@ -352,5 +405,64 @@ describe("native compaction executors", () => {
       outputTokens: 1_026,
     });
     expect(getNativeCompaction(output.promptMessage)?.items).toEqual(window.slice(1));
+  });
+
+  it("summarizes Google sessions with the prompt-prefix fallback, as an earlier request plus the summary request", async () => {
+    const recorded = stubFetch(() => ({
+      candidates: [
+        {
+          content: {
+            parts: [
+              { text: "**Summarizing**", thought: true },
+              { text: "The user asked an earlier question." },
+            ],
+          },
+          finishReason: "STOP",
+        },
+      ],
+      usageMetadata: {
+        promptTokenCount: 6_000,
+        cachedContentTokenCount: 5_000,
+        candidatesTokenCount: 40,
+        thoughtsTokenCount: 60,
+      },
+    }));
+
+    const output = await runCompaction("google", "gemini-4-hydrogen");
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.url).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-hydrogen:generateContent",
+    );
+    // The earlier request's contents, unchanged, then the summary request as a turn of its own.
+    expect(recorded[0]?.body.contents).toEqual([
+      { role: "user", parts: [{ text: "earlier question" }] },
+      { role: "user", parts: [{ text: expect.stringContaining("Do not call any tools.") }] },
+    ]);
+    expect(output.executorId).toBe("prompt-prefix-summary");
+    expect(output.text).toBe("The user asked an earlier question.");
+    expect(output.usage).toEqual({
+      inputTokens: 6_000,
+      cachedInputTokens: 5_000,
+      cacheWriteInputTokens: 0,
+      outputTokens: 100,
+      textTokens: 40,
+      reasoningTokens: 60,
+    });
+  });
+});
+
+describe("multi-provider resolution", () => {
+  it("rejects a host that resolves a selection to another provider", async () => {
+    const layer = makeEDAMultiProviderModelResolverLayer({
+      openai: { apiKey: "test-key" },
+      anthropic: { apiKey: "test-key" },
+      resolve: () => ({ provider: "anthropic", modelId: "claude-model", config: {} }),
+    });
+    const exit = await Effect.gen(function* () {
+      const resolver = yield* ModelResolver;
+      return yield* resolver.resolve({ provider: "openai", modelId: "alias" });
+    }).pipe(Effect.provide(layer), Effect.exit, Effect.runPromise);
+    expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
   });
 });

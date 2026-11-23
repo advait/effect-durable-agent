@@ -79,6 +79,16 @@ EDA_OPENAI_SMOKE=true OPENAI_API_KEY=... \
   src/services/runtime.openai-smoke.test.ts
 ```
 
+Run the paid provider caching and compaction journey. It runs every model whose key is set
+(`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`). For Gemini it prints each request's raw
+and mapped cache counts, which only the verbose reporter shows for a passing test:
+
+```bash
+EDA_LIVE_PROVIDERS=true GEMINI_API_KEY=... \
+  pnpm --filter effect-durable-agent-cloudflare exec vp test run \
+  src/providers/providers.live.test.ts --reporter=verbose
+```
+
 Run the larger provider-backed Durable Object host journey:
 
 ```bash
