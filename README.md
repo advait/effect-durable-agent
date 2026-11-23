@@ -16,6 +16,25 @@ Tool execution constantly changes what that application needs to represent: `San
 event that transitions the application's state machine**. Product state and agent state coexist in
 the same event sequence.
 
+## A session in code
+
+A session is a Durable Object with your reducers and sinks installed. This one, from the
+[Slack bridge example](./examples/002-slack-bridge/worker.ts), adds a reducer that links Slack
+messages to agent runs and a durable sink that delivers each reply to the Slack thread. The
+example's `loggingSlackClient` logs the reply instead of calling Slack:
+
+```ts
+export class SlackBridgeEDASession extends EDASessionDurableObject<SlackBridgeEDAEnv> {
+  constructor(ctx: DurableObjectState, env: SlackBridgeEDAEnv) {
+    super(ctx, env, {
+      ...makeExampleOpenAiOptions(env),
+      reducers: [SlackBridgeReducer],
+      sinks: [makeSlackReplySink(loggingSlackClient)],
+    });
+  }
+}
+```
+
 ## How EDA works
 
 EDA models the agent and the surrounding product as one application state machine. For example, a
@@ -302,9 +321,14 @@ typed boundaries, structured concurrency, and first-class tracing.
 - [Testing strategy](./docs/testing.md)
 - [WebSocket live-event protocol](./docs/websocket-protocol.md)
 - [Message steering](./docs/message-steering.md)
+- [Maintainer release guide](./docs/releasing.md)
+
+### Roadmap
+
+These designs describe planned work. The transcript history design marks the parts that have shipped.
+
 - [Transcript history proposal](./docs/transcript-history.md)
 - [Subagents proposal](./docs/subagents.md)
-- [Maintainer release guide](./docs/releasing.md)
 
 ## Contributing and license
 
