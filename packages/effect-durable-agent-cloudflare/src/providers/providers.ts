@@ -188,21 +188,32 @@ export const makeEDAMultiProviderModelResolverLayer = (
     ModelResolver,
     Effect.gen(function* () {
       const makers = yield* Effect.all(clients);
+      // The provider each selection last resolved to. The runtime resolves a selection before it
+      // prepares that request's prompt, so preparation targets the provider that receives the
+      // request without asking the host twice.
+      const resolvedProviders = new Map<string, Provider>();
+      const resolveProvider = (selection: ModelSelectionPayload | undefined) => {
+        const resolved = options.resolve(selection);
+        resolvedProviders.set(selectionKey(selection), resolved.provider);
+        return resolved;
+      };
       return {
         resolve: Effect.fn("MultiProviderModelResolver.resolve")(function* (selection) {
-          const resolved = options.resolve(selection);
+          const resolved = resolveProvider(selection);
           return yield* makeModel(makers, resolved.provider, resolved);
         }),
-        // Prepared for the provider the host resolves the selection to, which receives the request;
-        // the runtime resolves the same selection before it prepares the prompt.
         preparePrompt: (selection, prompt) => {
-          const provider = options.resolve(selection).provider;
+          const provider =
+            resolvedProviders.get(selectionKey(selection)) ?? resolveProvider(selection).provider;
           return PROVIDERS[provider].preparePrompt(withoutOtherProvidersState(provider, prompt));
         },
       };
     }),
   );
 };
+
+const selectionKey = (selection: ModelSelectionPayload | undefined): string =>
+  JSON.stringify(selection ?? null);
 
 /** Options for provider-native compaction. */
 export interface EDANativeCompactionOptions {

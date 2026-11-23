@@ -449,3 +449,42 @@ describe("native compaction executors", () => {
     });
   });
 });
+
+describe("multi-provider prompt preparation", () => {
+  it("prepares the prompt for the provider the request was resolved to, asking the host once", async () => {
+    const selections: Array<string> = [];
+    // A stateful host: its first answer is Anthropic, every later one OpenAI.
+    const layer = makeEDAMultiProviderModelResolverLayer({
+      openai: { apiKey: "test-key" },
+      anthropic: { apiKey: "test-key" },
+      resolve: (selection) => {
+        selections.push(selection?.modelId ?? "none");
+        return selections.length === 1
+          ? { provider: "anthropic", modelId: "claude-model", config: {} }
+          : { provider: "openai", modelId: "gpt-model", config: {} };
+      },
+    });
+    // Anthropic's redacted thinking: no text, metadata only Anthropic reads.
+    const redacted = Prompt.makePart("reasoning", {
+      text: "",
+      options: { anthropic: { info: { type: "redacted_thinking", redactedData: "UkVE" } } },
+    });
+    const history = Prompt.fromMessages([
+      Prompt.makeMessage("user", { content: [Prompt.textPart({ text: "first" })] }),
+      Prompt.makeMessage("assistant", {
+        content: [redacted, Prompt.textPart({ text: "answer" })],
+      }),
+      Prompt.makeMessage("user", { content: [Prompt.textPart({ text: "second" })] }),
+    ]);
+    const selection = { provider: "openai", modelId: "alias" };
+    const prepared = await Effect.gen(function* () {
+      const resolver = yield* ModelResolver;
+      yield* resolver.resolve(selection);
+      return resolver.preparePrompt?.(selection, history);
+    }).pipe(Effect.provide(layer), Effect.runPromise);
+    expect(selections).toEqual(["alias"]);
+    // Prepared for Anthropic, the provider that receives the request: its own part stays.
+    const assistant = prepared?.content.find((message) => message.role === "assistant");
+    expect(assistant?.content.map((part) => part.type)).toEqual(["reasoning", "text"]);
+  });
+});
