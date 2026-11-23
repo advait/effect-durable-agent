@@ -480,28 +480,76 @@ const userPart = (part: Prompt.UserMessagePart): GoogleRequestPart =>
 
 /**
  * A file part as Gemini data. EDA stores file data as a string: bytes as a base64 `data:` URL and a
- * URL as its href. Bytes, base64 and a base64 `data:` URL go inline, the last with its payload and
- * its own media type. A URL, as a `URL` or a string with a scheme (an https or Gemini Files URI),
- * goes as `fileData.fileUri`. Base64 has no `:`, so a scheme tells a URL from base64.
+ * URL as its href. Bytes, base64 and every `data:` URL go inline, a `data:` URL with its decoded
+ * payload and its own media type. A URL, as a `URL` or a string with a scheme (an https or Gemini
+ * Files URI), goes as `fileData.fileUri`. Base64 has no `:`, so a scheme tells a URL from base64.
  */
 const filePart = (part: Prompt.FilePart): GoogleRequestPart => {
-  const mimeType = part.mediaType === "image/*" ? "image/jpeg" : part.mediaType;
-  if (part.data instanceof Uint8Array) {
-    return { inlineData: { mimeType, data: Base64.encode(part.data) } };
-  }
+  if (part.data instanceof Uint8Array) return inline(part.mediaType, Base64.encode(part.data));
   const value = part.data instanceof URL ? part.data.href : part.data;
-  const dataUrl = BASE64_DATA_URL.exec(value);
-  if (dataUrl !== null) {
-    const [, ownType = "", data = ""] = dataUrl;
-    return { inlineData: { mimeType: ownType === "" ? mimeType : ownType, data } };
+  const dataUrl = parseDataUrl(value);
+  if (dataUrl !== undefined) {
+    return inline(dataUrl.mediaType === "" ? part.mediaType : dataUrl.mediaType, dataUrl.base64);
   }
   return URL_SCHEME.test(value)
-    ? { fileData: { mimeType, fileUri: value } }
-    : { inlineData: { mimeType, data: value } };
+    ? { fileData: { mimeType: geminiMediaType(part.mediaType), fileUri: value } }
+    : inline(part.mediaType, value);
 };
 
-const BASE64_DATA_URL = /^data:([^;,]*)(?:;[^;,]*)*;base64,(.*)$/is;
 const URL_SCHEME = /^[a-z][a-z\d+.-]*:/i;
+
+const inline = (mediaType: string, data: string): GoogleRequestPart => ({
+  inlineData: { mimeType: geminiMediaType(mediaType), data },
+});
+
+/** `image/*`, an image of unknown type, goes as JPEG, as the Anthropic and OpenAI adapters send it. */
+const geminiMediaType = (mediaType: string): string =>
+  mediaType === "image/*" ? "image/jpeg" : mediaType;
+
+/**
+ * A `data:` URL's media type (empty when it names none) and its payload as base64, decoded as the
+ * Fetch standard's `data:` URL processor decodes it. The payload is percent-decoded. With
+ * `;base64` it is base64 text, and without it the payload is the bytes themselves.
+ */
+const parseDataUrl = (
+  value: string,
+): { readonly mediaType: string; readonly base64: string } | undefined => {
+  const match = DATA_URL.exec(value);
+  if (match === null) return undefined;
+  const [, header = "", payload = ""] = match;
+  const mediaType = (header.split(";")[0] ?? "").trim().toLowerCase();
+  return /;\s*base64\s*$/i.test(header)
+    ? {
+        mediaType,
+        base64: payload
+          .replace(/%([\da-f]{2})/gi, (_, hex: string) =>
+            String.fromCharCode(Number.parseInt(hex, 16)),
+          )
+          .replace(/[\t\n\f\r ]/g, ""),
+      }
+    : { mediaType, base64: Base64.encode(percentDecode(payload)) };
+};
+
+const DATA_URL = /^data:([^,]*),(.*)$/is;
+
+/** Bytes of a percent-encoded string: `%XX` is that byte, and any other character its UTF-8. */
+const percentDecode = (text: string): Uint8Array => {
+  // Splitting on a captured `%XX` puts the escapes at the odd indexes.
+  const chunks = text
+    .split(/(%[\da-f]{2})/i)
+    .map((piece, index) =>
+      index % 2 === 1
+        ? Uint8Array.of(Number.parseInt(piece.slice(1), 16))
+        : new TextEncoder().encode(piece),
+    );
+  const bytes = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
+};
 
 /** An assistant part as the `model` part it came from, with its signature back on it. */
 const modelParts = (part: Prompt.AssistantMessagePart): ReadonlyArray<GoogleRequestPart> => {

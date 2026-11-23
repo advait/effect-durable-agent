@@ -532,36 +532,67 @@ describe("Gemini file parts", () => {
   const asSent = (part: Prompt.FilePart) =>
     Schema.decodeSync(JsonPromptFilePart)(Schema.encodeSync(JsonPromptFilePart)(part));
 
-  it("sends each form of file data as Gemini data, before and after a restart", async () => {
+  const filesUri = "https://generativelanguage.googleapis.com/v1beta/files/abc";
+
+  it.each([
+    {
+      // Bytes arrive as a base64 data URL.
+      form: "bytes",
+      part: Prompt.filePart({ data: new Uint8Array([104, 105]), mediaType: "text/plain" }),
+      sent: { inlineData: { mimeType: "text/plain", data: "aGk=" } },
+    },
+    {
+      // A URL arrives as its href.
+      form: "a Gemini Files URL",
+      part: Prompt.filePart({ data: new URL(filesUri), mediaType: "application/pdf" }),
+      sent: { fileData: { mimeType: "application/pdf", fileUri: filesUri } },
+    },
+    {
+      form: "bare base64",
+      part: Prompt.filePart({ data: "iVBORw0KGgo=", mediaType: "image/png" }),
+      sent: { inlineData: { mimeType: "image/png", data: "iVBORw0KGgo=" } },
+    },
+    {
+      form: "a base64 data URL with its own media type",
+      part: Prompt.filePart({ data: "data:image/webp;base64,UklGRg==", mediaType: "image/*" }),
+      sent: { inlineData: { mimeType: "image/webp", data: "UklGRg==" } },
+    },
+    {
+      form: "a percent-encoded base64 data URL",
+      part: Prompt.filePart({ data: "data:text/plain;base64,aGk%3D", mediaType: "text/plain" }),
+      sent: { inlineData: { mimeType: "text/plain", data: "aGk=" } },
+    },
+    {
+      // base64("hi there")
+      form: "a data URL without base64",
+      part: Prompt.filePart({ data: "data:text/plain,hi%20there", mediaType: "text/plain" }),
+      sent: { inlineData: { mimeType: "text/plain", data: "aGkgdGhlcmU=" } },
+    },
+    {
+      // base64 of the UTF-8 bytes of "café"
+      form: "a data URL without base64, with parameters and UTF-8 escapes",
+      part: Prompt.filePart({
+        data: "data:text/plain;charset=utf-8,caf%C3%A9",
+        mediaType: "text/plain",
+      }),
+      sent: { inlineData: { mimeType: "text/plain", data: "Y2Fmw6k=" } },
+    },
+    {
+      // An image of unknown type is sent as JPEG, as the Anthropic and OpenAI adapters send it.
+      form: "bytes of an image of unknown type",
+      part: Prompt.filePart({ data: new Uint8Array([255, 216, 255, 224]), mediaType: "image/*" }),
+      sent: { inlineData: { mimeType: "image/jpeg", data: "/9j/4A==" } },
+    },
+  ])("sends $form as Gemini data, before and after a restart", async ({ part, sent }) => {
     const recorded = stubFetch(
       Array.from({ length: 2 }, () => ({
         body: sse({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] }),
       })),
     );
-    const filesUri = "https://generativelanguage.googleapis.com/v1beta/files/abc";
-    await geminiSession([
-      [
-        Prompt.textPart({ text: "Read these." }),
-        // Bytes arrive as a base64 data URL and a URL as its href.
-        asSent(Prompt.filePart({ data: new Uint8Array([104, 105]), mediaType: "text/plain" })),
-        asSent(Prompt.filePart({ data: new URL(filesUri), mediaType: "application/pdf" })),
-        asSent(Prompt.filePart({ data: "iVBORw0KGgo=", mediaType: "image/png" })),
-        asSent(Prompt.filePart({ data: "data:image/webp;base64,UklGRg==", mediaType: "image/*" })),
-      ],
-      "again",
-    ]);
-    const parts = [
-      { text: "Read these." },
-      { inlineData: { mimeType: "text/plain", data: "aGk=" } },
-      { fileData: { mimeType: "application/pdf", fileUri: filesUri } },
-      { inlineData: { mimeType: "image/png", data: "iVBORw0KGgo=" } },
-      { inlineData: { mimeType: "image/webp", data: "UklGRg==" } },
-    ];
+    await geminiSession([[Prompt.textPart({ text: "Read this." }), asSent(part)], "again"]);
+    const message = { role: "user", parts: [{ text: "Read this." }, sent] };
     // The second request rebuilds the first message from the stored log.
-    expect(recorded.map((request) => request.body.contents[0])).toEqual([
-      { role: "user", parts },
-      { role: "user", parts },
-    ]);
+    expect(recorded.map((request) => request.body.contents[0])).toEqual([message, message]);
   });
 });
 

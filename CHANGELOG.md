@@ -57,9 +57,12 @@ change.
   `InvalidRequestError`, and `PUP_LIMITED_DISABLED` with `ContentPolicyError`. EDA then commits no
   tool call that the response streamed.
 - File parts: EDA holds file data as a string, bytes as a base64 `data:` URL and a URL as its href.
-  A base64 `data:` URL goes to Gemini as `inlineData` with its payload and media type, a string
-  with a URL scheme (an https or Gemini Files URI) as `fileData.fileUri`, and bare base64 as
-  `inlineData`.
+  Every `data:` URL goes to Gemini as `inlineData` with its own media type, decoded as the Fetch
+  standard decodes it. The payload is percent-decoded, so `data:text/plain;base64,aGk%3D` sends
+  `aGk=`. A payload without `;base64` is the bytes themselves, which EDA base64-encodes. A string
+  with another URL scheme (an https or Gemini Files URI) goes as `fileData.fileUri`, and bare
+  base64 as `inlineData`. `image/*` goes as `image/jpeg`, as the Anthropic and OpenAI adapters
+  send it, also when a `data:` URL names it.
 - `./providers`: `EDAResolvedModel` gains `{ provider: "google"; modelId; config:
   EDAGoogleModelConfig }` and `EDAMultiProviderModelResolverOptions` gains `google`. Resolution,
   prompt preparation and compaction routing read one table with an entry per provider.
